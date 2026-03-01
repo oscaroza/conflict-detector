@@ -178,6 +178,15 @@ h1 {
   font-weight: 700;
 }
 
+.sound-toggle-btn {
+  min-width: 82px;
+}
+
+.sound-toggle-btn.is-off {
+  color: #ffb27b;
+  border-color: rgba(255, 131, 82, 0.58);
+}
+
 .headline-stats {
   gap: 0.58rem;
   justify-content: flex-end;

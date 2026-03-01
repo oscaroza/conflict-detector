@@ -39,6 +39,12 @@ function buildAlertQuery(queryParams) {
   if (queryParams.read === "false") {
     query.read = false;
   }
+  if (queryParams.confirmed === "true") {
+    query.confirmed = true;
+  }
+  if (queryParams.confirmed === "false") {
+    query.$and = (query.$and || []).concat([{ $or: [{ confirmed: false }, { confirmed: { $exists: false } }] }]);
+  }
   if (queryParams.region) {
     query["country.region"] = queryParams.region;
   }
@@ -208,6 +214,14 @@ router.patch("/settings", async (req, res, next) => {
       }
     }
 
+    if (typeof req.body.soundEnabled === "boolean") {
+      settings.soundEnabled = req.body.soundEnabled;
+    }
+
+    if (typeof req.body.globalCoverage === "boolean") {
+      settings.globalCoverage = req.body.globalCoverage;
+    }
+
     if (typeof req.body.alertMode === "string") {
       const mode = req.body.alertMode.trim().toLowerCase();
       if (mode === "insight" || mode === "action") {
@@ -233,6 +247,8 @@ router.patch("/settings", async (req, res, next) => {
     streamService.sendEvent("settings-updated", {
       paused: settings.paused,
       pollIntervalSeconds: settings.pollIntervalSeconds,
+      soundEnabled: settings.soundEnabled,
+      globalCoverage: settings.globalCoverage,
       alertMode: settings.alertMode
     });
 

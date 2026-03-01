@@ -25,6 +25,7 @@ const refs = {
   toggleRightPanelBtn: document.getElementById("toggleRightPanelBtn"),
   alertModeSelect: document.getElementById("alertModeSelect"),
   intervalSelect: document.getElementById("intervalSelect"),
+  toggleSoundBtn: document.getElementById("toggleSoundBtn"),
   refreshNowBtn: document.getElementById("refreshNowBtn"),
   searchInput: document.getElementById("searchInput"),
   typeFilter: document.getElementById("typeFilter"),
@@ -54,6 +55,18 @@ let speechVoicesInitialized = false;
 let uiRefreshTimer = null;
 let uiRefreshInFlight = false;
 let uiRefreshTick = 0;
+
+function isSoundEnabled() {
+  // Backward compatible for old settings docs missing this field.
+  return state.settings?.soundEnabled !== false;
+}
+
+function updateSoundToggleUI() {
+  if (!refs.toggleSoundBtn) return;
+  const enabled = isSoundEnabled();
+  refs.toggleSoundBtn.textContent = enabled ? "Son ON" : "Son OFF";
+  refs.toggleSoundBtn.classList.toggle("is-off", !enabled);
+}
 
 function refreshLayout() {
   setTimeout(() => {
@@ -1248,6 +1261,7 @@ function applySettingsToControls() {
 
   refs.intervalSelect.value = intervalValue;
   refs.keywordInput.value = (state.settings.keywordFilters || []).join(", ");
+  updateSoundToggleUI();
 
   Array.from(refs.settingsCountryFilter.options).forEach((option) => {
     option.selected = (state.settings.countryFilters || []).includes(option.value);
@@ -1366,6 +1380,26 @@ async function updateInterval() {
   scheduleAutoRefresh();
 }
 
+async function toggleSound() {
+  if (!state.settings) return;
+
+  const nextSoundEnabled = !isSoundEnabled();
+  state.settings = await api("/api/settings", {
+    method: "PATCH",
+    body: JSON.stringify({
+      soundEnabled: nextSoundEnabled
+    })
+  });
+
+  updateSoundToggleUI();
+  showToast(
+    "Audio alertes",
+    nextSoundEnabled
+      ? "Les alertes sonores et vocales sont activées."
+      : "Les alertes sonores et vocales sont désactivées."
+  );
+}
+
 async function updateAlertMode() {
   if (!state.settings) return;
 
@@ -1472,6 +1506,12 @@ function bindEvents() {
   refs.intervalSelect.addEventListener("change", () => {
     updateInterval().catch((error) => showToast("Erreur", error.message));
   });
+
+  if (refs.toggleSoundBtn) {
+    refs.toggleSoundBtn.addEventListener("click", () => {
+      toggleSound().catch((error) => showToast("Erreur", error.message));
+    });
+  }
 
   refs.alertModeSelect.addEventListener("change", () => {
     updateAlertMode().catch((error) => showToast("Erreur", error.message));
@@ -1621,8 +1661,10 @@ function connectEventStream() {
       loadRegionOptions().catch(() => {});
       loadStats().catch(() => {});
 
-      playNotificationSound(alert.severity);
-      speakAlertMessage(alert);
+      if (isSoundEnabled()) {
+        playNotificationSound(alert.severity);
+        speakAlertMessage(alert);
+      }
       triggerAlertFlash(alert);
       showToast(
         "Nouvelle alerte détectée",
@@ -1663,11 +1705,15 @@ function connectEventStream() {
     if (state.settings) {
       state.settings.paused = payload.paused;
       state.settings.pollIntervalSeconds = payload.pollIntervalSeconds;
+      if (typeof payload.soundEnabled === "boolean") {
+        state.settings.soundEnabled = payload.soundEnabled;
+      }
       if (payload.alertMode) {
         state.settings.alertMode = payload.alertMode;
         refs.alertModeSelect.value = payload.alertMode;
       }
       updateDetectionStatus();
+      updateSoundToggleUI();
       scheduleAutoRefresh();
     }
   });
