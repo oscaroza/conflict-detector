@@ -5,6 +5,7 @@ const state = {
   markersLayer: null,
   countryLayer: null,
   countryCentroids: new Map(),
+  countryStatusLevels: new Map(),
   selectedAlertId: null,
   charts: {
     type: null,
@@ -25,6 +26,7 @@ const refs = {
   toggleRightPanelBtn: document.getElementById("toggleRightPanelBtn"),
   alertModeSelect: document.getElementById("alertModeSelect"),
   intervalSelect: document.getElementById("intervalSelect"),
+  toggleCoverageBtn: document.getElementById("toggleCoverageBtn"),
   toggleSoundBtn: document.getElementById("toggleSoundBtn"),
   refreshNowBtn: document.getElementById("refreshNowBtn"),
   searchInput: document.getElementById("searchInput"),
@@ -61,11 +63,23 @@ function isSoundEnabled() {
   return state.settings?.soundEnabled !== false;
 }
 
+function isGlobalCoverageEnabled() {
+  // Backward compatible for old settings docs missing this field.
+  return state.settings?.globalCoverage !== false;
+}
+
 function updateSoundToggleUI() {
   if (!refs.toggleSoundBtn) return;
   const enabled = isSoundEnabled();
   refs.toggleSoundBtn.textContent = enabled ? "Son ON" : "Son OFF";
   refs.toggleSoundBtn.classList.toggle("is-off", !enabled);
+}
+
+function updateCoverageToggleUI() {
+  if (!refs.toggleCoverageBtn) return;
+  const enabled = isGlobalCoverageEnabled();
+  refs.toggleCoverageBtn.textContent = enabled ? "Global ON" : "Global OFF";
+  refs.toggleCoverageBtn.classList.toggle("is-off", !enabled);
 }
 
 function refreshLayout() {
@@ -797,6 +811,7 @@ function createMarker(alert) {
 
 function renderMapMarkers() {
   const visibleAlerts = getVisibleAlerts();
+  recomputeCountryStatusLevels();
   state.markersLayer.clearLayers();
 
   visibleAlerts.slice(0, 220).forEach((alert) => {
@@ -1151,12 +1166,102 @@ function getFeatureCountryName(feature) {
   return props.ADMIN || props.NAME || props.name || props.country || props.SOVEREIGNT || props.BRK_NAME || "Inconnu";
 }
 
-function getCountryHoverStyle() {
+function normalizeCountryKey(value) {
+  return normalizeText(value).replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function normalizeCountryAlias(key) {
+  const aliases = {
+    "united states of america": "united states",
+    usa: "united states",
+    us: "united states",
+    "russian federation": "russia",
+    "republic of korea": "south korea",
+    "democratic people s republic of korea": "north korea",
+    "iran islamic republic of": "iran",
+    "syrian arab republic": "syria",
+    "state of palestine": "palestine",
+    "palestinian territories": "palestine"
+  };
+
+  return aliases[key] || key;
+}
+
+function severityToCountryLevel(severity) {
+  const normalized = normalizeSeverity(severity);
+  if (normalized === "critical" || normalized === "high") {
+    return 3;
+  }
+  if (normalized === "medium" || normalized === "low") {
+    return 2;
+  }
+  return 1;
+}
+
+function recomputeCountryStatusLevels() {
+  const levels = new Map();
+
+  state.alerts.forEach((alert) => {
+    if (canonicalType(alert?.type) !== "geopolitique") {
+      return;
+    }
+
+    const countryName = alert?.country?.name;
+    if (!countryName || countryName === "Inconnu") {
+      return;
+    }
+
+    const key = normalizeCountryAlias(normalizeCountryKey(countryName));
+    if (!key) {
+      return;
+    }
+
+    const previous = levels.get(key) || 1;
+    levels.set(key, Math.max(previous, severityToCountryLevel(alert?.severity)));
+  });
+
+  state.countryStatusLevels = levels;
+}
+
+function getCountryStatus(countryName) {
+  const key = normalizeCountryAlias(normalizeCountryKey(countryName));
+  const level = state.countryStatusLevels.get(key) || 1;
+
+  if (level >= 3) {
+    return "critical";
+  }
+  if (level === 2) {
+    return "tension";
+  }
+  return "normal";
+}
+
+function getCountryHoverStyle(countryName) {
+  const status = getCountryStatus(countryName);
+
+  if (status === "critical") {
+    return {
+      weight: 1.35,
+      color: "#ff3341",
+      fillOpacity: 0.28,
+      fillColor: "#ff3341"
+    };
+  }
+
+  if (status === "tension") {
+    return {
+      weight: 1.35,
+      color: "#ffd24a",
+      fillOpacity: 0.24,
+      fillColor: "#ffd24a"
+    };
+  }
+
   return {
-    weight: 1.25,
-    color: "#ffd24a",
+    weight: 1.35,
+    color: "#35ef9f",
     fillOpacity: 0.2,
-    fillColor: "#ffd24a"
+    fillColor: "#35ef9f"
   };
 }
 
@@ -1262,6 +1367,7 @@ function applySettingsToControls() {
   refs.intervalSelect.value = intervalValue;
   refs.keywordInput.value = (state.settings.keywordFilters || []).join(", ");
   updateSoundToggleUI();
+  updateCoverageToggleUI();
 
   Array.from(refs.settingsCountryFilter.options).forEach((option) => {
     option.selected = (state.settings.countryFilters || []).includes(option.value);
@@ -1400,6 +1506,28 @@ async function toggleSound() {
   );
 }
 
+async function toggleCoverage() {
+  if (!state.settings) return;
+
+  const nextCoverage = !isGlobalCoverageEnabled();
+  state.settings = await api("/api/settings", {
+    method: "PATCH",
+    body: JSON.stringify({
+      globalCoverage: nextCoverage
+    })
+  });
+
+  updateCoverageToggleUI();
+  showToast(
+    "Couverture conflits",
+    nextCoverage
+      ? "Couverture globale active: ingestion de tous les conflits détectés."
+      : "Mode focalisé actif: filtres mots-clés/pays appliqués à l'ingestion."
+  );
+
+  await Promise.all([loadAlerts(), loadStats(), loadCountryOptions(), loadRegionOptions()]);
+}
+
 async function updateAlertMode() {
   if (!state.settings) return;
 
@@ -1513,6 +1641,12 @@ function bindEvents() {
     });
   }
 
+  if (refs.toggleCoverageBtn) {
+    refs.toggleCoverageBtn.addEventListener("click", () => {
+      toggleCoverage().catch((error) => showToast("Erreur", error.message));
+    });
+  }
+
   refs.alertModeSelect.addEventListener("change", () => {
     updateAlertMode().catch((error) => showToast("Erreur", error.message));
   });
@@ -1600,7 +1734,7 @@ async function loadCountryGeoJson() {
       state.countryCentroids.set(countryName, [center.lat, center.lng]);
 
       layer.on("mouseover", () => {
-        layer.setStyle(getCountryHoverStyle());
+        layer.setStyle(getCountryHoverStyle(countryName));
       });
 
       layer.on("mouseout", () => {
@@ -1708,12 +1842,16 @@ function connectEventStream() {
       if (typeof payload.soundEnabled === "boolean") {
         state.settings.soundEnabled = payload.soundEnabled;
       }
+      if (typeof payload.globalCoverage === "boolean") {
+        state.settings.globalCoverage = payload.globalCoverage;
+      }
       if (payload.alertMode) {
         state.settings.alertMode = payload.alertMode;
         refs.alertModeSelect.value = payload.alertMode;
       }
       updateDetectionStatus();
       updateSoundToggleUI();
+      updateCoverageToggleUI();
       scheduleAutoRefresh();
     }
   });
