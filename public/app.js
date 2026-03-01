@@ -18,9 +18,7 @@ const refs = {
   workspaceGrid: document.getElementById("workspaceGrid"),
   alertsList: document.getElementById("alertsList"),
   alertDetails: document.getElementById("alertDetails"),
-  unreadCounter: document.getElementById("unreadCounter"),
   totalAlertsCount: document.getElementById("totalAlertsCount"),
-  unreadAlertsCount: document.getElementById("unreadAlertsCount"),
   criticalAlertsCount: document.getElementById("criticalAlertsCount"),
   detectionStatus: document.getElementById("detectionStatus"),
   togglePauseBtn: document.getElementById("togglePauseBtn"),
@@ -33,7 +31,6 @@ const refs = {
   countryFilter: document.getElementById("countryFilter"),
   regionFilter: document.getElementById("regionFilter"),
   severityFilter: document.getElementById("severityFilter"),
-  readFilter: document.getElementById("readFilter"),
   confirmedFilter: document.getElementById("confirmedFilter"),
   resetFiltersBtn: document.getElementById("resetFiltersBtn"),
   keywordInput: document.getElementById("keywordInput"),
@@ -567,7 +564,6 @@ function getCurrentFilters() {
     country: refs.countryFilter.value,
     region: refs.regionFilter.value,
     severity: refs.severityFilter.value,
-    read: refs.readFilter.value,
     confirmed: refs.confirmedFilter.value
   };
 }
@@ -580,8 +576,6 @@ function matchesCurrentFilters(alert) {
   if (filters.country && alert.country?.name !== filters.country) return false;
   if (filters.region && alert.country?.region !== filters.region) return false;
   if (filters.severity && alert.severity !== filters.severity) return false;
-  if (filters.read === "true" && !alert.read) return false;
-  if (filters.read === "false" && alert.read) return false;
   if (filters.confirmed === "true" && !alert.confirmed) return false;
   if (filters.confirmed === "false" && alert.confirmed) return false;
 
@@ -755,13 +749,13 @@ function getAlertLatLng(alert) {
 
 function createMarker(alert) {
   const latLng = getAlertLatLng(alert);
-  const isUnread = !alert.read;
   const signal = detectIncidentSignal(alert);
   const signalVisual = getSignalVisual(signal);
   const severity = normalizeSeverity(alert.severity);
+  const shouldPulse = severity === "critical" || severity === "high";
   const markerClasses = [
     "threat-marker",
-    isUnread ? "is-unread" : "is-read",
+    shouldPulse ? "is-unread" : "is-read",
     `sev-${severity}`,
     signalVisual.className
   ].join(" ");
@@ -869,7 +863,6 @@ function renderAlertsList() {
 
   if (visibleAlerts.length === 0) {
     refs.alertsList.innerHTML = '<p class="text-secondary small">Aucune alerte pour ces filtres.</p>';
-    refs.unreadCounter.textContent = "0 non lues";
     return;
   }
 
@@ -880,7 +873,7 @@ function renderAlertsList() {
       const confidence = confidenceScoreValue(alert);
       const sourceCount = sourceCountValue(alert);
       return `
-        <article class="alert-item ${alert.read ? "" : "unread"} ${isSelected ? "border-warning" : ""}" data-alert-id="${alert._id}">
+        <article class="alert-item ${isSelected ? "border-warning" : ""}" data-alert-id="${alert._id}">
           <p class="alert-title">${escapeHtml(alert.title)}</p>
           <div class="alert-meta">
             <span class="meta-chip">${escapeHtml(typeLabel(alert.type))}</span>
@@ -896,18 +889,12 @@ function renderAlertsList() {
         alert.sourceName
       )} | ${sourceCount} source(s)</p>
           <div class="alert-actions">
-            <button class="btn btn-outline-light" data-action="toggle-read" data-id="${alert._id}" data-read="${alert.read}">
-              ${alert.read ? "Marquer non lu" : "Marquer lu"}
-            </button>
             <button class="btn btn-outline-danger" data-action="delete" data-id="${alert._id}">Supprimer</button>
           </div>
         </article>
       `;
     })
     .join("");
-
-  const unreadCount = visibleAlerts.filter((alert) => !alert.read).length;
-  refs.unreadCounter.textContent = `${unreadCount} non lues`;
 }
 
 function renderKeywordsWidget() {
@@ -1414,15 +1401,6 @@ async function runManualDetection() {
   }
 }
 
-async function setReadState(id, read) {
-  await api(`/api/alerts/${id}/read`, {
-    method: "PATCH",
-    body: JSON.stringify({ read })
-  });
-
-  await Promise.all([loadAlerts(), loadStats()]);
-}
-
 async function deleteAlert(id) {
   await api(`/api/alerts/${id}`, { method: "DELETE" });
 
@@ -1453,7 +1431,7 @@ function bindQuickFilters() {
 }
 
 function bindEvents() {
-  [refs.typeFilter, refs.countryFilter, refs.regionFilter, refs.severityFilter, refs.readFilter, refs.confirmedFilter].forEach((el) => {
+  [refs.typeFilter, refs.countryFilter, refs.regionFilter, refs.severityFilter, refs.confirmedFilter].forEach((el) => {
     el.addEventListener("change", () => {
       loadAlerts().catch((error) => showToast("Erreur", error.message));
     });
@@ -1471,7 +1449,6 @@ function bindEvents() {
     refs.countryFilter.value = "";
     refs.regionFilter.value = "";
     refs.severityFilter.value = "";
-    refs.readFilter.value = "";
     refs.confirmedFilter.value = "";
     refs.searchInput.value = "";
 
@@ -1511,11 +1488,6 @@ function bindEvents() {
       const id = actionButton.dataset.id;
       const action = actionButton.dataset.action;
 
-      if (action === "toggle-read") {
-        const currentRead = actionButton.dataset.read === "true";
-        setReadState(id, !currentRead).catch((error) => showToast("Erreur", error.message));
-      }
-
       if (action === "delete") {
         deleteAlert(id).catch((error) => showToast("Erreur", error.message));
       }
@@ -1532,10 +1504,6 @@ function bindEvents() {
     state.selectedAlertId = alert._id;
     renderAlertDetails(alert);
     renderAlertsList();
-
-    if (!alert.read) {
-      setReadState(alert._id, true).catch((error) => showToast("Erreur", error.message));
-    }
   });
 
   document.body.addEventListener(
@@ -1563,7 +1531,6 @@ async function loadStats() {
   const critical = (stats.bySeverity.find((item) => item._id === "critical") || {}).count || 0;
 
   refs.totalAlertsCount.textContent = String(total);
-  refs.unreadAlertsCount.textContent = String(stats.unread || 0);
   refs.criticalAlertsCount.textContent = String(critical);
 
   renderCharts(stats);
