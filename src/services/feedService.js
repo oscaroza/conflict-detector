@@ -370,11 +370,6 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
     }
     const severity = classifySeverity(articleText);
     const actionable = isActionableAlert(canonicalAlertType, severity, articleText);
-    const directCombat = hasDirectCombatSignal(articleText);
-    const alertMode = lower(settings.alertMode || "insight");
-    if (alertMode === "action" && (!actionable || !directCombat)) {
-      continue;
-    }
     const publishedAt = item.isoDate || item.pubDate ? new Date(item.isoDate || item.pubDate) : new Date();
 
     const payload = {
