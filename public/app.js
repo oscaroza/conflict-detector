@@ -24,7 +24,6 @@ const refs = {
   criticalAlertsCount: document.getElementById("criticalAlertsCount"),
   detectionStatus: document.getElementById("detectionStatus"),
   togglePauseBtn: document.getElementById("togglePauseBtn"),
-  toggleLeftPanelBtn: document.getElementById("toggleLeftPanelBtn"),
   toggleRightPanelBtn: document.getElementById("toggleRightPanelBtn"),
   alertModeSelect: document.getElementById("alertModeSelect"),
   intervalSelect: document.getElementById("intervalSelect"),
@@ -520,24 +519,23 @@ function bindFoldToggles() {
 }
 
 function updateColumnToggleButtons() {
-  const hideLeft = refs.workspaceGrid.classList.contains("hide-left");
   const hideRight = refs.workspaceGrid.classList.contains("hide-right");
-  refs.toggleLeftPanelBtn.textContent = hideLeft ? "Feed OFF" : "Feed ON";
-  refs.toggleRightPanelBtn.textContent = hideRight ? "Widgets OFF" : "Widgets ON";
+  if (refs.toggleRightPanelBtn) {
+    refs.toggleRightPanelBtn.textContent = hideRight ? "Show Panels" : "Hide Panels";
+  }
 }
 
 function bindColumnToggles() {
-  refs.toggleLeftPanelBtn.addEventListener("click", () => {
-    refs.workspaceGrid.classList.toggle("hide-left");
-    updateColumnToggleButtons();
-    refreshLayout();
-  });
+  // Keep feed column always visible.
+  refs.workspaceGrid.classList.remove("hide-left");
 
-  refs.toggleRightPanelBtn.addEventListener("click", () => {
-    refs.workspaceGrid.classList.toggle("hide-right");
-    updateColumnToggleButtons();
-    refreshLayout();
-  });
+  if (refs.toggleRightPanelBtn) {
+    refs.toggleRightPanelBtn.addEventListener("click", () => {
+      refs.workspaceGrid.classList.toggle("hide-right");
+      updateColumnToggleButtons();
+      refreshLayout();
+    });
+  }
 
   updateColumnToggleButtons();
 }
