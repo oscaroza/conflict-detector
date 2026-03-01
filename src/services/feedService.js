@@ -46,6 +46,26 @@ const FEEDS = [
     sourceName: "Google News US-Iran 6h",
     url: "https://news.google.com/rss/search?q=US+Iran+missile+OR+US+Iran+attack+OR+Iran+strike+OR+Tehran+Washington+conflict+when:6h&hl=en-US&gl=US&ceid=US:en",
     fallbackType: "geopolitique"
+  },
+  {
+    sourceName: "Google News Ukraine War 6h",
+    url: "https://news.google.com/rss/search?q=Ukraine+Russia+war+OR+frontline+OR+Kharkiv+OR+Donetsk+OR+missile+strike+when:6h&hl=en-US&gl=US&ceid=US:en",
+    fallbackType: "geopolitique"
+  },
+  {
+    sourceName: "Google News Middle East 6h",
+    url: "https://news.google.com/rss/search?q=Israel+Gaza+OR+Lebanon+Hezbollah+OR+Syria+airstrike+OR+Red+Sea+attack+OR+Yemen+Houthis+when:6h&hl=en-US&gl=US&ceid=US:en",
+    fallbackType: "geopolitique"
+  },
+  {
+    sourceName: "Google News Asia Tensions 6h",
+    url: "https://news.google.com/rss/search?q=Taiwan+strait+OR+South+China+Sea+OR+North+Korea+missile+OR+Kashmir+clashes+when:6h&hl=en-US&gl=US&ceid=US:en",
+    fallbackType: "geopolitique"
+  },
+  {
+    sourceName: "Google News Africa Conflicts 12h",
+    url: "https://news.google.com/rss/search?q=Sudan+war+OR+Sahel+attack+OR+Congo+rebels+OR+Somalia+military+operation+when:12h&hl=en-US&gl=US&ceid=US:en",
+    fallbackType: "geopolitique"
   }
 ];
 
@@ -57,10 +77,16 @@ const GDELT_STREAMS = [
     maxRecords: 60
   },
   {
-    sourceName: "GDELT US-Iran Signals",
+    sourceName: "GDELT Regional Escalation",
     query:
-      "(US OR United States OR America) AND Iran AND (missile OR strike OR base attacked OR casualties OR military escalation OR retaliation)",
-    maxRecords: 40
+      "(Ukraine OR Russia OR Israel OR Gaza OR Lebanon OR Iran OR Taiwan OR South China Sea OR Sudan OR Yemen OR Syria) AND (missile OR strike OR artillery OR drone OR casualties OR offensive OR escalation)",
+    maxRecords: 70
+  },
+  {
+    sourceName: "GDELT Conflict Fatalities",
+    query:
+      "(war OR conflict OR clashes OR offensive OR raid) AND (killed OR dead OR wounded OR casualties OR death toll)",
+    maxRecords: 70
   }
 ];
 
@@ -149,6 +175,61 @@ const DIRECT_COMBAT_PATTERNS = [
   /\bnuclear (explosion|blast|detonation|plant|reactor|facility)\b/i
 ];
 
+const CONFIRM_WINDOW_HOURS = 18;
+const MAX_CONFIRM_SCAN = 140;
+const MIN_EVENT_SIMILARITY = 0.32;
+const MIN_EVENT_SIMILARITY_WITH_CASUALTY = 0.22;
+
+const TOKEN_STOP_WORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "that",
+  "this",
+  "with",
+  "from",
+  "have",
+  "has",
+  "had",
+  "its",
+  "their",
+  "into",
+  "amid",
+  "after",
+  "before",
+  "during",
+  "says",
+  "said",
+  "report",
+  "reports",
+  "reported",
+  "breaking",
+  "about",
+  "against",
+  "over",
+  "under",
+  "also",
+  "more",
+  "than",
+  "into",
+  "les",
+  "des",
+  "dans",
+  "pour",
+  "avec",
+  "une",
+  "sur",
+  "apres",
+  "depuis",
+  "toujours",
+  "live",
+  "news",
+  "update",
+  "updates",
+  "world",
+  "today"
+]);
+
 function canonicalType(type) {
   const normalized = lower(type);
   if (normalized === "politique" || normalized === "militaire" || normalized === "geopolitique") {
@@ -186,6 +267,236 @@ function isActionableAlert(type, severity, text) {
 
 function lower(value) {
   return (value || "").toLowerCase();
+}
+
+function inferSourceName(item, title) {
+  const fallback = item?.feed?.sourceName || "Source inconnue";
+  const isGoogleFeed = lower(fallback).includes("google news");
+
+  if (isGoogleFeed) {
+    const parts = String(title || "")
+      .split(" - ")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const candidate = parts.length > 1 ? parts[parts.length - 1] : "";
+    if (candidate && candidate.length <= 80) {
+      return candidate;
+    }
+  }
+
+  const creator = [item?.creator, item?.author].find((value) => typeof value === "string" && value.trim());
+  if (creator) {
+    return creator.trim();
+  }
+
+  return fallback;
+}
+
+function toTokenSet(text) {
+  const normalized = lower(text).replace(/[^a-z0-9\s]/g, " ");
+  const tokens = normalized
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3 && !TOKEN_STOP_WORDS.has(token));
+  return new Set(tokens);
+}
+
+function jaccardSimilarity(setA, setB) {
+  if (!setA || !setB || setA.size === 0 || setB.size === 0) {
+    return 0;
+  }
+
+  let intersection = 0;
+  for (const token of setA) {
+    if (setB.has(token)) {
+      intersection += 1;
+    }
+  }
+
+  const union = setA.size + setB.size - intersection;
+  if (union <= 0) {
+    return 0;
+  }
+  return intersection / union;
+}
+
+function extractCasualtyCount(text) {
+  const match = lower(text).match(/\b(\d{1,4})\s+(killed|dead|wounded|injured|casualties|morts?|blesses?)\b/);
+  if (!match) {
+    return null;
+  }
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function classifyIncidentClass(text) {
+  const content = lower(text);
+
+  if (/nuclear (explosion|blast|detonation|plant|reactor|facility)|atomic blast|atomic explosion/.test(content)) {
+    return "nuclear";
+  }
+  if (/airstrike|air raid|aerial bombardment|drone strike|raid aerien|frappe aerienne/.test(content)) {
+    return "air";
+  }
+  if (/missile|rocket|ballistic|hypersonic/.test(content)) {
+    return "missile";
+  }
+  if (/military base|base (hit|struck|destroyed|attacked)|command center/.test(content)) {
+    return "base";
+  }
+  if (/soldier|troop|civilian|killed|dead|wounded|casualt|death toll/.test(content)) {
+    return "casualty";
+  }
+  if (/artillery|shelling|frontline|battlefield|offensive|clash/.test(content)) {
+    return "battle";
+  }
+
+  return "conflict";
+}
+
+function isIncidentClassCompatible(baseClass, candidateClass) {
+  if (!baseClass || !candidateClass) {
+    return false;
+  }
+  if (baseClass === candidateClass) {
+    return true;
+  }
+  return baseClass === "conflict" || candidateClass === "conflict";
+}
+
+function normalizeSourceFamily(sourceName) {
+  const normalized = lower(sourceName)
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\b(news|media|digital|online|edition|network|group|the)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return normalized || "unknown";
+}
+
+function severityRank(severity) {
+  return (
+    {
+      low: 1,
+      medium: 2,
+      high: 3,
+      critical: 4
+    }[lower(severity)] || 2
+  );
+}
+
+function computeConfidenceScore(clusterAlerts, sourceFamilyCount) {
+  const maxSeverity = clusterAlerts.reduce(
+    (maxRank, alert) => Math.max(maxRank, severityRank(alert?.severity)),
+    1
+  );
+  const hasDirectCombat = clusterAlerts.some((alert) =>
+    hasDirectCombatSignal(`${alert?.title || ""} ${alert?.summary || ""}`)
+  );
+
+  let score = 18;
+  score += Math.max(1, sourceFamilyCount) * 14;
+  score += maxSeverity * 5;
+  if (hasDirectCombat) {
+    score += 8;
+  }
+  score += Math.min(3, Math.max(0, clusterAlerts.length - 1)) * 4;
+
+  return Math.max(20, Math.min(99, Math.round(score)));
+}
+
+function areLikelySameEvent(baseEvent, candidateEvent) {
+  if (!isIncidentClassCompatible(baseEvent.incidentClass, candidateEvent.incidentClass)) {
+    return false;
+  }
+
+  const similarity = jaccardSimilarity(baseEvent.tokens, candidateEvent.tokens);
+  if (similarity >= MIN_EVENT_SIMILARITY) {
+    return true;
+  }
+
+  const hasSameCasualtyCount =
+    Number.isFinite(baseEvent.casualtyCount) &&
+    Number.isFinite(candidateEvent.casualtyCount) &&
+    baseEvent.casualtyCount === candidateEvent.casualtyCount;
+
+  return hasSameCasualtyCount && similarity >= MIN_EVENT_SIMILARITY_WITH_CASUALTY;
+}
+
+async function enrichConfirmationForAlert(alertDoc) {
+  const baseAlert = alertDoc.toObject ? alertDoc.toObject() : alertDoc;
+  const baseText = `${baseAlert?.title || ""} ${baseAlert?.summary || ""}`;
+
+  const baseEvent = {
+    incidentClass: classifyIncidentClass(baseText),
+    tokens: toTokenSet(baseText),
+    casualtyCount: extractCasualtyCount(baseText)
+  };
+
+  const referenceDate = new Date(baseAlert?.publishedAt || baseAlert?.createdAt || new Date());
+  const sinceDate = new Date(referenceDate.getTime() - CONFIRM_WINDOW_HOURS * 60 * 60 * 1000);
+
+  const countryQuery =
+    baseAlert?.country?.code && baseAlert.country.code !== "XX"
+      ? { "country.code": baseAlert.country.code }
+      : { "country.name": baseAlert?.country?.name || "Inconnu" };
+
+  const candidates = await Alert.find({
+    _id: { $ne: baseAlert._id },
+    type: "geopolitique",
+    ...countryQuery,
+    publishedAt: { $gte: sinceDate }
+  })
+    .sort({ publishedAt: -1 })
+    .limit(MAX_CONFIRM_SCAN)
+    .lean();
+
+  const cluster = [baseAlert];
+
+  for (const candidate of candidates) {
+    const candidateText = `${candidate?.title || ""} ${candidate?.summary || ""}`;
+    const candidateEvent = {
+      incidentClass: classifyIncidentClass(candidateText),
+      tokens: toTokenSet(candidateText),
+      casualtyCount: extractCasualtyCount(candidateText)
+    };
+
+    if (areLikelySameEvent(baseEvent, candidateEvent)) {
+      cluster.push(candidate);
+    }
+  }
+
+  const sourceNames = Array.from(new Set(cluster.map((alert) => (alert?.sourceName || "").trim()).filter(Boolean)));
+  const sourceFamilies = new Set(sourceNames.map((name) => normalizeSourceFamily(name)).filter(Boolean));
+
+  const sourceCount = Math.max(1, sourceFamilies.size);
+  const confirmed = sourceCount >= 2;
+  const confidenceScore = computeConfidenceScore(cluster, sourceCount);
+  const eventGroupId =
+    cluster
+      .map((alert) => String(alert?._id || ""))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))[0] || String(baseAlert._id);
+
+  const clusterIds = cluster.map((alert) => alert._id);
+  const updatePayload = {
+    confirmed,
+    confidenceScore,
+    sourceCount,
+    sourceNames,
+    eventGroupId
+  };
+
+  await Alert.updateMany({ _id: { $in: clusterIds } }, { $set: updatePayload });
+  const updatedAlerts = await Alert.find({ _id: { $in: clusterIds } }).lean();
+
+  const shouldBroadcastClusterUpdate = updatedAlerts.length > 1 || confirmed || sourceCount > 1;
+  if (shouldBroadcastClusterUpdate && updatedAlerts.length > 0) {
+    streamService.sendEvent("alerts-confirmation-updated", { alerts: updatedAlerts });
+  }
+
+  const updatedBase = updatedAlerts.find((alert) => String(alert._id) === String(baseAlert._id));
+  return updatedBase || { ...baseAlert, ...updatePayload };
 }
 
 function classifyType(text, fallbackType) {
@@ -234,6 +545,12 @@ function normalizeArray(values) {
 }
 
 function matchesSettingsFilters(articleText, countryInfo, settings) {
+  // Global coverage is the default: ingest all detected conflict signals.
+  // Focused filters are applied only when users explicitly disable global coverage.
+  if (settings?.globalCoverage !== false) {
+    return true;
+  }
+
   const keywords = normalizeArray(settings.keywordFilters);
   const countries = normalizeArray(settings.countryFilters);
 
@@ -259,7 +576,7 @@ function matchesSettingsFilters(articleText, countryInfo, settings) {
 async function fetchFeedItems(feed) {
   try {
     const parsed = await parser.parseURL(feed.url);
-    return (parsed.items || []).slice(0, 20).map((item) => ({ ...item, feed }));
+    return (parsed.items || []).slice(0, 40).map((item) => ({ ...item, feed }));
   } catch (error) {
     console.warn(`[feeds] Echec ${feed.sourceName}: ${error.message}`);
     return [];
@@ -372,15 +689,21 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
     const actionable = isActionableAlert(canonicalAlertType, severity, articleText);
     const publishedAt = item.isoDate || item.pubDate ? new Date(item.isoDate || item.pubDate) : new Date();
 
+    const sourceName = inferSourceName(item, title);
+
     const payload = {
       title,
       summary,
-      sourceName: item.feed.sourceName,
+      sourceName,
       sourceUrl,
       publishedAt,
       type: canonicalAlertType,
       severity,
       actionable,
+      confirmed: false,
+      confidenceScore: 35,
+      sourceCount: 1,
+      sourceNames: [sourceName],
       country: {
         name: countryInfo.name,
         code: countryInfo.code,
@@ -394,12 +717,12 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
 
     try {
       const created = await Alert.create(payload);
-      const plainAlert = created.toObject();
-      newAlerts.push(plainAlert);
+      const enrichedAlert = await enrichConfirmationForAlert(created);
+      newAlerts.push(enrichedAlert);
 
       streamService.sendEvent("new-alert", {
         reason,
-        alert: plainAlert
+        alert: enrichedAlert
       });
     } catch (error) {
       if (error && error.code === 11000) {
