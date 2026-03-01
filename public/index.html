@@ -30,7 +30,7 @@
     <div class="app-shell">
       <header class="command-bar panel-shell">
         <div class="brand-block">
-          <div class="brand-mark">CD</div>
+          <div class="brand-mark">C</div>
           <div>
             <p class="brand-mini">RADAR</p>
             <h1>CONFLICT DETECTOR</h1>
@@ -215,7 +215,7 @@
             <button id="toggleRightPanelBtn" class="btn btn-sm btn-outline-light tone-btn column-toggle">Hide Panels</button>
           </section>
 
-          <section class="panel-shell details-panel fold-card is-open">
+          <section class="panel-shell details-panel fold-card">
             <div class="panel-head panel-head-toggle">
               <h2>EVENT DETAIL</h2>
               <button
@@ -223,12 +223,12 @@
                 data-target="detailFold"
                 data-open-label="Masquer"
                 data-close-label="Ouvrir"
-                aria-expanded="true"
+                aria-expanded="false"
               >
-                Masquer
+                Ouvrir
               </button>
             </div>
-            <div id="detailFold" class="fold-content open">
+            <div id="detailFold" class="fold-content">
               <div id="alertDetails" class="alert-details empty-state">
                 Cliquez sur une alerte pour afficher le détail complet.
               </div>
