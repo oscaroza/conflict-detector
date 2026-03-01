@@ -73,8 +73,7 @@
             <option value="900">15 min</option>
           </select>
           <button id="refreshNowBtn" class="btn btn-sm btn-warning pulse-btn">Analyser</button>
-          <button id="toggleLeftPanelBtn" class="btn btn-sm btn-outline-light tone-btn column-toggle">Feed</button>
-          <button id="toggleRightPanelBtn" class="btn btn-sm btn-outline-light tone-btn column-toggle">Widgets</button>
+          <button id="toggleRightPanelBtn" class="btn btn-sm btn-outline-light tone-btn column-toggle">Hide Panels</button>
         </div>
       </header>
 
@@ -213,7 +212,7 @@
         </section>
 
         <aside class="right-column">
-          <section class="panel-shell details-panel fold-card is-open" data-group="right">
+          <section class="panel-shell details-panel fold-card is-open">
             <div class="panel-head panel-head-toggle">
               <h2>EVENT DETAIL</h2>
               <button
@@ -233,7 +232,7 @@
             </div>
           </section>
 
-          <section class="panel-shell widget-panel fold-card" data-group="right">
+          <section class="panel-shell widget-panel fold-card is-open">
             <div class="panel-head panel-head-toggle">
               <h2>TOP PREDICTIONS</h2>
               <button
@@ -241,35 +240,35 @@
                 data-target="predictionsFold"
                 data-open-label="Masquer"
                 data-close-label="Ouvrir"
-                aria-expanded="false"
+                aria-expanded="true"
               >
-                Ouvrir
+                Masquer
               </button>
             </div>
-            <div id="predictionsFold" class="fold-content">
+            <div id="predictionsFold" class="fold-content open">
               <canvas id="typeChart" height="120"></canvas>
             </div>
           </section>
 
-          <section class="panel-shell widget-panel fold-card" data-group="right">
+          <section class="panel-shell widget-panel fold-card is-open">
             <div class="panel-head panel-head-toggle">
-              <h2>MARKETS / RISK MIX</h2>
+              <h2>RISK MIX</h2>
               <button
                 class="fold-toggle"
                 data-target="marketsFold"
                 data-open-label="Masquer"
                 data-close-label="Ouvrir"
-                aria-expanded="false"
+                aria-expanded="true"
               >
-                Ouvrir
+                Masquer
               </button>
             </div>
-            <div id="marketsFold" class="fold-content">
+            <div id="marketsFold" class="fold-content open">
               <div id="marketsList" class="market-list"></div>
             </div>
           </section>
 
-          <section class="panel-shell widget-panel fold-card" data-group="right">
+          <section class="panel-shell widget-panel fold-card is-open">
             <div class="panel-head panel-head-toggle">
               <h2>TOP KEYWORDS (24H)</h2>
               <button
@@ -277,30 +276,30 @@
                 data-target="keywordsFold"
                 data-open-label="Masquer"
                 data-close-label="Ouvrir"
-                aria-expanded="false"
+                aria-expanded="true"
               >
-                Ouvrir
+                Masquer
               </button>
             </div>
-            <div id="keywordsFold" class="fold-content">
+            <div id="keywordsFold" class="fold-content open">
               <div id="keywordsList" class="keyword-list"></div>
             </div>
           </section>
 
-          <section class="panel-shell widget-panel fold-card" data-group="right">
+          <section class="panel-shell widget-panel fold-card is-open">
             <div class="panel-head panel-head-toggle">
-              <h2>HOTSPOT TREND</h2>
+              <h2>HOTSPOT RATE</h2>
               <button
                 class="fold-toggle"
                 data-target="hotspotFold"
                 data-open-label="Masquer"
                 data-close-label="Ouvrir"
-                aria-expanded="false"
+                aria-expanded="true"
               >
-                Ouvrir
+                Masquer
               </button>
             </div>
-            <div id="hotspotFold" class="fold-content">
+            <div id="hotspotFold" class="fold-content open">
               <canvas id="countryChart" height="120"></canvas>
             </div>
           </section>
