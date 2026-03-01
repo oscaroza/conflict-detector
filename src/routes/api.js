@@ -204,7 +204,7 @@ router.patch("/settings", async (req, res, next) => {
     if (req.body.pollIntervalSeconds !== undefined) {
       const interval = Number(req.body.pollIntervalSeconds);
       if (!Number.isNaN(interval)) {
-        settings.pollIntervalSeconds = Math.min(3600, Math.max(60, interval));
+        settings.pollIntervalSeconds = Math.min(3600, Math.max(30, interval));
       }
     }
 

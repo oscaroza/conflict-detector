@@ -54,6 +54,9 @@ let audioContext = null;
 let lastSseErrorAt = 0;
 let flashTimer = null;
 let speechVoicesInitialized = false;
+let uiRefreshTimer = null;
+let uiRefreshInFlight = false;
+let uiRefreshTick = 0;
 
 function refreshLayout() {
   setTimeout(() => {
@@ -1223,9 +1226,52 @@ function updateDetectionStatus() {
   refs.togglePauseBtn.textContent = paused ? "Reprendre" : "Pause";
 }
 
+function getUiRefreshIntervalSeconds() {
+  const candidate = Number(state.settings?.pollIntervalSeconds || refs.intervalSelect?.value || 300);
+  if (!Number.isFinite(candidate)) {
+    return 300;
+  }
+  return Math.max(30, candidate);
+}
+
+async function refreshDashboardCycle() {
+  if (uiRefreshInFlight) return;
+  uiRefreshInFlight = true;
+
+  try {
+    await Promise.all([loadAlerts(), loadStats()]);
+    uiRefreshTick += 1;
+
+    // Keep country/region filters up to date without overloading every cycle.
+    if (uiRefreshTick % 4 === 0) {
+      await Promise.all([loadCountryOptions(), loadRegionOptions()]);
+    }
+  } catch (error) {
+    console.warn("[refresh] cycle error:", error.message);
+  } finally {
+    uiRefreshInFlight = false;
+  }
+}
+
+function scheduleAutoRefresh() {
+  const intervalMs = getUiRefreshIntervalSeconds() * 1000;
+
+  if (uiRefreshTimer) {
+    clearTimeout(uiRefreshTimer);
+  }
+
+  const tick = async () => {
+    await refreshDashboardCycle();
+    uiRefreshTimer = setTimeout(tick, getUiRefreshIntervalSeconds() * 1000);
+  };
+
+  uiRefreshTimer = setTimeout(tick, intervalMs);
+}
+
 async function loadSettings() {
   state.settings = await api("/api/settings");
   applySettingsToControls();
+  scheduleAutoRefresh();
 }
 
 async function saveSettings() {
@@ -1277,6 +1323,7 @@ async function updateInterval() {
   });
 
   showToast("Fréquence mise à jour", `Nouvelle fréquence: ${state.settings.pollIntervalSeconds} sec.`);
+  scheduleAutoRefresh();
 }
 
 async function updateAlertMode() {
@@ -1604,6 +1651,7 @@ function connectEventStream() {
         refs.alertModeSelect.value = payload.alertMode;
       }
       updateDetectionStatus();
+      scheduleAutoRefresh();
     }
   });
 
@@ -1627,6 +1675,7 @@ async function bootstrap() {
   await Promise.all([loadAlerts(), loadStats()]);
 
   connectEventStream();
+  scheduleAutoRefresh();
   refreshLayout();
 }
 
