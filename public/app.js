@@ -1090,21 +1090,26 @@ function renderCharts(stats) {
 }
 
 function styleCountryFeature(feature) {
-  const countryName = getFeatureCountryName(feature);
-  const selectedCountry = refs.countryFilter.value;
-  const isSelected = selectedCountry && selectedCountry === countryName;
-
   return {
-    weight: isSelected ? 1.3 : 0.55,
-    color: isSelected ? "#ffd24a" : "rgba(150,178,215,0.36)",
-    fillOpacity: isSelected ? 0.19 : 0.04,
-    fillColor: isSelected ? "#ffd24a" : "#8aa4cc"
+    weight: 0.55,
+    color: "rgba(150,178,215,0.36)",
+    fillOpacity: 0.04,
+    fillColor: "#8aa4cc"
   };
 }
 
 function getFeatureCountryName(feature) {
   const props = feature.properties || {};
   return props.ADMIN || props.NAME || props.name || props.country || props.SOVEREIGNT || props.BRK_NAME || "Inconnu";
+}
+
+function getCountryHoverStyle() {
+  return {
+    weight: 1.25,
+    color: "#ffd24a",
+    fillOpacity: 0.2,
+    fillColor: "#ffd24a"
+  };
 }
 
 async function loadAlerts() {
@@ -1538,24 +1543,15 @@ async function loadCountryGeoJson() {
       const center = layer.getBounds().getCenter();
       state.countryCentroids.set(countryName, [center.lat, center.lng]);
 
-      layer.on("click", () => {
-        const hasOption = Array.from(refs.countryFilter.options).some((opt) => opt.value === countryName);
-        if (!hasOption) {
-          const opt = document.createElement("option");
-          opt.value = countryName;
-          opt.textContent = countryName;
-          refs.countryFilter.appendChild(opt);
-        }
+      layer.on("mouseover", () => {
+        layer.setStyle(getCountryHoverStyle());
+      });
 
-        refs.countryFilter.value = countryName;
-        loadAlerts().catch((error) => showToast("Erreur", error.message));
-        state.countryLayer.setStyle(styleCountryFeature);
-
-        const countryAlerts = state.alerts.filter((alert) => alert.country?.name === countryName);
-        if (countryAlerts.length > 0) {
-          showToast(`Pays sélectionné: ${countryName}`, `${countryAlerts.length} alerte(s) dans cette vue.`);
+      layer.on("mouseout", () => {
+        if (state.countryLayer && typeof state.countryLayer.resetStyle === "function") {
+          state.countryLayer.resetStyle(layer);
         } else {
-          showToast(`Pays sélectionné: ${countryName}`, "Aucune alerte dans la vue filtrée.");
+          layer.setStyle(styleCountryFeature(feature));
         }
       });
     }
