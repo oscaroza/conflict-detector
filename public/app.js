@@ -34,6 +34,7 @@ const refs = {
   regionFilter: document.getElementById("regionFilter"),
   severityFilter: document.getElementById("severityFilter"),
   readFilter: document.getElementById("readFilter"),
+  confirmedFilter: document.getElementById("confirmedFilter"),
   resetFiltersBtn: document.getElementById("resetFiltersBtn"),
   keywordInput: document.getElementById("keywordInput"),
   settingsCountryFilter: document.getElementById("settingsCountryFilter"),
@@ -158,6 +159,26 @@ function canonicalType(value) {
 
 function typeLabel(value) {
   return canonicalType(value) === "geopolitique" ? "Geopolitique" : "Autre";
+}
+
+function confirmationLabel(alert) {
+  return alert?.confirmed ? "CONFIRMED" : "UNCONFIRMED";
+}
+
+function confidenceScoreValue(alert) {
+  const raw = Number(alert?.confidenceScore);
+  if (Number.isFinite(raw)) {
+    return Math.max(0, Math.min(100, Math.round(raw)));
+  }
+  return alert?.confirmed ? 70 : 35;
+}
+
+function sourceCountValue(alert) {
+  const raw = Number(alert?.sourceCount);
+  if (Number.isFinite(raw) && raw >= 1) {
+    return Math.round(raw);
+  }
+  return 1;
 }
 
 function capitalize(value) {
@@ -546,7 +567,8 @@ function getCurrentFilters() {
     country: refs.countryFilter.value,
     region: refs.regionFilter.value,
     severity: refs.severityFilter.value,
-    read: refs.readFilter.value
+    read: refs.readFilter.value,
+    confirmed: refs.confirmedFilter.value
   };
 }
 
@@ -560,6 +582,8 @@ function matchesCurrentFilters(alert) {
   if (filters.severity && alert.severity !== filters.severity) return false;
   if (filters.read === "true" && !alert.read) return false;
   if (filters.read === "false" && alert.read) return false;
+  if (filters.confirmed === "true" && !alert.confirmed) return false;
+  if (filters.confirmed === "false" && alert.confirmed) return false;
 
   return true;
 }
@@ -780,6 +804,9 @@ function renderMapMarkers() {
 
 function renderAlertDetails(alert) {
   const signalVisual = getSignalVisual(detectIncidentSignal(alert));
+  const confidence = confidenceScoreValue(alert);
+  const sourceCount = sourceCountValue(alert);
+  const sourcesList = Array.isArray(alert?.sourceNames) && alert.sourceNames.length > 0 ? alert.sourceNames : [alert.sourceName];
 
   toggleFold("detailFold", true);
   refs.alertDetails.classList.remove("empty-state");
@@ -788,12 +815,18 @@ function renderAlertDetails(alert) {
     <div class="detail-meta mb-2">
       <span class="meta-chip">${escapeHtml(typeLabel(alert.type))}</span>
       <span class="meta-chip">${escapeHtml(signalVisual.label)}</span>
+      <span class="meta-chip ${alert.confirmed ? "confirmed-chip" : "unconfirmed-chip"}">${escapeHtml(
+    confirmationLabel(alert)
+  )}</span>
+      <span class="meta-chip confidence-chip">Confiance ${confidence}%</span>
       <span class="meta-chip severity-${escapeHtml(alert.severity)}">${escapeHtml(severityLabel(alert.severity))}</span>
       <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
       <span class="meta-chip">${escapeHtml(alert.country?.region || "Global")}</span>
     </div>
     <p class="mb-2"><strong>Résumé:</strong> ${escapeHtml(alert.summary || "Résumé non disponible")}</p>
     <p class="mb-2"><strong>Source:</strong> ${escapeHtml(alert.sourceName || "Inconnue")}</p>
+    <p class="mb-2"><strong>Validation:</strong> ${escapeHtml(confirmationLabel(alert))} | <strong>Confiance:</strong> ${confidence}% | <strong>Sources croisées:</strong> ${sourceCount}</p>
+    <p class="mb-2"><strong>Sources cluster:</strong> ${escapeHtml(sourcesList.join(", "))}</p>
     <p class="mb-2"><strong>Horodatage:</strong> ${escapeHtml(formatDate(alert.publishedAt || alert.createdAt))}</p>
     <a href="${escapeHtml(alert.sourceUrl)}" class="btn btn-sm btn-outline-warning" target="_blank" rel="noopener noreferrer">
       Ouvrir l'article officiel
@@ -802,22 +835,33 @@ function renderAlertDetails(alert) {
 }
 
 function renderTicker() {
-  const source = getVisibleAlerts().slice(-10);
+  const source = state.alerts
+    .filter((alert) => canonicalType(alert?.type) === "geopolitique")
+    .sort((a, b) => {
+      const aTime = new Date(a?.publishedAt || a?.createdAt || 0).getTime();
+      const bTime = new Date(b?.publishedAt || b?.createdAt || 0).getTime();
+      return bTime - aTime;
+    })
+    .slice(0, 12);
+
   if (source.length === 0) {
+    refs.latestTickerContent.classList.add("no-scroll");
     refs.latestTickerContent.textContent = "Aucune alerte pour cette vue.";
     return;
   }
 
+  const shouldScroll = source.length > 1;
   const singleTrack = source
     .map(
       (alert) =>
-        `<span class="ticker-item"><span class="dot"></span><span>${escapeHtml(alert.title)}</span><span>${escapeHtml(
-          formatShortDate(alert.publishedAt || alert.createdAt)
-        )}</span></span>`
+        `<span class="ticker-item"><span class="dot"></span><span class="ticker-title">${escapeHtml(
+          alert.title
+        )}</span><span class="ticker-time">${escapeHtml(formatShortDate(alert.publishedAt || alert.createdAt))}</span></span>`
     )
     .join("");
 
-  refs.latestTickerContent.innerHTML = `${singleTrack}${singleTrack}`;
+  refs.latestTickerContent.classList.toggle("no-scroll", !shouldScroll);
+  refs.latestTickerContent.innerHTML = shouldScroll ? `${singleTrack}${singleTrack}` : singleTrack;
 }
 
 function renderAlertsList() {
@@ -833,18 +877,24 @@ function renderAlertsList() {
     .map((alert) => {
       const isSelected = alert._id === state.selectedAlertId;
       const signalVisual = getSignalVisual(detectIncidentSignal(alert));
+      const confidence = confidenceScoreValue(alert);
+      const sourceCount = sourceCountValue(alert);
       return `
         <article class="alert-item ${alert.read ? "" : "unread"} ${isSelected ? "border-warning" : ""}" data-alert-id="${alert._id}">
           <p class="alert-title">${escapeHtml(alert.title)}</p>
           <div class="alert-meta">
             <span class="meta-chip">${escapeHtml(typeLabel(alert.type))}</span>
             <span class="meta-chip">${escapeHtml(signalVisual.label)}</span>
+            <span class="meta-chip ${alert.confirmed ? "confirmed-chip" : "unconfirmed-chip"}">${escapeHtml(
+        confirmationLabel(alert)
+      )}</span>
+            <span class="meta-chip confidence-chip">${confidence}%</span>
             <span class="meta-chip severity-${escapeHtml(alert.severity)}">${escapeHtml(severityLabel(alert.severity))}</span>
             <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
           </div>
           <p class="small text-secondary mb-2">${escapeHtml(formatDate(alert.publishedAt || alert.createdAt))} | ${escapeHtml(
         alert.sourceName
-      )}</p>
+      )} | ${sourceCount} source(s)</p>
           <div class="alert-actions">
             <button class="btn btn-outline-light" data-action="toggle-read" data-id="${alert._id}" data-read="${alert.read}">
               ${alert.read ? "Marquer non lu" : "Marquer lu"}
@@ -1403,7 +1453,7 @@ function bindQuickFilters() {
 }
 
 function bindEvents() {
-  [refs.typeFilter, refs.countryFilter, refs.regionFilter, refs.severityFilter, refs.readFilter].forEach((el) => {
+  [refs.typeFilter, refs.countryFilter, refs.regionFilter, refs.severityFilter, refs.readFilter, refs.confirmedFilter].forEach((el) => {
     el.addEventListener("change", () => {
       loadAlerts().catch((error) => showToast("Erreur", error.message));
     });
@@ -1422,6 +1472,7 @@ function bindEvents() {
     refs.regionFilter.value = "";
     refs.severityFilter.value = "";
     refs.readFilter.value = "";
+    refs.confirmedFilter.value = "";
     refs.searchInput.value = "";
 
     document.querySelectorAll(".quick-filter").forEach((btn) => btn.classList.remove("active"));
@@ -1633,6 +1684,11 @@ function connectEventStream() {
     renderMapMarkers();
     renderTicker();
     renderKeywordsWidget();
+  });
+
+  state.eventSource.addEventListener("alerts-confirmation-updated", () => {
+    loadAlerts().catch(() => {});
+    loadStats().catch(() => {});
   });
 
   state.eventSource.addEventListener("settings-updated", (event) => {

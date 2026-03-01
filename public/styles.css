@@ -246,10 +246,28 @@ h1 {
   animation: ticker-slide 34s linear infinite;
 }
 
+.ticker-track.no-scroll {
+  animation: none;
+  white-space: nowrap;
+}
+
 .ticker-item {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
+  max-width: min(980px, 80vw);
+}
+
+.ticker-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: min(780px, 62vw);
+}
+
+.ticker-time {
+  color: var(--muted);
+  font-size: 0.76rem;
 }
 
 .ticker-item .dot {
@@ -526,6 +544,24 @@ h4 {
   font-family: "IBM Plex Mono", monospace;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.meta-chip.confirmed-chip {
+  color: #35ef9f;
+  border-color: rgba(53, 239, 159, 0.55);
+  background: rgba(53, 239, 159, 0.08);
+}
+
+.meta-chip.unconfirmed-chip {
+  color: #ffd24a;
+  border-color: rgba(255, 210, 74, 0.55);
+  background: rgba(255, 210, 74, 0.07);
+}
+
+.meta-chip.confidence-chip {
+  color: #9ad7ff;
+  border-color: rgba(102, 188, 255, 0.45);
+  background: rgba(57, 208, 255, 0.08);
 }
 
 .alert-actions {
