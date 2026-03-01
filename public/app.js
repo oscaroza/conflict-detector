@@ -580,6 +580,137 @@ function getVisibleAlerts() {
   return state.alerts.filter((alert) => canonicalType(alert.type) === "geopolitique" && matchesSearch(alert));
 }
 
+function includesAny(text, keywords) {
+  return keywords.some((keyword) => text.includes(keyword));
+}
+
+function detectIncidentSignal(alert) {
+  const text = normalizeText(`${alert?.title || ""} ${alert?.summary || ""}`);
+
+  const hasNuclearPlant = includesAny(text, [
+    "nuclear power plant",
+    "nuclear plant",
+    "nuclear reactor",
+    "power reactor",
+    "centrale nucleaire",
+    "central nucleaire",
+    "reacteur nucleaire"
+  ]);
+  const hasExplosion = includesAny(text, [
+    "explosion",
+    "blast",
+    "detonation",
+    "detonated",
+    "bombing",
+    "bombardement",
+    "strike",
+    "attack",
+    "attaque",
+    "hit",
+    "impact",
+    "touche",
+    "frappe"
+  ]);
+
+  if (hasNuclearPlant && hasExplosion) {
+    return "nuclear-plant";
+  }
+
+  if (
+    includesAny(text, [
+      "nuclear explosion",
+      "nuclear blast",
+      "nuclear detonation",
+      "atomic explosion",
+      "atomic blast",
+      "detonation nucleaire",
+      "explosion nucleaire",
+      "bombe atomique"
+    ])
+  ) {
+    return "nuclear";
+  }
+
+  if (
+    includesAny(text, ["missile", "rocket", "ballistic", "hypersonic"]) &&
+    includesAny(text, ["hit", "strike", "impact", "touche", "frappe", "attack", "landed"])
+  ) {
+    return "missile";
+  }
+
+  if (
+    includesAny(text, [
+      "air raid",
+      "airstrike",
+      "aerial bombardment",
+      "drone strike",
+      "raid aerien",
+      "frappe aerienne",
+      "bombardement aerien"
+    ])
+  ) {
+    return "air-raid";
+  }
+
+  if (
+    includesAny(text, [
+      "bomb",
+      "bombing",
+      "car bomb",
+      "ied",
+      "blast",
+      "detonation",
+      "grenade",
+      "explosion"
+    ])
+  ) {
+    return "bomb";
+  }
+
+  return "conflict";
+}
+
+function getSignalVisual(signal) {
+  return (
+    {
+      "nuclear-plant": {
+        label: "Explosion centrale nucleaire",
+        glyph: "☢",
+        className: "signal-nuclear-plant"
+      },
+      nuclear: {
+        label: "Explosion nucleaire",
+        glyph: "☢",
+        className: "signal-nuclear"
+      },
+      missile: {
+        label: "Frappe missile",
+        glyph: "🚀",
+        className: "signal-missile"
+      },
+      "air-raid": {
+        label: "Raid aerien",
+        glyph: "✈",
+        className: "signal-air-raid"
+      },
+      bomb: {
+        label: "Explosion / bombe",
+        glyph: "💣",
+        className: "signal-bomb"
+      },
+      conflict: {
+        label: "Conflit geopolitique",
+        glyph: "⚠",
+        className: "signal-conflict"
+      }
+    }[signal] || {
+      label: "Conflit geopolitique",
+      glyph: "⚠",
+      className: "signal-conflict"
+    }
+  );
+}
+
 function getAlertLatLng(alert) {
   if (
     alert.location &&
@@ -600,19 +731,28 @@ function getAlertLatLng(alert) {
 function createMarker(alert) {
   const latLng = getAlertLatLng(alert);
   const isUnread = !alert.read;
+  const signal = detectIncidentSignal(alert);
+  const signalVisual = getSignalVisual(signal);
+  const severity = normalizeSeverity(alert.severity);
+  const markerClasses = [
+    "threat-marker",
+    isUnread ? "is-unread" : "is-read",
+    `sev-${severity}`,
+    signalVisual.className
+  ].join(" ");
 
   const marker = L.marker(latLng, {
     icon: L.divIcon({
       className: "",
-      html: `<div class="${isUnread ? "pulse-marker" : "calm-marker"}"></div>`,
-      iconSize: [14, 14],
-      iconAnchor: [7, 7]
+      html: `<div class="${markerClasses}" title="${escapeHtml(signalVisual.label)}"><span class="threat-marker__glyph">${signalVisual.glyph}</span></div>`,
+      iconSize: [26, 26],
+      iconAnchor: [13, 13]
     })
   });
 
   marker.bindPopup(`
     <strong>${escapeHtml(alert.title)}</strong><br>
-    ${escapeHtml(alert.country?.name || "Inconnu")} | ${escapeHtml(typeLabel(alert.type))}
+    ${escapeHtml(alert.country?.name || "Inconnu")} | ${escapeHtml(typeLabel(alert.type))} | ${escapeHtml(signalVisual.label)}
   `);
 
   marker.on("click", () => {
@@ -638,12 +778,15 @@ function renderMapMarkers() {
 }
 
 function renderAlertDetails(alert) {
+  const signalVisual = getSignalVisual(detectIncidentSignal(alert));
+
   toggleFold("detailFold", true);
   refs.alertDetails.classList.remove("empty-state");
   refs.alertDetails.innerHTML = `
     <h3 class="mb-2">${escapeHtml(alert.title)}</h3>
     <div class="detail-meta mb-2">
       <span class="meta-chip">${escapeHtml(typeLabel(alert.type))}</span>
+      <span class="meta-chip">${escapeHtml(signalVisual.label)}</span>
       <span class="meta-chip severity-${escapeHtml(alert.severity)}">${escapeHtml(severityLabel(alert.severity))}</span>
       <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
       <span class="meta-chip">${escapeHtml(alert.country?.region || "Global")}</span>
@@ -688,11 +831,13 @@ function renderAlertsList() {
   refs.alertsList.innerHTML = visibleAlerts
     .map((alert) => {
       const isSelected = alert._id === state.selectedAlertId;
+      const signalVisual = getSignalVisual(detectIncidentSignal(alert));
       return `
         <article class="alert-item ${alert.read ? "" : "unread"} ${isSelected ? "border-warning" : ""}" data-alert-id="${alert._id}">
           <p class="alert-title">${escapeHtml(alert.title)}</p>
           <div class="alert-meta">
             <span class="meta-chip">${escapeHtml(typeLabel(alert.type))}</span>
+            <span class="meta-chip">${escapeHtml(signalVisual.label)}</span>
             <span class="meta-chip severity-${escapeHtml(alert.severity)}">${escapeHtml(severityLabel(alert.severity))}</span>
             <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
           </div>

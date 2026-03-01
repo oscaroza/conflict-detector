@@ -784,22 +784,62 @@ canvas {
   color: var(--red);
 }
 
-.pulse-marker {
-  width: 13px;
-  height: 13px;
+.threat-marker {
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  background: rgba(255, 51, 65, 0.94);
-  border: 1px solid rgba(255, 255, 255, 0.86);
-  box-shadow: 0 0 0 rgba(255, 51, 65, 0.6);
-  animation: pulse 1.25s infinite;
+  border: 1px solid rgba(255, 255, 255, 0.68);
+  background: radial-gradient(circle at 30% 26%, rgba(40, 52, 70, 0.92), rgba(6, 9, 14, 0.95));
+  display: grid;
+  place-items: center;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7), 0 0 12px rgba(0, 0, 0, 0.4);
 }
 
-.calm-marker {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: rgba(57, 208, 255, 0.82);
-  border: 1px solid rgba(220, 245, 255, 0.78);
+.threat-marker__glyph {
+  font-size: 12px;
+  line-height: 1;
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.55));
+}
+
+.threat-marker.is-unread {
+  animation: markerPulse 1.2s infinite;
+}
+
+.threat-marker.sev-critical {
+  border-color: rgba(255, 51, 65, 0.9);
+  box-shadow: 0 0 0 1px rgba(255, 51, 65, 0.45), 0 0 14px rgba(255, 51, 65, 0.55);
+}
+
+.threat-marker.sev-high {
+  border-color: rgba(255, 131, 82, 0.9);
+  box-shadow: 0 0 0 1px rgba(255, 131, 82, 0.4), 0 0 12px rgba(255, 131, 82, 0.45);
+}
+
+.threat-marker.sev-medium,
+.threat-marker.sev-low {
+  border-color: rgba(255, 210, 74, 0.84);
+  box-shadow: 0 0 0 1px rgba(255, 210, 74, 0.32), 0 0 10px rgba(255, 210, 74, 0.35);
+}
+
+.threat-marker.signal-bomb .threat-marker__glyph {
+  color: #ff8f48;
+}
+
+.threat-marker.signal-missile .threat-marker__glyph {
+  color: #ff6f6f;
+}
+
+.threat-marker.signal-air-raid .threat-marker__glyph {
+  color: #57d8ff;
+}
+
+.threat-marker.signal-nuclear .threat-marker__glyph,
+.threat-marker.signal-nuclear-plant .threat-marker__glyph {
+  color: #8eff52;
+}
+
+.threat-marker.signal-conflict .threat-marker__glyph {
+  color: #ffd24a;
 }
 
 .leaflet-popup-content-wrapper,
@@ -813,14 +853,17 @@ canvas {
   border-radius: 0;
 }
 
-@keyframes pulse {
+@keyframes markerPulse {
   0% {
-    box-shadow: 0 0 0 0 rgba(255, 51, 65, 0.58);
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(255, 51, 65, 0.45);
   }
   70% {
+    transform: scale(1.06);
     box-shadow: 0 0 0 12px rgba(255, 51, 65, 0);
   }
   100% {
+    transform: scale(1);
     box-shadow: 0 0 0 0 rgba(255, 51, 65, 0);
   }
 }
