@@ -3,6 +3,7 @@ const Alert = require("../models/Alert");
 const Settings = require("../models/Settings");
 const streamService = require("../services/streamService");
 const feedService = require("../services/feedService");
+const voiceService = require("../services/voiceService");
 const { getCountryProfile } = require("../utils/countryProfile");
 
 const router = express.Router();
@@ -75,7 +76,7 @@ router.get("/alerts", async (req, res, next) => {
 
     const [alerts, total] = await Promise.all([
       Alert.find(query)
-        .sort({ createdAt: -1 })
+        .sort({ occurredAt: -1, publishedAt: -1, createdAt: -1, _id: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .lean(),
@@ -216,6 +217,22 @@ router.get("/settings", async (req, res, next) => {
   }
 });
 
+router.get("/voice/status", (req, res) => {
+  res.json(voiceService.getVoiceStatus());
+});
+
+router.post("/voice/speak", async (req, res, next) => {
+  try {
+    const text = String(req.body?.text || "");
+    const audio = await voiceService.synthesize(text);
+    res.setHeader("Content-Type", audio.contentType || "audio/mpeg");
+    res.setHeader("Cache-Control", "no-store");
+    res.send(audio.buffer);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.patch("/settings", async (req, res, next) => {
   try {
     const settings = await Settings.getSingleton();
@@ -233,6 +250,10 @@ router.patch("/settings", async (req, res, next) => {
 
     if (typeof req.body.soundEnabled === "boolean") {
       settings.soundEnabled = req.body.soundEnabled;
+    }
+
+    if (typeof req.body.voiceEnabled === "boolean") {
+      settings.voiceEnabled = req.body.voiceEnabled;
     }
 
     if (typeof req.body.globalCoverage === "boolean") {
@@ -265,6 +286,7 @@ router.patch("/settings", async (req, res, next) => {
       paused: settings.paused,
       pollIntervalSeconds: settings.pollIntervalSeconds,
       soundEnabled: settings.soundEnabled,
+      voiceEnabled: settings.voiceEnabled,
       globalCoverage: settings.globalCoverage,
       alertMode: settings.alertMode
     });

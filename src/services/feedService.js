@@ -3,6 +3,7 @@ const Alert = require("../models/Alert");
 const Settings = require("../models/Settings");
 const { extractCountry } = require("../utils/countryMatcher");
 const { extractCity } = require("../utils/cityMatcher");
+const { inferOccurredAt } = require("../utils/eventTimeParser");
 const streamService = require("./streamService");
 
 const parser = new Parser({
@@ -180,6 +181,8 @@ const CONFIRM_WINDOW_HOURS = 18;
 const MAX_CONFIRM_SCAN = 140;
 const MIN_EVENT_SIMILARITY = 0.32;
 const MIN_EVENT_SIMILARITY_WITH_CASUALTY = 0.22;
+const DEFAULT_MAX_EVENT_AGE_MINUTES_INSIGHT = 180;
+const DEFAULT_MAX_EVENT_AGE_MINUTES_ACTION = 30;
 
 const TOKEN_STOP_WORDS = new Set([
   "the",
@@ -268,6 +271,48 @@ function isActionableAlert(type, severity, text) {
 
 function lower(value) {
   return (value || "").toLowerCase();
+}
+
+function resolveMaxAgeMinutes(settings) {
+  const mode = String(settings?.alertMode || "insight")
+    .trim()
+    .toLowerCase();
+
+  const fallback = mode === "action" ? DEFAULT_MAX_EVENT_AGE_MINUTES_ACTION : DEFAULT_MAX_EVENT_AGE_MINUTES_INSIGHT;
+  const envVar = mode === "action" ? process.env.MAX_EVENT_AGE_MINUTES_ACTION : process.env.MAX_EVENT_AGE_MINUTES_INSIGHT;
+  const envValue = Number(envVar);
+
+  if (Number.isFinite(envValue) && envValue >= 5 && envValue <= 24 * 60) {
+    return envValue;
+  }
+
+  return fallback;
+}
+
+function parsePublishedAt(value) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function isEventTooOld(publishedAt, maxAgeMinutes) {
+  if (!(publishedAt instanceof Date) || Number.isNaN(publishedAt.getTime())) {
+    return false;
+  }
+
+  const ageMs = Date.now() - publishedAt.getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 0) {
+    return false;
+  }
+
+  return ageMs > maxAgeMinutes * 60 * 1000;
 }
 
 function inferSourceName(item, title) {
@@ -656,6 +701,7 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
     Promise.all(GDELT_STREAMS.map((stream) => fetchGdeltItems(stream)))
   ]);
   const feedItems = [...feedItemsGroups.flat(), ...gdeltGroups.flat()];
+  const maxAgeMinutes = resolveMaxAgeMinutes(settings);
 
   const newAlerts = [];
 
@@ -698,11 +744,17 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
     }
     const severity = classifySeverity(articleText);
     const actionable = isActionableAlert(canonicalAlertType, severity, articleText);
-    const publishedAt = item.isoDate || item.pubDate ? new Date(item.isoDate || item.pubDate) : new Date();
+    const parsedPublishedAt = parsePublishedAt(item.isoDate || item.pubDate);
+    if (parsedPublishedAt && isEventTooOld(parsedPublishedAt, maxAgeMinutes)) {
+      continue;
+    }
+    const publishedAt = parsedPublishedAt || new Date();
 
     const sourceName = inferSourceName(item, title);
     const markerLat = Number.isFinite(cityInfo?.lat) ? cityInfo.lat : countryInfo.lat || 20;
     const markerLng = Number.isFinite(cityInfo?.lng) ? cityInfo.lng : countryInfo.lng || 0;
+
+    const inferredEventTime = inferOccurredAt(articleText, publishedAt);
 
     const payload = {
       title,
@@ -710,6 +762,8 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
       sourceName,
       sourceUrl,
       publishedAt,
+      occurredAt: inferredEventTime.occurredAt || null,
+      occurredAtSource: inferredEventTime.occurredAtSource || "unknown",
       type: canonicalAlertType,
       severity,
       actionable,

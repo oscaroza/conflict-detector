@@ -26,6 +26,32 @@
   </head>
   <body>
     <div class="radar-grid" aria-hidden="true"></div>
+    <div id="bootOverlay" class="boot-overlay" aria-live="polite">
+      <div class="boot-card panel-shell">
+        <div class="boot-brand">
+          <div class="brand-mark">C</div>
+          <div>
+            <p class="brand-mini mb-1">SYSTEM BOOT</p>
+            <h2 class="boot-title">CONFLICT DETECTOR</h2>
+          </div>
+        </div>
+
+        <p id="bootCurrentTask" class="boot-current-task">Initialisation...</p>
+        <div class="boot-progress-track">
+          <div id="bootProgressBar" class="boot-progress-fill"></div>
+        </div>
+        <div class="boot-progress-meta">
+          <strong id="bootProgressValue">0%</strong>
+          <span>Chargement des modules temps réel</span>
+        </div>
+
+        <div id="bootChecklist" class="boot-checklist"></div>
+
+        <button id="bootRetryBtn" class="btn btn-sm btn-outline-warning boot-retry-btn" type="button" hidden>
+          Relancer le démarrage
+        </button>
+      </div>
+    </div>
 
     <div class="app-shell">
       <header class="command-bar panel-shell">
@@ -51,6 +77,16 @@
             <span>Tensions</span>
             <strong id="criticalAlertsCount">0</strong>
           </article>
+          <article id="defconCard" class="headline-card defcon" data-defcon="5">
+            <span>DEFCON</span>
+            <strong id="defconValue">DEFCON 5</strong>
+            <small id="defconLabel" class="defcon-label">Normal</small>
+          </article>
+          <article id="pizzaCard" class="headline-card pizza" data-level="calm">
+            <span>Pentagon Pizza</span>
+            <strong id="pizzaValue">12%</strong>
+            <small id="pizzaLabel" class="defcon-label">Calme (proxy OSINT)</small>
+          </article>
         </div>
 
         <div class="action-block">
@@ -70,6 +106,7 @@
             <option value="900">15 min</option>
           </select>
           <button id="toggleSoundBtn" class="btn btn-sm btn-outline-light tone-btn sound-toggle-btn">Son ON</button>
+          <button id="toggleVoiceBtn" class="btn btn-sm btn-outline-light tone-btn sound-toggle-btn" title="Voix locale navigateur (fallback)">Voix SYS ON</button>
           <button id="toggleRightPanelBtn" class="btn btn-sm btn-outline-light tone-btn panel-toggle-top">Fermer panel</button>
           <button id="refreshNowBtn" class="btn btn-sm btn-warning pulse-btn">Analyser</button>
         </div>
@@ -84,7 +121,7 @@
 
       <main id="workspaceGrid" class="workspace-grid">
         <aside class="left-column">
-          <section class="panel-shell left-panel">
+          <section id="leftPanel" class="panel-shell left-panel">
             <div class="panel-head">
               <h2>PULSE FEED</h2>
               <button
@@ -98,57 +135,69 @@
               </button>
             </div>
 
-            <div class="quick-row">
-              <button class="quick-filter" data-quick-severity="">ALL</button>
-              <button class="quick-filter" data-quick-severity="critical">CRITICAL</button>
-              <button class="quick-filter" data-quick-severity="high">HIGH</button>
-              <button class="quick-filter" data-quick-severity="medium">MEDIUM</button>
-            </div>
+            <button
+              id="toggleFiltersSidebarBtn"
+              class="filters-side-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-label="Masquer ou afficher les filtres"
+            >
+              Masquer filtres
+            </button>
 
-            <div class="search-wrap">
-              <input id="searchInput" class="form-control form-control-sm" placeholder="Search events..." />
-            </div>
+            <div id="leftFiltersShell" class="filters-shell">
+              <div class="quick-row">
+                <button class="quick-filter" data-quick-severity="">ALL</button>
+                <button class="quick-filter" data-quick-severity="critical">CRITICAL</button>
+                <button class="quick-filter" data-quick-severity="high">HIGH</button>
+                <button class="quick-filter" data-quick-severity="medium">MEDIUM</button>
+              </div>
 
-            <div id="leftFiltersFold" class="fold-content open">
-              <div class="filters-grid">
-                <div>
-                  <label class="tiny-label" for="typeFilter">Type</label>
-                  <select id="typeFilter" class="form-select form-select-sm">
-                    <option value="">Tous</option>
-                    <option value="geopolitique">Géopolitique</option>
-                  </select>
+              <div class="search-wrap">
+                <input id="searchInput" class="form-control form-control-sm" placeholder="Search events..." />
+              </div>
+
+              <div id="leftFiltersFold" class="fold-content open">
+                <div class="filters-grid">
+                  <div>
+                    <label class="tiny-label" for="typeFilter">Type</label>
+                    <select id="typeFilter" class="form-select form-select-sm">
+                      <option value="">Tous</option>
+                      <option value="geopolitique">Géopolitique</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="tiny-label" for="severityFilter">Gravité</label>
+                    <select id="severityFilter" class="form-select form-select-sm">
+                      <option value="">Toutes</option>
+                      <option value="low">Faible</option>
+                      <option value="medium">Moyenne</option>
+                      <option value="high">Haute</option>
+                      <option value="critical">Critique</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="tiny-label" for="countryFilter">Pays</label>
+                    <select id="countryFilter" class="form-select form-select-sm">
+                      <option value="">Tous</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="tiny-label" for="regionFilter">Région</label>
+                    <select id="regionFilter" class="form-select form-select-sm">
+                      <option value="">Toutes</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="tiny-label" for="confirmedFilter">Validation</label>
+                    <select id="confirmedFilter" class="form-select form-select-sm">
+                      <option value="">Toutes</option>
+                      <option value="true">Confirmées (2+)</option>
+                      <option value="false">Non confirmées</option>
+                    </select>
+                  </div>
+                  <button id="resetFiltersBtn" class="btn btn-sm btn-outline-light w-100">Reset filters</button>
                 </div>
-                <div>
-                  <label class="tiny-label" for="severityFilter">Gravité</label>
-                  <select id="severityFilter" class="form-select form-select-sm">
-                    <option value="">Toutes</option>
-                    <option value="low">Faible</option>
-                    <option value="medium">Moyenne</option>
-                    <option value="high">Haute</option>
-                    <option value="critical">Critique</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="tiny-label" for="countryFilter">Pays</label>
-                  <select id="countryFilter" class="form-select form-select-sm">
-                    <option value="">Tous</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="tiny-label" for="regionFilter">Région</label>
-                  <select id="regionFilter" class="form-select form-select-sm">
-                    <option value="">Toutes</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="tiny-label" for="confirmedFilter">Validation</label>
-                  <select id="confirmedFilter" class="form-select form-select-sm">
-                    <option value="">Toutes</option>
-                    <option value="true">Confirmées (2+)</option>
-                    <option value="false">Non confirmées</option>
-                  </select>
-                </div>
-                <button id="resetFiltersBtn" class="btn btn-sm btn-outline-light w-100">Reset filters</button>
               </div>
             </div>
 

@@ -6,6 +6,7 @@ const SettingsSchema = new mongoose.Schema(
     paused: { type: Boolean, default: false },
     pollIntervalSeconds: { type: Number, default: 300, min: 30, max: 3600 },
     soundEnabled: { type: Boolean, default: true },
+    voiceEnabled: { type: Boolean, default: true },
     globalCoverage: { type: Boolean, default: true },
     alertMode: { type: String, enum: ["insight", "action"], default: "insight" },
     keywordFilters: { type: [String], default: [] },

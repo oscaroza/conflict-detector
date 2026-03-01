@@ -100,9 +100,34 @@ cp .env.example .env
 PORT=3000
 MONGODB_URI=mongodb://127.0.0.1:27017/conflict_detector
 POLL_INTERVAL_SECONDS=300
+TTS_PROVIDER=none
+ELEVENLABS_API_KEY=
+ELEVENLABS_VOICE_ID=
+ELEVENLABS_MODEL_ID=eleven_multilingual_v2
 ```
 
 Si Atlas: remplacez `MONGODB_URI` par votre URI Atlas.
+
+### Option voix cloud (recommande pour un meilleur accent)
+
+Par defaut, le site utilise la voix du navigateur (locale).  
+Pour une voix plus naturelle et stable, activez un provider cloud:
+
+1. Creez un compte ElevenLabs et generez une API key.
+2. Choisissez une voix et copiez son `voice_id`.
+3. Dans `.env`:
+
+```env
+TTS_PROVIDER=elevenlabs
+ELEVENLABS_API_KEY=collez_votre_cle
+ELEVENLABS_VOICE_ID=collez_votre_voice_id
+ELEVENLABS_MODEL_ID=eleven_multilingual_v2
+```
+
+4. Redemarrez le serveur (`npm start` ou `npm run dev`).
+5. Dans l'UI, le bouton affichera `Voix IA ON/OFF` quand la voix cloud est active.
+
+Si la voix cloud est indisponible, le site bascule automatiquement sur la voix locale.
 
 ### Etape 4 - Lancer l'application
 
@@ -215,6 +240,8 @@ Seules les nouvelles alertes correspondant a ces preferences seront ingerees.
 - `DELETE /api/alerts/:id`
 - `GET /api/settings`
 - `PATCH /api/settings`
+- `GET /api/voice/status`
+- `POST /api/voice/speak`
 - `POST /api/detect/now`
 - `GET /api/stats`
 - `GET /api/stream` (SSE)

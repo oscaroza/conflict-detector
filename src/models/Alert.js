@@ -7,6 +7,8 @@ const AlertSchema = new mongoose.Schema(
     sourceName: { type: String, required: true },
     sourceUrl: { type: String, required: true, unique: true },
     publishedAt: { type: Date },
+    occurredAt: { type: Date, default: null },
+    occurredAtSource: { type: String, default: "unknown" },
     type: {
       type: String,
       enum: [
@@ -62,8 +64,11 @@ const AlertSchema = new mongoose.Schema(
 
 AlertSchema.index({ location: "2dsphere" });
 AlertSchema.index({ createdAt: -1 });
+AlertSchema.index({ publishedAt: -1, createdAt: -1 });
+AlertSchema.index({ occurredAt: -1, publishedAt: -1, createdAt: -1 });
 AlertSchema.index({ type: 1, severity: 1 });
 AlertSchema.index({ actionable: 1, createdAt: -1 });
+AlertSchema.index({ type: 1, publishedAt: -1, createdAt: -1 });
 AlertSchema.index({ "country.name": 1 });
 AlertSchema.index({ "city.name": 1 });
 AlertSchema.index({ confirmed: 1, createdAt: -1 });

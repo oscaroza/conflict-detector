@@ -1,14 +1,22 @@
 const state = {
   alerts: [],
+  tickerAlerts: [],
   settings: null,
   map: null,
   markersLayer: null,
   countryLayer: null,
   countryCentroids: new Map(),
+  countryCentroidsByKey: new Map(),
+  countryCentroidsByCode: new Map(),
   countryStatusLevels: new Map(),
   countryProfileCache: new Map(),
   selectedCountryKey: null,
   selectedAlertId: null,
+  voice: {
+    provider: "none",
+    remoteAvailable: false,
+    fallback: "system"
+  },
   charts: {
     type: null,
     country: null,
@@ -20,10 +28,19 @@ const state = {
 const refs = {
   workspaceGrid: document.getElementById("workspaceGrid"),
   intelOverlay: document.getElementById("intelOverlay"),
+  leftPanel: document.getElementById("leftPanel"),
+  leftFiltersShell: document.getElementById("leftFiltersShell"),
+  toggleFiltersSidebarBtn: document.getElementById("toggleFiltersSidebarBtn"),
   alertsList: document.getElementById("alertsList"),
   alertDetails: document.getElementById("alertDetails"),
   totalAlertsCount: document.getElementById("totalAlertsCount"),
   criticalAlertsCount: document.getElementById("criticalAlertsCount"),
+  defconCard: document.getElementById("defconCard"),
+  defconValue: document.getElementById("defconValue"),
+  defconLabel: document.getElementById("defconLabel"),
+  pizzaCard: document.getElementById("pizzaCard"),
+  pizzaValue: document.getElementById("pizzaValue"),
+  pizzaLabel: document.getElementById("pizzaLabel"),
   detectionStatus: document.getElementById("detectionStatus"),
   togglePauseBtn: document.getElementById("togglePauseBtn"),
   toggleRightPanelBtn: document.getElementById("toggleRightPanelBtn"),
@@ -31,6 +48,7 @@ const refs = {
   intervalSelect: document.getElementById("intervalSelect"),
   toggleCoverageBtn: document.getElementById("toggleCoverageBtn"),
   toggleSoundBtn: document.getElementById("toggleSoundBtn"),
+  toggleVoiceBtn: document.getElementById("toggleVoiceBtn"),
   refreshNowBtn: document.getElementById("refreshNowBtn"),
   searchInput: document.getElementById("searchInput"),
   typeFilter: document.getElementById("typeFilter"),
@@ -48,6 +66,12 @@ const refs = {
   keywordsList: document.getElementById("keywordsList"),
   alertFlash: document.getElementById("alertFlash"),
   toastHost: document.getElementById("toastHost"),
+  bootOverlay: document.getElementById("bootOverlay"),
+  bootCurrentTask: document.getElementById("bootCurrentTask"),
+  bootProgressBar: document.getElementById("bootProgressBar"),
+  bootProgressValue: document.getElementById("bootProgressValue"),
+  bootChecklist: document.getElementById("bootChecklist"),
+  bootRetryBtn: document.getElementById("bootRetryBtn"),
   typeChart: document.getElementById("typeChart"),
   countryChart: document.getElementById("countryChart"),
   tensionChart: document.getElementById("tensionChart")
@@ -61,10 +85,36 @@ let uiRefreshTimer = null;
 let uiRefreshInFlight = false;
 let uiRefreshTick = 0;
 let layoutResizeTimer = null;
+let bootRetryBound = false;
+let activeVoiceAudio = null;
+let activeVoiceBlobUrl = null;
+let lastVoiceFallbackNoticeAt = 0;
+
+const bootStageBlueprint = [
+  { id: "ui", label: "Interface utilisateur" },
+  { id: "map", label: "Moteur cartographique" },
+  { id: "countries", label: "Contours des pays" },
+  { id: "filters", label: "Filtres pays/régions" },
+  { id: "settings", label: "Paramètres serveur" },
+  { id: "voice", label: "Moteur vocal cloud" },
+  { id: "alerts", label: "Récupération des alertes" },
+  { id: "stats", label: "Widgets statistiques" },
+  { id: "stream", label: "Flux live temps réel" },
+  { id: "final", label: "Synchronisation finale" }
+];
+
+const bootState = {
+  stages: bootStageBlueprint.map((stage) => ({ ...stage, status: "pending" }))
+};
 
 function isSoundEnabled() {
   // Backward compatible for old settings docs missing this field.
   return state.settings?.soundEnabled !== false;
+}
+
+function isVoiceEnabled() {
+  // Backward compatible for old settings docs missing this field.
+  return state.settings?.voiceEnabled !== false;
 }
 
 function isGlobalCoverageEnabled() {
@@ -77,6 +127,17 @@ function updateSoundToggleUI() {
   const enabled = isSoundEnabled();
   refs.toggleSoundBtn.textContent = enabled ? "Son ON" : "Son OFF";
   refs.toggleSoundBtn.classList.toggle("is-off", !enabled);
+}
+
+function updateVoiceToggleUI() {
+  if (!refs.toggleVoiceBtn) return;
+  const enabled = isVoiceEnabled();
+  const engine = state.voice?.remoteAvailable ? "IA" : "SYS";
+  refs.toggleVoiceBtn.textContent = enabled ? `Voix ${engine} ON` : `Voix ${engine} OFF`;
+  refs.toggleVoiceBtn.title = state.voice?.remoteAvailable
+    ? `Voix cloud active (${state.voice.provider || "provider"})`
+    : "Voix locale navigateur (fallback)";
+  refs.toggleVoiceBtn.classList.toggle("is-off", !enabled);
 }
 
 function updateCoverageToggleUI() {
@@ -109,6 +170,124 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
+function bootStatusLabel(status) {
+  return (
+    {
+      pending: "En attente",
+      loading: "En cours",
+      done: "OK",
+      failed: "Erreur"
+    }[status] || "En attente"
+  );
+}
+
+function bootCompletionPercent() {
+  if (!bootState.stages.length) return 0;
+  const completed = bootState.stages.filter((stage) => stage.status === "done" || stage.status === "failed").length;
+  return Math.round((completed / bootState.stages.length) * 100);
+}
+
+function renderBootChecklist() {
+  if (!refs.bootChecklist) return;
+  refs.bootChecklist.innerHTML = bootState.stages
+    .map(
+      (stage) => `
+      <div class="boot-step ${escapeHtml(stage.status)}" data-boot-stage="${escapeHtml(stage.id)}">
+        <span class="boot-step-icon" aria-hidden="true"></span>
+        <span class="boot-step-label">${escapeHtml(stage.label)}</span>
+        <span class="boot-step-status">${escapeHtml(bootStatusLabel(stage.status))}</span>
+      </div>
+    `
+    )
+    .join("");
+}
+
+function setBootProgress(currentTask) {
+  const percent = bootCompletionPercent();
+  if (refs.bootProgressBar) {
+    refs.bootProgressBar.style.width = `${percent}%`;
+  }
+  if (refs.bootProgressValue) {
+    refs.bootProgressValue.textContent = `${percent}%`;
+  }
+  if (refs.bootCurrentTask && currentTask) {
+    refs.bootCurrentTask.textContent = currentTask;
+  }
+  renderBootChecklist();
+}
+
+function beginBootOverlay() {
+  if (!refs.bootOverlay) return;
+  refs.bootOverlay.classList.remove("hidden");
+  bootState.stages = bootStageBlueprint.map((stage) => ({ ...stage, status: "pending" }));
+  setBootProgress("Démarrage du radar...");
+
+  if (refs.bootRetryBtn && !bootRetryBound) {
+    refs.bootRetryBtn.addEventListener("click", () => {
+      window.location.reload();
+    });
+    bootRetryBound = true;
+  }
+
+  if (refs.bootRetryBtn) {
+    refs.bootRetryBtn.hidden = true;
+  }
+}
+
+function completeBootOverlay() {
+  setBootProgress("Système opérationnel");
+  if (refs.bootProgressBar) {
+    refs.bootProgressBar.style.width = "100%";
+  }
+  if (refs.bootProgressValue) {
+    refs.bootProgressValue.textContent = "100%";
+  }
+
+  if (refs.bootOverlay) {
+    setTimeout(() => {
+      refs.bootOverlay.classList.add("hidden");
+    }, 360);
+  }
+}
+
+function failBootOverlay(error) {
+  if (refs.bootCurrentTask) {
+    refs.bootCurrentTask.textContent = `Échec du démarrage: ${error?.message || "erreur inconnue"}`;
+  }
+  if (refs.bootRetryBtn) {
+    refs.bootRetryBtn.hidden = false;
+  }
+  renderBootChecklist();
+}
+
+async function runBootStage(id, taskLabel, executor, options = {}) {
+  const { required = true } = options;
+  const stage = bootState.stages.find((item) => item.id === id);
+  if (stage) {
+    stage.status = "loading";
+    setBootProgress(taskLabel);
+  }
+
+  try {
+    const result = await executor();
+    if (stage) {
+      stage.status = "done";
+      setBootProgress(taskLabel);
+    }
+    return result;
+  } catch (error) {
+    if (stage) {
+      stage.status = "failed";
+      setBootProgress(taskLabel);
+    }
+
+    if (required) {
+      throw error;
+    }
+    return null;
+  }
+}
+
 function normalizeText(value) {
   return String(value || "")
     .toLowerCase()
@@ -136,10 +315,10 @@ async function api(path, options = {}) {
 }
 
 function formatDate(dateString) {
-  if (!dateString) {
+  const date = new Date(dateString || "");
+  if (!Number.isFinite(date.getTime())) {
     return "Date inconnue";
   }
-  const date = new Date(dateString);
   return date.toLocaleString("fr-FR", {
     year: "numeric",
     month: "2-digit",
@@ -150,8 +329,8 @@ function formatDate(dateString) {
 }
 
 function formatShortDate(dateString) {
-  if (!dateString) return "";
-  const date = new Date(dateString);
+  const date = new Date(dateString || "");
+  if (!Number.isFinite(date.getTime())) return "";
   return date.toLocaleString("fr-FR", {
     day: "2-digit",
     month: "2-digit",
@@ -161,6 +340,11 @@ function formatShortDate(dateString) {
 }
 
 function getAlertEventTimestamp(alert) {
+  const occurredTs = new Date(alert?.occurredAt || 0).getTime();
+  if (Number.isFinite(occurredTs) && occurredTs > 0) {
+    return occurredTs;
+  }
+
   const publishedTs = new Date(alert?.publishedAt || 0).getTime();
   if (Number.isFinite(publishedTs) && publishedTs > 0) {
     return publishedTs;
@@ -443,6 +627,34 @@ function buildAlertVoiceMessage(alert) {
   return `Nouvelle alerte ${severityVoiceLabel} concernant ${country}.`;
 }
 
+function formatAlertEventTime(alert, options = {}) {
+  const { allowPublicationFallback = false } = options;
+  const occurred = formatShortDate(alert?.occurredAt);
+  if (occurred) {
+    return occurred;
+  }
+
+  if (allowPublicationFallback) {
+    return formatShortDate(alert?.publishedAt || alert?.createdAt) || "Heure inconnue";
+  }
+
+  return "Acte inconnu";
+}
+
+function formatAlertEventDateLong(alert, options = {}) {
+  const { allowPublicationFallback = false } = options;
+  const occurred = formatDate(alert?.occurredAt);
+  if (occurred !== "Date inconnue") {
+    return occurred;
+  }
+
+  if (allowPublicationFallback) {
+    return formatDate(alert?.publishedAt || alert?.createdAt);
+  }
+
+  return "Heure acte inconnue";
+}
+
 function initSpeechVoices() {
   if (speechVoicesInitialized || !("speechSynthesis" in window)) return;
   speechVoicesInitialized = true;
@@ -461,18 +673,45 @@ function initSpeechVoices() {
   }
 }
 
-function pickFrenchVoice() {
+function pickFallbackVoice() {
   if (!("speechSynthesis" in window)) return null;
   const voices = window.speechSynthesis.getVoices() || [];
 
   return (
+    voices.find((voice) => voice.lang && voice.lang.toLowerCase().startsWith("en")) ||
+    voices.find((voice) => voice.lang && voice.lang.toLowerCase().includes("en")) ||
     voices.find((voice) => voice.lang && voice.lang.toLowerCase().startsWith("fr")) ||
     voices.find((voice) => voice.lang && voice.lang.toLowerCase().includes("fr")) ||
     null
   );
 }
 
-function speakAlertMessage(alert) {
+function stopVoicePlayback() {
+  if ("speechSynthesis" in window) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch (error) {
+      console.warn("[speech] cancel impossible", error);
+    }
+  }
+
+  if (activeVoiceAudio) {
+    try {
+      activeVoiceAudio.pause();
+      activeVoiceAudio.currentTime = 0;
+    } catch (error) {
+      console.warn("[voice] pause audio impossible", error);
+    }
+    activeVoiceAudio = null;
+  }
+
+  if (activeVoiceBlobUrl) {
+    URL.revokeObjectURL(activeVoiceBlobUrl);
+    activeVoiceBlobUrl = null;
+  }
+}
+
+function speakAlertMessageLocal(alert) {
   if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") {
     return;
   }
@@ -482,9 +721,10 @@ function speakAlertMessage(alert) {
   utterance.lang = "fr-FR";
   utterance.volume = 1;
 
-  const voice = pickFrenchVoice();
+  const voice = pickFallbackVoice();
   if (voice) {
     utterance.voice = voice;
+    utterance.lang = voice.lang || utterance.lang;
   }
 
   const severity = normalizeSeverity(alert?.severity);
@@ -509,11 +749,90 @@ function speakAlertMessage(alert) {
   }, 220);
 }
 
+async function speakAlertMessageRemote(alert) {
+  if (!state.voice?.remoteAvailable) {
+    return false;
+  }
+
+  const text = buildAlertVoiceMessage(alert);
+  const response = await fetch("/api/voice/speak", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ text })
+  });
+
+  if (!response.ok) {
+    let details = "";
+    try {
+      const payload = await response.json();
+      details = payload?.error || "";
+    } catch (error) {
+      details = "";
+    }
+    throw new Error(details || `Erreur TTS HTTP ${response.status}`);
+  }
+
+  const audioBlob = await response.blob();
+  if (!audioBlob?.size) {
+    throw new Error("Audio TTS vide");
+  }
+
+  stopVoicePlayback();
+
+  const audio = new Audio();
+  const objectUrl = URL.createObjectURL(audioBlob);
+  audio.src = objectUrl;
+  audio.volume = 1;
+  activeVoiceAudio = audio;
+  activeVoiceBlobUrl = objectUrl;
+
+  const release = () => {
+    if (activeVoiceAudio === audio) {
+      activeVoiceAudio = null;
+    }
+    if (activeVoiceBlobUrl === objectUrl) {
+      URL.revokeObjectURL(objectUrl);
+      activeVoiceBlobUrl = null;
+    }
+  };
+
+  audio.addEventListener("ended", release, { once: true });
+  audio.addEventListener("error", release, { once: true });
+
+  await audio.play();
+  return true;
+}
+
+async function speakAlertMessage(alert) {
+  if (!isVoiceEnabled()) return;
+
+  if (state.voice?.remoteAvailable) {
+    try {
+      const playedRemote = await speakAlertMessageRemote(alert);
+      if (playedRemote) {
+        return;
+      }
+    } catch (error) {
+      console.warn("[voice] fallback local:", error.message);
+      const now = Date.now();
+      if (now - lastVoiceFallbackNoticeAt > 90000) {
+        showToast("Voix cloud indisponible", "Retour temporaire sur la voix locale.", "medium", 3200);
+        lastVoiceFallbackNoticeAt = now;
+      }
+    }
+  }
+
+  speakAlertMessageLocal(alert);
+}
+
 function triggerAlertFlash(alert) {
   if (!refs.alertFlash) return;
 
   const severity = normalizeSeverity(alert?.severity);
   const theme = getSeverityTheme(severity);
+  const eventTime = formatAlertEventTime(alert);
 
   refs.alertFlash.className = `alert-flash sev-${severity} show`;
   refs.alertFlash.innerHTML = `
@@ -522,7 +841,7 @@ function triggerAlertFlash(alert) {
       <p class="headline">${escapeHtml(alert?.title || "Nouvelle alerte détectée")}</p>
       <p class="meta">${escapeHtml(alert?.country?.name || "Zone inconnue")} | ${escapeHtml(
     severityLabel(severity)
-  )}</p>
+  )} | Acte: ${escapeHtml(eventTime)}</p>
     </div>
   `;
 
@@ -623,6 +942,25 @@ function bindColumnToggles() {
   }
 
   updateColumnToggleButtons();
+}
+
+function updateFiltersSidebarToggleButton() {
+  if (!refs.toggleFiltersSidebarBtn || !refs.leftPanel) return;
+  const collapsed = refs.leftPanel.classList.contains("filters-collapsed");
+  refs.toggleFiltersSidebarBtn.textContent = collapsed ? "Afficher filtres" : "Masquer filtres";
+  refs.toggleFiltersSidebarBtn.setAttribute("aria-expanded", String(!collapsed));
+}
+
+function bindFiltersSidebarToggle() {
+  if (!refs.leftPanel || !refs.toggleFiltersSidebarBtn) return;
+
+  refs.toggleFiltersSidebarBtn.addEventListener("click", () => {
+    refs.leftPanel.classList.toggle("filters-collapsed");
+    updateFiltersSidebarToggleButton();
+    refreshLayout();
+  });
+
+  updateFiltersSidebarToggleButton();
 }
 
 function getCurrentFilters() {
@@ -798,20 +1136,72 @@ function getSignalVisual(signal) {
 }
 
 function getAlertLatLng(alert) {
-  if (
-    alert.location &&
-    alert.location.coordinates &&
-    Number.isFinite(alert.location.coordinates[0]) &&
-    Number.isFinite(alert.location.coordinates[1])
-  ) {
-    return [alert.location.coordinates[1], alert.location.coordinates[0]];
+  const cityLat = Number(alert?.city?.lat);
+  const cityLng = Number(alert?.city?.lng);
+  if (Number.isFinite(cityLat) && Number.isFinite(cityLng)) {
+    return [cityLat, cityLng];
   }
 
-  if (alert.country?.name && state.countryCentroids.has(alert.country.name)) {
-    return state.countryCentroids.get(alert.country.name);
+  const hasLocationCoords =
+    alert?.location &&
+    alert.location.coordinates &&
+    Number.isFinite(alert.location.coordinates[0]) &&
+    Number.isFinite(alert.location.coordinates[1]);
+
+  let locationLat = null;
+  let locationLng = null;
+
+  if (hasLocationCoords) {
+    locationLat = Number(alert.location.coordinates[1]);
+    locationLng = Number(alert.location.coordinates[0]);
+    if (!isFallbackMarkerPoint(locationLat, locationLng)) {
+      return [locationLat, locationLng];
+    }
+  }
+
+  const countryCentroid = getCountryCentroid(alert?.country?.name, alert?.country?.code);
+  if (countryCentroid) {
+    return countryCentroid;
+  }
+
+  if (Number.isFinite(locationLat) && Number.isFinite(locationLng)) {
+    return [locationLat, locationLng];
   }
 
   return [20, 0];
+}
+
+function normalizeCountryCode(value) {
+  const code = String(value || "")
+    .toUpperCase()
+    .trim();
+  if (!code || code === "XX" || code === "-99" || code === "--") {
+    return "";
+  }
+  return code;
+}
+
+function isFallbackMarkerPoint(lat, lng) {
+  return Math.abs(Number(lat) - 20) < 0.0001 && Math.abs(Number(lng)) < 0.0001;
+}
+
+function getCountryCentroid(countryName, countryCode) {
+  const normalizedCode = normalizeCountryCode(countryCode);
+  if (normalizedCode && state.countryCentroidsByCode.has(normalizedCode)) {
+    return state.countryCentroidsByCode.get(normalizedCode);
+  }
+
+  const exactName = String(countryName || "").trim();
+  if (exactName && state.countryCentroids.has(exactName)) {
+    return state.countryCentroids.get(exactName);
+  }
+
+  const normalizedKey = normalizeCountryAlias(normalizeCountryKey(exactName));
+  if (normalizedKey && state.countryCentroidsByKey.has(normalizedKey)) {
+    return state.countryCentroidsByKey.get(normalizedKey);
+  }
+
+  return null;
 }
 
 function getMarkerLimitForZoom(zoom) {
@@ -955,22 +1345,29 @@ function renderAlertDetails(alert) {
     <p class="mb-2"><strong>Ville:</strong> ${escapeHtml(alert.city?.name || "Non précisée")}</p>
     <p class="mb-2"><strong>Validation:</strong> ${escapeHtml(confirmationLabel(alert))} | <strong>Confiance:</strong> ${confidence}% | <strong>Sources croisées:</strong> ${sourceCount}</p>
     <p class="mb-2"><strong>Sources cluster:</strong> ${escapeHtml(sourcesList.join(", "))}</p>
-    <p class="mb-2"><strong>Horodatage:</strong> ${escapeHtml(formatDate(alert.publishedAt || alert.createdAt))}</p>
+    <p class="mb-1"><strong>Heure de l'acte:</strong> ${escapeHtml(formatAlertEventDateLong(alert))}</p>
+    <p class="mb-2"><strong>Heure publication:</strong> ${escapeHtml(formatDate(alert.publishedAt || alert.createdAt))}</p>
     <a href="${escapeHtml(alert.sourceUrl)}" class="btn btn-sm btn-outline-warning" target="_blank" rel="noopener noreferrer">
       Ouvrir l'article officiel
     </a>
   `;
 }
 
+function getTickerSourceAlerts() {
+  const dedicated = sortAlertsByEventTimeDesc(
+    (state.tickerAlerts || []).filter((alert) => canonicalType(alert?.type) === "geopolitique")
+  );
+  if (dedicated.length > 0) {
+    return dedicated;
+  }
+
+  return sortAlertsByEventTimeDesc(
+    (state.alerts || []).filter((alert) => canonicalType(alert?.type) === "geopolitique")
+  );
+}
+
 function renderTicker() {
-  const source = state.alerts
-    .filter((alert) => canonicalType(alert?.type) === "geopolitique")
-    .sort((a, b) => {
-      const aTime = new Date(a?.publishedAt || a?.createdAt || 0).getTime();
-      const bTime = new Date(b?.publishedAt || b?.createdAt || 0).getTime();
-      return bTime - aTime;
-    })
-    .slice(0, 12);
+  const source = getTickerSourceAlerts().slice(0, 12);
 
   if (source.length === 0) {
     refs.latestTickerContent.classList.add("no-scroll");
@@ -984,7 +1381,7 @@ function renderTicker() {
       (alert) =>
         `<span class="ticker-item"><span class="dot"></span><span class="ticker-title">${escapeHtml(
           alert.title
-        )}</span><span class="ticker-time">${escapeHtml(formatShortDate(alert.publishedAt || alert.createdAt))}</span></span>`
+        )}</span><span class="ticker-time">${escapeHtml(formatAlertEventTime(alert))}</span></span>`
     )
     .join("");
 
@@ -1020,9 +1417,9 @@ function renderAlertsList() {
             ${alert.city?.name ? `<span class="meta-chip">${escapeHtml(alert.city.name)}</span>` : ""}
             <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
           </div>
-          <p class="small text-secondary mb-2">${escapeHtml(formatDate(alert.publishedAt || alert.createdAt))} | ${escapeHtml(
-        alert.sourceName
-      )} | ${sourceCount} source(s)</p>
+          <p class="small text-secondary mb-2">Acte: ${escapeHtml(formatAlertEventDateLong(alert))} | Pub: ${escapeHtml(
+        formatDate(alert.publishedAt || alert.createdAt)
+      )} | ${escapeHtml(alert.sourceName)} | ${sourceCount} source(s)</p>
           <div class="alert-actions">
             <button class="btn btn-outline-danger" data-action="delete" data-id="${alert._id}">Supprimer</button>
           </div>
@@ -1140,7 +1537,11 @@ function renderTensionChart() {
   };
 
   state.alerts.forEach((alert) => {
-    const key = new Date(alert.publishedAt || alert.createdAt).toISOString().slice(0, 10);
+    const eventDate = new Date(alert?.occurredAt || alert?.publishedAt || alert?.createdAt || 0);
+    if (!Number.isFinite(eventDate.getTime())) {
+      return;
+    }
+    const key = eventDate.toISOString().slice(0, 10);
     if (counts.has(key)) {
       counts.set(key, counts.get(key) + (severityWeight[alert.severity] || 1));
     }
@@ -1273,6 +1674,28 @@ function getFeatureCountryName(feature) {
   return props.ADMIN || props.NAME || props.name || props.country || props.SOVEREIGNT || props.BRK_NAME || "Inconnu";
 }
 
+function getFeatureCountryCode(feature) {
+  const props = feature?.properties || {};
+  const raw =
+    props.ISO_A2 ||
+    props.ISO2 ||
+    props.iso_a2 ||
+    props.ISO_A2_EH ||
+    props.ADM0_A3_US ||
+    props.ADM0_A3 ||
+    props.ISO_A3 ||
+    props.iso_a3 ||
+    props.id;
+
+  const normalized = normalizeCountryCode(raw);
+  if (!normalized) {
+    return "";
+  }
+
+  // Keep only alpha-2 country codes for direct matching with alert.country.code.
+  return normalized.length === 2 ? normalized : "";
+}
+
 function normalizeCountryKey(value) {
   return normalizeText(value).replace(/[^a-z0-9]+/g, " ").trim();
 }
@@ -1288,7 +1711,14 @@ function normalizeCountryAlias(key) {
     "iran islamic republic of": "iran",
     "syrian arab republic": "syria",
     "state of palestine": "palestine",
-    "palestinian territories": "palestine"
+    "palestinian territories": "palestine",
+    "united arab emirates": "united arab emirates",
+    "turkiye": "turkey",
+    "czechia": "czech republic",
+    "dr congo": "democratic republic of the congo",
+    "democratic republic of congo": "democratic republic of the congo",
+    "congo kinshasa": "democratic republic of the congo",
+    "republic of congo": "republic of the congo"
   };
 
   return aliases[key] || key;
@@ -1347,6 +1777,135 @@ function updateCountryHeadlineCounters() {
 
   refs.totalAlertsCount.textContent = String(activeCountries);
   refs.criticalAlertsCount.textContent = String(tensionCountries);
+
+  updateDefconIndicator(getVisibleAlerts(), activeCountries, tensionCountries);
+  updatePentagonPizzaIndicator();
+}
+
+function computeDefconLevel(alerts, activeCountries, tensionCountries) {
+  const now = Date.now();
+  const recentWindowMs = 6 * 60 * 60 * 1000;
+
+  let criticalAlerts = 0;
+  let highAlerts = 0;
+  let recentMajorAlerts = 0;
+
+  (alerts || []).forEach((alert) => {
+    const severity = normalizeSeverity(alert?.severity);
+    const isMajor = severity === "critical" || severity === "high";
+
+    if (severity === "critical") {
+      criticalAlerts += 1;
+    } else if (severity === "high") {
+      highAlerts += 1;
+    }
+
+    if (isMajor) {
+      const ts = getAlertEventTimestamp(alert);
+      if (ts > 0 && now - ts <= recentWindowMs) {
+        recentMajorAlerts += 1;
+      }
+    }
+  });
+
+  const severeAlerts = criticalAlerts + highAlerts;
+
+  if (activeCountries >= 12 || criticalAlerts >= 28 || recentMajorAlerts >= 18) {
+    return { level: 1, label: "Crise maximale" };
+  }
+
+  if (activeCountries >= 8 || criticalAlerts >= 16 || recentMajorAlerts >= 10) {
+    return { level: 2, label: "Alerte extreme" };
+  }
+
+  if (activeCountries >= 4 || criticalAlerts >= 8 || severeAlerts >= 15 || recentMajorAlerts >= 6) {
+    return { level: 3, label: "Tensions elevees" };
+  }
+
+  if (activeCountries >= 1 || tensionCountries >= 3 || severeAlerts >= 4) {
+    return { level: 4, label: "Surveillance renforcee" };
+  }
+
+  return { level: 5, label: "Normal" };
+}
+
+function updateDefconIndicator(alerts, activeCountries, tensionCountries) {
+  if (!refs.defconCard || !refs.defconValue || !refs.defconLabel) return;
+
+  const { level, label } = computeDefconLevel(alerts, activeCountries, tensionCountries);
+  refs.defconCard.dataset.defcon = String(level);
+  refs.defconValue.textContent = `DEFCON ${level}`;
+  refs.defconLabel.textContent = label;
+}
+
+function getPentagonPizzaAlertPool() {
+  const pool = (state.tickerAlerts?.length ? state.tickerAlerts : state.alerts) || [];
+  return pool.filter((alert) => canonicalType(alert?.type) === "geopolitique");
+}
+
+function computePentagonPizzaIndex(alerts) {
+  const now = Date.now();
+  const windowMs = 12 * 60 * 60 * 1000;
+  let score = 8;
+
+  const coreKeywords = [
+    "pentagon",
+    "arlington",
+    "washington",
+    "us military",
+    "u.s. military",
+    "defense department",
+    "dod",
+    "centcom"
+  ];
+  const strikeKeywords = ["strike", "attack", "missile", "rocket", "air raid", "drone", "bombing", "casualties"];
+
+  (alerts || []).forEach((alert) => {
+    const ts = getAlertEventTimestamp(alert);
+    if (!Number.isFinite(ts) || ts <= 0) return;
+
+    const age = now - ts;
+    if (age > windowMs) return;
+
+    const freshness = Math.max(0.2, 1 - age / windowMs);
+    const severity = normalizeSeverity(alert?.severity);
+    const baseWeight =
+      severity === "critical" ? 12 : severity === "high" ? 8 : severity === "medium" ? 4 : severity === "low" ? 2 : 1;
+
+    const text = normalizeText(`${alert?.title || ""} ${alert?.summary || ""} ${alert?.sourceName || ""}`);
+    const inUs = normalizeText(alert?.country?.name || "") === "united states";
+    const hasCore = coreKeywords.some((keyword) => text.includes(keyword));
+    const hasStrike = strikeKeywords.some((keyword) => text.includes(keyword));
+
+    score += baseWeight * freshness;
+    if (inUs) score += 2.5 * freshness;
+    if (hasCore) score += 9 * freshness;
+    if (hasStrike) score += 4 * freshness;
+  });
+
+  const value = Math.max(0, Math.min(100, Math.round(score)));
+
+  if (value >= 80) {
+    return { value, level: "surge", label: "Saturation (proxy OSINT)" };
+  }
+  if (value >= 60) {
+    return { value, level: "very-high", label: "Tres eleve (proxy OSINT)" };
+  }
+  if (value >= 40) {
+    return { value, level: "high", label: "Eleve (proxy OSINT)" };
+  }
+  if (value >= 20) {
+    return { value, level: "medium", label: "Moyen (proxy OSINT)" };
+  }
+  return { value, level: "calm", label: "Calme (proxy OSINT)" };
+}
+
+function updatePentagonPizzaIndicator() {
+  if (!refs.pizzaCard || !refs.pizzaValue || !refs.pizzaLabel) return;
+  const index = computePentagonPizzaIndex(getPentagonPizzaAlertPool());
+  refs.pizzaCard.dataset.level = index.level;
+  refs.pizzaValue.textContent = `${index.value}%`;
+  refs.pizzaLabel.textContent = index.label;
 }
 
 function getCountryStatus(countryName) {
@@ -1422,9 +1981,9 @@ function getCountryKeyFromAlert(alert) {
 }
 
 function getCountryCenter(group) {
-  const countryName = group?.country?.name;
-  if (countryName && state.countryCentroids.has(countryName)) {
-    return state.countryCentroids.get(countryName);
+  const centroid = getCountryCentroid(group?.country?.name, group?.country?.code);
+  if (centroid) {
+    return centroid;
   }
 
   let latSum = 0;
@@ -1567,7 +2126,6 @@ function formatPopulation(value) {
 }
 
 async function renderCountryDetails(summary) {
-  ensureIntelOverlayVisible();
   const key = summary?.key || `${summary?.country?.name || "country"}-${Date.now()}`;
   state.selectedCountryKey = key;
   state.selectedAlertId = null;
@@ -1622,9 +2180,9 @@ async function renderCountryDetails(summary) {
           <p class="country-event-title"><span class="severity-${escapeHtml(alert.severity)}">${escapeHtml(
             severityLabel(alert.severity)
           )}</span> - ${escapeHtml(alert.title)}</p>
-          <p class="country-event-meta">${escapeHtml(formatDate(alert.publishedAt || alert.createdAt))} | ${escapeHtml(
-            alert.sourceName || "Source inconnue"
-          )}</p>
+          <p class="country-event-meta">Acte: ${escapeHtml(formatAlertEventDateLong(alert))} | Pub: ${escapeHtml(
+            formatDate(alert.publishedAt || alert.createdAt)
+          )} | ${escapeHtml(alert.sourceName || "Source inconnue")}</p>
           <a href="${escapeHtml(alert.sourceUrl)}" target="_blank" rel="noopener noreferrer">Ouvrir la source</a>
         </article>
       `
@@ -1677,6 +2235,25 @@ async function loadAlerts() {
   renderTicker();
   renderKeywordsWidget();
   renderTensionChart();
+}
+
+async function loadTickerAlerts() {
+  const query = new URLSearchParams({
+    type: "geopolitique",
+    limit: "30"
+  });
+
+  const mode = state.settings?.alertMode || "insight";
+  if (mode === "action") {
+    query.set("mode", "action");
+  }
+
+  const payload = await api(`/api/alerts?${query.toString()}`);
+  const next = sortAlertsByEventTimeDesc(payload?.alerts || []).slice(0, 30);
+  state.tickerAlerts = next;
+
+  renderTicker();
+  updatePentagonPizzaIndicator();
 }
 
 async function loadCountryOptions() {
@@ -1736,6 +2313,7 @@ function applySettingsToControls() {
   refs.intervalSelect.value = intervalValue;
   refs.keywordInput.value = (state.settings.keywordFilters || []).join(", ");
   updateSoundToggleUI();
+  updateVoiceToggleUI();
   updateCoverageToggleUI();
 
   Array.from(refs.settingsCountryFilter.options).forEach((option) => {
@@ -1769,6 +2347,7 @@ async function refreshDashboardCycle() {
 
   try {
     await Promise.all([loadAlerts(), loadStats()]);
+    await loadTickerAlerts().catch(() => {});
     uiRefreshTick += 1;
 
     // Keep country/region filters up to date without overloading every cycle.
@@ -1797,9 +2376,25 @@ function scheduleAutoRefresh() {
   uiRefreshTimer = setTimeout(tick, intervalMs);
 }
 
+async function loadVoiceStatus() {
+  try {
+    state.voice = await api("/api/voice/status");
+  } catch (error) {
+    console.warn("[voice] status indisponible:", error.message);
+    state.voice = {
+      provider: "none",
+      remoteAvailable: false,
+      fallback: "system"
+    };
+  }
+
+  updateVoiceToggleUI();
+}
+
 async function loadSettings() {
   state.settings = await api("/api/settings");
   applySettingsToControls();
+  updateVoiceToggleUI();
   scheduleAutoRefresh();
 }
 
@@ -1868,10 +2463,29 @@ async function toggleSound() {
 
   updateSoundToggleUI();
   showToast(
-    "Audio alertes",
-    nextSoundEnabled
-      ? "Les alertes sonores et vocales sont activées."
-      : "Les alertes sonores et vocales sont désactivées."
+    "Son alertes",
+    nextSoundEnabled ? "Les effets sonores sont activés." : "Les effets sonores sont désactivés."
+  );
+}
+
+async function toggleVoice() {
+  if (!state.settings) return;
+
+  const nextVoiceEnabled = !isVoiceEnabled();
+  state.settings = await api("/api/settings", {
+    method: "PATCH",
+    body: JSON.stringify({
+      voiceEnabled: nextVoiceEnabled
+    })
+  });
+
+  updateVoiceToggleUI();
+  if (!nextVoiceEnabled) {
+    stopVoicePlayback();
+  }
+  showToast(
+    "Voix alertes",
+    nextVoiceEnabled ? "Les alertes vocales sont activées." : "Les alertes vocales sont désactivées."
   );
 }
 
@@ -1894,7 +2508,7 @@ async function toggleCoverage() {
       : "Mode focalisé actif: filtres mots-clés/pays appliqués à l'ingestion."
   );
 
-  await Promise.all([loadAlerts(), loadStats(), loadCountryOptions(), loadRegionOptions()]);
+  await Promise.all([loadAlerts(), loadStats(), loadTickerAlerts(), loadCountryOptions(), loadRegionOptions()]);
 }
 
 async function updateAlertMode() {
@@ -1918,7 +2532,7 @@ async function updateAlertMode() {
     4600
   );
 
-  await Promise.all([loadAlerts(), loadStats()]);
+  await Promise.all([loadAlerts(), loadStats(), loadTickerAlerts()]);
 }
 
 async function runManualDetection() {
@@ -1926,7 +2540,7 @@ async function runManualDetection() {
   try {
     const payload = await api("/api/detect/now", { method: "POST" });
     showToast("Analyse terminée", `${payload.inserted} nouvelle(s) alerte(s) détectée(s).`);
-    await Promise.all([loadAlerts(), loadCountryOptions(), loadRegionOptions(), loadStats()]);
+    await Promise.all([loadAlerts(), loadCountryOptions(), loadRegionOptions(), loadStats(), loadTickerAlerts()]);
   } finally {
     refs.refreshNowBtn.disabled = false;
   }
@@ -2010,6 +2624,12 @@ function bindEvents() {
     });
   }
 
+  if (refs.toggleVoiceBtn) {
+    refs.toggleVoiceBtn.addEventListener("click", () => {
+      toggleVoice().catch((error) => showToast("Erreur", error.message));
+    });
+  }
+
   if (refs.toggleCoverageBtn) {
     refs.toggleCoverageBtn.addEventListener("click", () => {
       toggleCoverage().catch((error) => showToast("Erreur", error.message));
@@ -2064,14 +2684,24 @@ function bindEvents() {
   bindQuickFilters();
   bindFoldToggles();
   bindColumnToggles();
+  bindFiltersSidebarToggle();
 
   window.addEventListener("resize", () => {
+    if (window.matchMedia("(max-width: 1180px)").matches && refs.leftPanel?.classList.contains("filters-collapsed")) {
+      refs.leftPanel.classList.remove("filters-collapsed");
+      updateFiltersSidebarToggleButton();
+    }
+
     if (layoutResizeTimer) {
       clearTimeout(layoutResizeTimer);
     }
     layoutResizeTimer = setTimeout(() => {
       refreshLayout();
     }, 150);
+  });
+
+  window.addEventListener("beforeunload", () => {
+    stopVoicePlayback();
   });
 }
 
@@ -2098,12 +2728,26 @@ async function loadCountryGeoJson() {
     state.map.removeLayer(state.countryLayer);
   }
 
+  state.countryCentroids = new Map();
+  state.countryCentroidsByKey = new Map();
+  state.countryCentroidsByCode = new Map();
+
   state.countryLayer = L.geoJSON(geojson, {
     style: styleCountryFeature,
     onEachFeature: (feature, layer) => {
       const countryName = getFeatureCountryName(feature);
+      const countryCode = getFeatureCountryCode(feature);
+      const countryKey = normalizeCountryAlias(normalizeCountryKey(countryName));
       const center = layer.getBounds().getCenter();
-      state.countryCentroids.set(countryName, [center.lat, center.lng]);
+      const centerPoint = [center.lat, center.lng];
+
+      state.countryCentroids.set(countryName, centerPoint);
+      if (countryKey && !state.countryCentroidsByKey.has(countryKey)) {
+        state.countryCentroidsByKey.set(countryKey, centerPoint);
+      }
+      if (countryCode && !state.countryCentroidsByCode.has(countryCode)) {
+        state.countryCentroidsByCode.set(countryCode, centerPoint);
+      }
 
       layer.on("mouseover", () => {
         layer.setStyle(getCountryHoverStyle(countryName));
@@ -2161,10 +2805,16 @@ function connectEventStream() {
         return;
       }
       const alreadyExists = state.alerts.some((existing) => existing._id === alert._id);
+      const tickerExists = state.tickerAlerts.some((existing) => existing._id === alert._id);
 
       if (!alreadyExists && matchesCurrentFilters(alert)) {
         state.alerts.push(alert);
         state.alerts = sortAlertsByEventTimeDesc(state.alerts);
+      }
+
+      if (!tickerExists) {
+        state.tickerAlerts.push(alert);
+        state.tickerAlerts = sortAlertsByEventTimeDesc(state.tickerAlerts).slice(0, 30);
       }
 
       renderAlertsList();
@@ -2178,12 +2828,14 @@ function connectEventStream() {
 
       if (isSoundEnabled()) {
         playNotificationSound(alert.severity);
+      }
+      if (isVoiceEnabled()) {
         speakAlertMessage(alert);
       }
       triggerAlertFlash(alert);
       showToast(
         "Nouvelle alerte détectée",
-        `${alert.country?.name || "Localisation inconnue"} | ${typeLabel(alert.type)}`,
+        `${alert.country?.name || "Localisation inconnue"} | ${typeLabel(alert.type)} | Acte: ${formatAlertEventTime(alert)}`,
         alert.severity,
         alert.severity === "critical" ? 6500 : 5200
       );
@@ -2197,6 +2849,9 @@ function connectEventStream() {
     state.alerts = sortAlertsByEventTimeDesc(
       state.alerts.map((alert) => (alert._id === payload.alert._id ? payload.alert : alert))
     );
+    state.tickerAlerts = sortAlertsByEventTimeDesc(
+      state.tickerAlerts.map((alert) => (alert._id === payload.alert._id ? payload.alert : alert))
+    );
     renderAlertsList();
     renderMapMarkers();
     renderTicker();
@@ -2206,6 +2861,7 @@ function connectEventStream() {
   state.eventSource.addEventListener("alert-deleted", (event) => {
     const payload = JSON.parse(event.data);
     state.alerts = state.alerts.filter((alert) => alert._id !== payload.id);
+    state.tickerAlerts = state.tickerAlerts.filter((alert) => alert._id !== payload.id);
     renderAlertsList();
     renderMapMarkers();
     renderTicker();
@@ -2215,6 +2871,7 @@ function connectEventStream() {
   state.eventSource.addEventListener("alerts-confirmation-updated", () => {
     loadAlerts().catch(() => {});
     loadStats().catch(() => {});
+    loadTickerAlerts().catch(() => {});
   });
 
   state.eventSource.addEventListener("settings-updated", (event) => {
@@ -2225,6 +2882,9 @@ function connectEventStream() {
       if (typeof payload.soundEnabled === "boolean") {
         state.settings.soundEnabled = payload.soundEnabled;
       }
+      if (typeof payload.voiceEnabled === "boolean") {
+        state.settings.voiceEnabled = payload.voiceEnabled;
+      }
       if (typeof payload.globalCoverage === "boolean") {
         state.settings.globalCoverage = payload.globalCoverage;
       }
@@ -2234,8 +2894,10 @@ function connectEventStream() {
       }
       updateDetectionStatus();
       updateSoundToggleUI();
+      updateVoiceToggleUI();
       updateCoverageToggleUI();
       scheduleAutoRefresh();
+      loadTickerAlerts().catch(() => {});
     }
   });
 
@@ -2249,21 +2911,70 @@ function connectEventStream() {
 }
 
 async function bootstrap() {
-  bindEvents();
-  initSpeechVoices();
-  initializeMap();
+  beginBootOverlay();
 
-  await loadCountryGeoJson();
-  await Promise.all([loadCountryOptions(), loadRegionOptions()]);
-  await loadSettings();
-  await Promise.all([loadAlerts(), loadStats()]);
+  await runBootStage("ui", "Préparation de l'interface...", async () => {
+    bindEvents();
+    initSpeechVoices();
+  });
 
-  connectEventStream();
-  scheduleAutoRefresh();
-  refreshLayout();
+  await runBootStage("map", "Initialisation de la carte...", async () => {
+    initializeMap();
+  });
+
+  await runBootStage("countries", "Chargement des contours pays...", async () => {
+    await loadCountryGeoJson();
+  });
+
+  await runBootStage(
+    "filters",
+    "Chargement des filtres pays/régions...",
+    async () => {
+      await Promise.all([loadCountryOptions(), loadRegionOptions()]);
+    },
+    { required: false }
+  );
+
+  await runBootStage("settings", "Synchronisation des paramètres...", async () => {
+    await loadSettings();
+  });
+
+  await runBootStage(
+    "voice",
+    "Connexion moteur vocal cloud...",
+    async () => {
+      await loadVoiceStatus();
+    },
+    { required: false }
+  );
+
+  await runBootStage("alerts", "Récupération des alertes...", async () => {
+    await loadAlerts();
+  });
+
+  await runBootStage(
+    "stats",
+    "Calcul des indicateurs et bandeau live...",
+    async () => {
+      await Promise.all([loadStats(), loadTickerAlerts()]);
+    },
+    { required: false }
+  );
+
+  await runBootStage("stream", "Connexion au flux live...", async () => {
+    connectEventStream();
+  });
+
+  await runBootStage("final", "Finalisation de l'affichage...", async () => {
+    scheduleAutoRefresh();
+    refreshLayout();
+  });
+
+  completeBootOverlay();
 }
 
 bootstrap().catch((error) => {
   console.error(error);
+  failBootOverlay(error);
   showToast("Erreur de démarrage", error.message);
 });
