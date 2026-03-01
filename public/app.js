@@ -26,6 +26,7 @@ const refs = {
   togglePauseBtn: document.getElementById("togglePauseBtn"),
   toggleLeftPanelBtn: document.getElementById("toggleLeftPanelBtn"),
   toggleRightPanelBtn: document.getElementById("toggleRightPanelBtn"),
+  alertModeSelect: document.getElementById("alertModeSelect"),
   intervalSelect: document.getElementById("intervalSelect"),
   refreshNowBtn: document.getElementById("refreshNowBtn"),
   searchInput: document.getElementById("searchInput"),
@@ -977,6 +978,11 @@ async function loadAlerts() {
     }
   });
 
+  const mode = state.settings?.alertMode || "insight";
+  if (mode === "action") {
+    query.set("mode", "action");
+  }
+
   const payload = await api(`/api/alerts?${query.toString()}&limit=120`);
   // API returns newest first; reverse to display notifications in arrival order (oldest -> newest).
   state.alerts = [...payload.alerts].reverse();
@@ -1044,6 +1050,9 @@ async function loadRegionOptions() {
 function applySettingsToControls() {
   if (!state.settings) return;
 
+  const modeValue = state.settings.alertMode === "action" ? "action" : "insight";
+  refs.alertModeSelect.value = modeValue;
+
   const intervalValue = String(state.settings.pollIntervalSeconds || 300);
   const hasOption = Array.from(refs.intervalSelect.options).some((opt) => opt.value === intervalValue);
 
@@ -1068,7 +1077,8 @@ function updateDetectionStatus() {
   if (!state.settings) return;
 
   const paused = Boolean(state.settings.paused);
-  refs.detectionStatus.textContent = paused ? "PAUSED" : "LIVE";
+  const modeLabel = state.settings.alertMode === "action" ? "ACTION" : "VEILLE";
+  refs.detectionStatus.textContent = paused ? `PAUSED | ${modeLabel}` : `LIVE | ${modeLabel}`;
   refs.detectionStatus.className = `status-pill ${paused ? "paused" : "live"}`;
   refs.togglePauseBtn.textContent = paused ? "Reprendre" : "Pause";
 }
@@ -1127,6 +1137,30 @@ async function updateInterval() {
   });
 
   showToast("Fréquence mise à jour", `Nouvelle fréquence: ${state.settings.pollIntervalSeconds} sec.`);
+}
+
+async function updateAlertMode() {
+  if (!state.settings) return;
+
+  const nextMode = refs.alertModeSelect.value === "action" ? "action" : "insight";
+  state.settings = await api("/api/settings", {
+    method: "PATCH",
+    body: JSON.stringify({
+      alertMode: nextMode
+    })
+  });
+
+  updateDetectionStatus();
+  showToast(
+    "Mode de surveillance",
+    nextMode === "action"
+      ? "Mode ACTION actif: priorité aux signaux critiques terrain."
+      : "Mode VEILLE actif: flux article complet.",
+    nextMode === "action" ? "high" : "neutral",
+    4600
+  );
+
+  await Promise.all([loadAlerts(), loadStats()]);
 }
 
 async function runManualDetection() {
@@ -1221,6 +1255,10 @@ function bindEvents() {
     updateInterval().catch((error) => showToast("Erreur", error.message));
   });
 
+  refs.alertModeSelect.addEventListener("change", () => {
+    updateAlertMode().catch((error) => showToast("Erreur", error.message));
+  });
+
   refs.refreshNowBtn.addEventListener("click", () => {
     runManualDetection().catch((error) => showToast("Erreur", error.message));
   });
@@ -1277,7 +1315,8 @@ function bindEvents() {
 }
 
 async function loadStats() {
-  const stats = await api("/api/stats");
+  const mode = state.settings?.alertMode === "action" ? "action" : "";
+  const stats = await api(mode ? `/api/stats?mode=${mode}` : "/api/stats");
 
   const total = stats.byType.reduce((acc, item) => acc + item.count, 0);
   const critical = (stats.bySeverity.find((item) => item._id === "critical") || {}).count || 0;
@@ -1417,6 +1456,10 @@ function connectEventStream() {
     if (state.settings) {
       state.settings.paused = payload.paused;
       state.settings.pollIntervalSeconds = payload.pollIntervalSeconds;
+      if (payload.alertMode) {
+        state.settings.alertMode = payload.alertMode;
+        refs.alertModeSelect.value = payload.alertMode;
+      }
       updateDetectionStatus();
     }
   });

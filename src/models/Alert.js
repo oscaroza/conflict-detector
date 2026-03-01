@@ -44,6 +44,7 @@ const AlertSchema = new mongoose.Schema(
         default: [0, 20]
       }
     },
+    actionable: { type: Boolean, default: false },
     read: { type: Boolean, default: false }
   },
   { timestamps: true }
@@ -52,6 +53,7 @@ const AlertSchema = new mongoose.Schema(
 AlertSchema.index({ location: "2dsphere" });
 AlertSchema.index({ createdAt: -1 });
 AlertSchema.index({ type: 1, severity: 1 });
+AlertSchema.index({ actionable: 1, createdAt: -1 });
 AlertSchema.index({ "country.name": 1 });
 
 module.exports = mongoose.model("Alert", AlertSchema);

@@ -16,6 +16,8 @@ const TYPE_FILTER_GROUPS = {
   autre: ["autre"]
 };
 
+const ACTION_TYPES = ["geopolitique", "politique", "militaire", "humanitaire", "cyber"];
+
 function buildAlertQuery(queryParams) {
   const query = {};
 
@@ -41,6 +43,21 @@ function buildAlertQuery(queryParams) {
   }
   if (queryParams.region) {
     query["country.region"] = queryParams.region;
+  }
+
+  const mode = String(queryParams.mode || "").trim().toLowerCase();
+  if (mode === "action") {
+    query.$or = [
+      { actionable: true },
+      {
+        type: { $in: ACTION_TYPES },
+        severity: { $in: ["high", "critical"] }
+      }
+    ];
+
+    if (!query.type) {
+      query.type = { $in: ACTION_TYPES };
+    }
   }
 
   return query;
@@ -141,22 +158,28 @@ router.get("/regions", async (req, res, next) => {
 
 router.get("/stats", async (req, res, next) => {
   try {
+    const query = buildAlertQuery(req.query);
+    const unreadQuery = { ...query, read: false };
+
     const [byType, byCountry, bySeverity, unread] = await Promise.all([
       Alert.aggregate([
+        { $match: query },
         { $group: { _id: "$type", count: { $sum: 1 } } },
         { $sort: { count: -1 } }
       ]),
       Alert.aggregate([
+        { $match: query },
         { $group: { _id: "$country.name", count: { $sum: 1 } } },
         { $match: { _id: { $ne: "Inconnu" } } },
         { $sort: { count: -1 } },
         { $limit: 8 }
       ]),
       Alert.aggregate([
+        { $match: query },
         { $group: { _id: "$severity", count: { $sum: 1 } } },
         { $sort: { count: -1 } }
       ]),
-      Alert.countDocuments({ read: false })
+      Alert.countDocuments(unreadQuery)
     ]);
 
     res.json({ byType, byCountry, bySeverity, unread });
@@ -189,6 +212,13 @@ router.patch("/settings", async (req, res, next) => {
       }
     }
 
+    if (typeof req.body.alertMode === "string") {
+      const mode = req.body.alertMode.trim().toLowerCase();
+      if (mode === "insight" || mode === "action") {
+        settings.alertMode = mode;
+      }
+    }
+
     if (Array.isArray(req.body.keywordFilters)) {
       settings.keywordFilters = req.body.keywordFilters
         .map((v) => `${v}`.trim())
@@ -206,7 +236,8 @@ router.patch("/settings", async (req, res, next) => {
 
     streamService.sendEvent("settings-updated", {
       paused: settings.paused,
-      pollIntervalSeconds: settings.pollIntervalSeconds
+      pollIntervalSeconds: settings.pollIntervalSeconds,
+      alertMode: settings.alertMode
     });
 
     res.json(settings.toObject());

@@ -4,7 +4,14 @@ const Settings = require("../models/Settings");
 const { extractCountry } = require("../utils/countryMatcher");
 const streamService = require("./streamService");
 
-const parser = new Parser({ timeout: 15000 });
+const parser = new Parser({
+  timeout: 15000,
+  headers: {
+    "User-Agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    Accept: "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5"
+  }
+});
 
 const FEEDS = [
   {
@@ -18,29 +25,19 @@ const FEEDS = [
     fallbackType: "geopolitique"
   },
   {
-    sourceName: "ReliefWeb",
-    url: "https://reliefweb.int/updates?format=rss",
-    fallbackType: "humanitaire"
-  },
-  {
-    sourceName: "CISA Advisories",
-    url: "https://www.cisa.gov/news-events/cybersecurity-advisories/all.xml",
-    fallbackType: "cyber"
-  },
-  {
-    sourceName: "NATO News",
-    url: "https://www.nato.int/rss/news.xml",
+    sourceName: "The Guardian World",
+    url: "https://www.theguardian.com/world/rss",
     fallbackType: "geopolitique"
   },
   {
-    sourceName: "BBC Sport",
-    url: "https://feeds.bbci.co.uk/sport/rss.xml?edition=uk",
-    fallbackType: "sport"
+    sourceName: "Google News Geopolitics",
+    url: "https://news.google.com/rss/search?q=geopolitics+OR+military+OR+ceasefire+when:2d&hl=en-US&gl=US&ceid=US:en",
+    fallbackType: "geopolitique"
   },
   {
-    sourceName: "BBC Business",
-    url: "https://feeds.bbci.co.uk/news/business/rss.xml",
-    fallbackType: "economie"
+    sourceName: "Google News Conflict Signals",
+    url: "https://news.google.com/rss/search?q=missile+OR+airstrike+OR+soldiers+killed+OR+battlefield+when:2d&hl=en-US&gl=US&ceid=US:en",
+    fallbackType: "geopolitique"
   }
 ];
 
@@ -64,71 +61,79 @@ const TYPE_KEYWORDS = {
     "election",
     "geopolit",
     "coup",
-    "rebels"
-  ],
-  sport: [
-    "football",
-    "soccer",
-    "nba",
-    "nfl",
-    "mlb",
-    "champions league",
-    "tennis",
-    "olympic",
-    "fifa",
-    "coach",
-    "player",
-    "match",
-    "tournament",
-    "formula 1",
-    "premier league"
-  ],
-  economie: [
-    "economy",
-    "market",
-    "inflation",
-    "interest rate",
-    "gdp",
-    "trade",
-    "oil prices",
-    "stocks",
-    "financial",
-    "bank",
-    "recession",
-    "investor"
-  ],
-  technologie: [
-    "technology",
-    "ai",
-    "semiconductor",
-    "startup",
-    "software",
-    "hardware",
-    "robotics",
-    "cloud",
-    "platform"
-  ],
-  cyber: [
-    "cyber",
-    "malware",
-    "ransomware",
-    "hacker",
-    "cyberattack",
-    "cyber attack",
-    "data breach"
-  ],
-  humanitaire: [
-    "humanitarian",
-    "aid",
-    "refugee",
-    "famine",
-    "displaced",
-    "outbreak",
-    "cholera",
-    "earthquake",
-    "flood"
+    "rebels",
+    "battle",
+    "offensive",
+    "shelling",
+    "siege",
+    "hostage",
+    "insurgent"
   ]
 };
+
+const ACTION_FOCUS_TYPES = new Set(["geopolitique", "politique", "militaire"]);
+
+const ACTION_SIGNAL_PATTERNS = [
+  /\bwar\b/i,
+  /\binvasion\b/i,
+  /\bconflict\b/i,
+  /\bmissile\b/i,
+  /\bairstrike\b/i,
+  /\bdrone strike\b/i,
+  /\bartillery\b/i,
+  /\brocket(s)?\b/i,
+  /\bexplosion(s)?\b/i,
+  /\battack(ed|s|ing)?\b/i,
+  /\bclash(es)?\b/i,
+  /\bambush\b/i,
+  /\bcasualt(y|ies)\b/i,
+  /\bkilled\b/i,
+  /\bdead\b/i,
+  /\bwounded\b/i,
+  /\bsoldier(s)?\b/i,
+  /\btroop(s)?\b/i,
+  /\bhostage(s)?\b/i,
+  /\bceasefire\b/i,
+  /\bsanction(s)?\b/i,
+  /\bstate of emergency\b/i,
+  /\bmartial law\b/i,
+  /\boffensive\b/i,
+  /\bshelling\b/i,
+  /\bsiege\b/i,
+  /\binsurgent(s)?\b/i,
+  /\brebel(s)?\b/i
+];
+
+function canonicalType(type) {
+  const normalized = lower(type);
+  if (normalized === "politique" || normalized === "militaire") {
+    return "geopolitique";
+  }
+  return normalized || "autre";
+}
+
+function hasActionSignal(text) {
+  return ACTION_SIGNAL_PATTERNS.some((pattern) => pattern.test(text || ""));
+}
+
+function isConflictAlert(text) {
+  return hasActionSignal(text);
+}
+
+function isActionableAlert(type, severity, text) {
+  const normalizedType = canonicalType(type);
+  const normalizedSeverity = lower(severity);
+
+  if (!ACTION_FOCUS_TYPES.has(normalizedType)) {
+    return false;
+  }
+
+  if (normalizedSeverity === "critical" || normalizedSeverity === "high") {
+    return true;
+  }
+
+  return hasActionSignal(text);
+}
 
 function lower(value) {
   return (value || "").toLowerCase();
@@ -143,7 +148,7 @@ function classifyType(text, fallbackType) {
     }
   }
 
-  return fallbackType || "autre";
+  return fallbackType || "geopolitique";
 }
 
 function classifySeverity(text) {
@@ -234,7 +239,19 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
     }
 
     const type = classifyType(articleText, item.feed.fallbackType);
+    const canonicalAlertType = canonicalType(type);
+    if (canonicalAlertType !== "geopolitique") {
+      continue;
+    }
+    if (!isConflictAlert(articleText)) {
+      continue;
+    }
     const severity = classifySeverity(articleText);
+    const actionable = isActionableAlert(canonicalAlertType, severity, articleText);
+    const alertMode = lower(settings.alertMode || "insight");
+    if (alertMode === "action" && !actionable) {
+      continue;
+    }
     const publishedAt = item.isoDate || item.pubDate ? new Date(item.isoDate || item.pubDate) : new Date();
 
     const payload = {
@@ -243,8 +260,9 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
       sourceName: item.feed.sourceName,
       sourceUrl,
       publishedAt,
-      type,
+      type: canonicalAlertType,
       severity,
+      actionable,
       country: {
         name: countryInfo.name,
         code: countryInfo.code,

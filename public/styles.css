@@ -200,7 +200,11 @@ h1 {
   flex-wrap: wrap;
 }
 
-.action-block .form-select {
+#alertModeSelect {
+  width: 186px;
+}
+
+#intervalSelect {
   width: 92px;
 }
 
