@@ -32,7 +32,7 @@
         <div class="brand-block">
           <div class="brand-mark">CD</div>
           <div>
-            <p class="brand-mini">Geo Risk Intelligence</p>
+            <p class="brand-mini">RADAR</p>
             <h1>CONFLICT DETECTOR</h1>
           </div>
         </div>
@@ -44,17 +44,20 @@
 
         <div class="headline-stats">
           <article class="headline-card">
-            <span>Total</span>
+            <span>Active</span>
             <strong id="totalAlertsCount">0</strong>
           </article>
-          <article class="headline-card">
-            <span>Non lues</span>
-            <strong id="unreadAlertsCount">0</strong>
-          </article>
           <article class="headline-card critical">
-            <span>Critiques</span>
+            <span>Tensions</span>
             <strong id="criticalAlertsCount">0</strong>
           </article>
+        </div>
+
+        <div class="utility-nav">
+          <button class="btn btn-sm btn-outline-light tone-btn nav-btn">Predictions</button>
+          <button class="btn btn-sm btn-outline-warning tone-btn nav-btn warning">Subscribe</button>
+          <button class="btn btn-sm btn-outline-light tone-btn nav-btn">Anonyme</button>
+          <button class="btn btn-sm btn-outline-danger tone-btn nav-btn pulse">Pulse</button>
         </div>
 
         <div class="action-block">
@@ -73,12 +76,11 @@
             <option value="900">15 min</option>
           </select>
           <button id="refreshNowBtn" class="btn btn-sm btn-warning pulse-btn">Analyser</button>
-          <button id="toggleRightPanelBtn" class="btn btn-sm btn-outline-light tone-btn column-toggle">Hide Panels</button>
         </div>
       </header>
 
       <section class="latest-strip panel-shell">
-        <span class="latest-label">LATEST</span>
+        <span class="latest-label">⚠ LATEST</span>
         <div class="ticker-window">
           <div id="latestTickerContent" class="ticker-track">En attente de détection...</div>
         </div>
@@ -89,18 +91,15 @@
           <section class="panel-shell left-panel">
             <div class="panel-head">
               <h2>PULSE FEED</h2>
-              <div class="panel-head-actions">
-                <span id="unreadCounter" class="chip danger">0 non lues</span>
-                <button
-                  class="fold-toggle"
-                  data-target="leftFiltersFold"
-                  data-open-label="Masquer filtres"
-                  data-close-label="Afficher filtres"
-                  aria-expanded="true"
-                >
-                  Masquer filtres
-                </button>
-              </div>
+              <button
+                class="fold-toggle"
+                data-target="leftFiltersFold"
+                data-open-label="Masquer filtres"
+                data-close-label="Afficher filtres"
+                aria-expanded="true"
+              >
+                Masquer filtres
+              </button>
             </div>
 
             <div class="quick-row">
@@ -146,11 +145,11 @@
                   </select>
                 </div>
                 <div>
-                  <label class="tiny-label" for="readFilter">Lecture</label>
-                  <select id="readFilter" class="form-select form-select-sm">
-                    <option value="">Tous</option>
-                    <option value="false">Non lus</option>
-                    <option value="true">Lus</option>
+                  <label class="tiny-label" for="confirmedFilter">Validation</label>
+                  <select id="confirmedFilter" class="form-select form-select-sm">
+                    <option value="">Toutes</option>
+                    <option value="true">Confirmées (2+)</option>
+                    <option value="false">Non confirmées</option>
                   </select>
                 </div>
                 <button id="resetFiltersBtn" class="btn btn-sm btn-outline-light w-100">Reset filters</button>
@@ -212,6 +211,10 @@
         </section>
 
         <aside class="right-column">
+          <section class="right-control-row">
+            <button id="toggleRightPanelBtn" class="btn btn-sm btn-outline-light tone-btn column-toggle">Hide Panels</button>
+          </section>
+
           <section class="panel-shell details-panel fold-card is-open">
             <div class="panel-head panel-head-toggle">
               <h2>EVENT DETAIL</h2>
