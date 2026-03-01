@@ -9,7 +9,18 @@ const AlertSchema = new mongoose.Schema(
     publishedAt: { type: Date },
     type: {
       type: String,
-      enum: ["politique", "militaire", "humanitaire", "cyber", "autre"],
+      enum: [
+        "geopolitique",
+        "sport",
+        "economie",
+        "technologie",
+        "cyber",
+        "humanitaire",
+        "autre",
+        // Legacy values kept for backward compatibility.
+        "politique",
+        "militaire"
+      ],
       default: "autre"
     },
     severity: {

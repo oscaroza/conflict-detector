@@ -67,6 +67,8 @@
             <option value="900">15 min</option>
           </select>
           <button id="refreshNowBtn" class="btn btn-sm btn-warning pulse-btn">Analyser</button>
+          <button id="toggleLeftPanelBtn" class="btn btn-sm btn-outline-light tone-btn column-toggle">Feed</button>
+          <button id="toggleRightPanelBtn" class="btn btn-sm btn-outline-light tone-btn column-toggle">Widgets</button>
         </div>
       </header>
 
@@ -77,12 +79,23 @@
         </div>
       </section>
 
-      <main class="workspace-grid">
+      <main id="workspaceGrid" class="workspace-grid">
         <aside class="left-column">
           <section class="panel-shell left-panel">
             <div class="panel-head">
               <h2>PULSE FEED</h2>
-              <span id="unreadCounter" class="chip danger">0 non lues</span>
+              <div class="panel-head-actions">
+                <span id="unreadCounter" class="chip danger">0 non lues</span>
+                <button
+                  class="fold-toggle"
+                  data-target="leftFiltersFold"
+                  data-open-label="Masquer filtres"
+                  data-close-label="Afficher filtres"
+                  aria-expanded="true"
+                >
+                  Masquer filtres
+                </button>
+              </div>
             </div>
 
             <div class="quick-row">
@@ -96,61 +109,78 @@
               <input id="searchInput" class="form-control form-control-sm" placeholder="Search events..." />
             </div>
 
-            <div class="filters-grid">
-              <div>
-                <label class="tiny-label" for="typeFilter">Type</label>
-                <select id="typeFilter" class="form-select form-select-sm">
-                  <option value="">Tous</option>
-                  <option value="politique">Politique</option>
-                  <option value="militaire">Militaire</option>
-                  <option value="humanitaire">Humanitaire</option>
-                  <option value="cyber">Cyber</option>
-                  <option value="autre">Autre</option>
-                </select>
+            <div id="leftFiltersFold" class="fold-content open">
+              <div class="filters-grid">
+                <div>
+                  <label class="tiny-label" for="typeFilter">Type</label>
+                  <select id="typeFilter" class="form-select form-select-sm">
+                    <option value="">Tous</option>
+                    <option value="geopolitique">Géopolitique</option>
+                    <option value="sport">Sport</option>
+                    <option value="economie">Économie</option>
+                    <option value="technologie">Technologie</option>
+                    <option value="humanitaire">Humanitaire</option>
+                    <option value="cyber">Cyber</option>
+                    <option value="autre">Autre</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="tiny-label" for="severityFilter">Gravité</label>
+                  <select id="severityFilter" class="form-select form-select-sm">
+                    <option value="">Toutes</option>
+                    <option value="low">Faible</option>
+                    <option value="medium">Moyenne</option>
+                    <option value="high">Haute</option>
+                    <option value="critical">Critique</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="tiny-label" for="countryFilter">Pays</label>
+                  <select id="countryFilter" class="form-select form-select-sm">
+                    <option value="">Tous</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="tiny-label" for="regionFilter">Région</label>
+                  <select id="regionFilter" class="form-select form-select-sm">
+                    <option value="">Toutes</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="tiny-label" for="readFilter">Lecture</label>
+                  <select id="readFilter" class="form-select form-select-sm">
+                    <option value="">Tous</option>
+                    <option value="false">Non lus</option>
+                    <option value="true">Lus</option>
+                  </select>
+                </div>
+                <button id="resetFiltersBtn" class="btn btn-sm btn-outline-light w-100">Reset filters</button>
               </div>
-              <div>
-                <label class="tiny-label" for="severityFilter">Gravité</label>
-                <select id="severityFilter" class="form-select form-select-sm">
-                  <option value="">Toutes</option>
-                  <option value="low">Faible</option>
-                  <option value="medium">Moyenne</option>
-                  <option value="high">Haute</option>
-                  <option value="critical">Critique</option>
-                </select>
-              </div>
-              <div>
-                <label class="tiny-label" for="countryFilter">Pays</label>
-                <select id="countryFilter" class="form-select form-select-sm">
-                  <option value="">Tous</option>
-                </select>
-              </div>
-              <div>
-                <label class="tiny-label" for="regionFilter">Région</label>
-                <select id="regionFilter" class="form-select form-select-sm">
-                  <option value="">Toutes</option>
-                </select>
-              </div>
-              <div>
-                <label class="tiny-label" for="readFilter">Lecture</label>
-                <select id="readFilter" class="form-select form-select-sm">
-                  <option value="">Tous</option>
-                  <option value="false">Non lus</option>
-                  <option value="true">Lus</option>
-                </select>
-              </div>
-              <button id="resetFiltersBtn" class="btn btn-sm btn-outline-light w-100">Reset filters</button>
             </div>
 
             <div id="alertsList" class="alerts-list"></div>
           </section>
 
-          <section class="panel-shell settings-panel">
-            <h2>SMART DIGEST</h2>
-            <label class="tiny-label" for="keywordInput">Mots-clés</label>
-            <input id="keywordInput" class="form-control form-control-sm" placeholder="iran, ceasefire, cyber..." />
-            <label class="tiny-label mt-2" for="settingsCountryFilter">Pays ciblés</label>
-            <select id="settingsCountryFilter" class="form-select form-select-sm" multiple></select>
-            <button id="saveSettingsBtn" class="btn btn-sm btn-outline-warning mt-2 w-100">Enregistrer</button>
+          <section class="panel-shell settings-panel fold-card">
+            <div class="panel-head panel-head-toggle">
+              <h2>SMART DIGEST</h2>
+              <button
+                class="fold-toggle"
+                data-target="settingsFold"
+                data-open-label="Masquer"
+                data-close-label="Ouvrir"
+                aria-expanded="false"
+              >
+                Ouvrir
+              </button>
+            </div>
+            <div id="settingsFold" class="fold-content">
+              <label class="tiny-label" for="keywordInput">Mots-clés</label>
+              <input id="keywordInput" class="form-control form-control-sm" placeholder="iran, ceasefire, cyber..." />
+              <label class="tiny-label mt-2" for="settingsCountryFilter">Pays ciblés</label>
+              <select id="settingsCountryFilter" class="form-select form-select-sm" multiple></select>
+              <button id="saveSettingsBtn" class="btn btn-sm btn-outline-warning mt-2 w-100">Enregistrer</button>
+            </div>
           </section>
         </aside>
 
@@ -164,60 +194,121 @@
           </section>
 
           <section class="panel-shell tension-panel">
-            <div class="panel-head">
+            <div class="panel-head panel-head-toggle">
               <h2>TENSION INDEX</h2>
-              <span class="chip neutral">7 jours</span>
+              <button
+                class="fold-toggle"
+                data-target="tensionFold"
+                data-open-label="Masquer"
+                data-close-label="Ouvrir"
+                aria-expanded="false"
+              >
+                Ouvrir
+              </button>
             </div>
-            <canvas id="tensionChart" height="92"></canvas>
+            <div id="tensionFold" class="fold-content">
+              <canvas id="tensionChart" height="92"></canvas>
+            </div>
           </section>
         </section>
 
         <aside class="right-column">
-          <section class="panel-shell details-panel">
-            <div class="panel-head">
+          <section class="panel-shell details-panel fold-card is-open" data-group="right">
+            <div class="panel-head panel-head-toggle">
               <h2>EVENT DETAIL</h2>
-              <span class="chip neutral">Source vérifiable</span>
+              <button
+                class="fold-toggle"
+                data-target="detailFold"
+                data-open-label="Masquer"
+                data-close-label="Ouvrir"
+                aria-expanded="true"
+              >
+                Masquer
+              </button>
             </div>
-            <div id="alertDetails" class="alert-details empty-state">
-              Cliquez sur une alerte pour afficher le détail complet.
+            <div id="detailFold" class="fold-content open">
+              <div id="alertDetails" class="alert-details empty-state">
+                Cliquez sur une alerte pour afficher le détail complet.
+              </div>
             </div>
           </section>
 
-          <section class="panel-shell widget-panel">
-            <div class="panel-head">
+          <section class="panel-shell widget-panel fold-card" data-group="right">
+            <div class="panel-head panel-head-toggle">
               <h2>TOP PREDICTIONS</h2>
-              <span class="chip warning">Live</span>
+              <button
+                class="fold-toggle"
+                data-target="predictionsFold"
+                data-open-label="Masquer"
+                data-close-label="Ouvrir"
+                aria-expanded="false"
+              >
+                Ouvrir
+              </button>
             </div>
-            <canvas id="typeChart" height="120"></canvas>
+            <div id="predictionsFold" class="fold-content">
+              <canvas id="typeChart" height="120"></canvas>
+            </div>
           </section>
 
-          <section class="panel-shell widget-panel">
-            <div class="panel-head">
+          <section class="panel-shell widget-panel fold-card" data-group="right">
+            <div class="panel-head panel-head-toggle">
               <h2>MARKETS / RISK MIX</h2>
-              <span class="chip neutral">Auto</span>
+              <button
+                class="fold-toggle"
+                data-target="marketsFold"
+                data-open-label="Masquer"
+                data-close-label="Ouvrir"
+                aria-expanded="false"
+              >
+                Ouvrir
+              </button>
             </div>
-            <div id="marketsList" class="market-list"></div>
+            <div id="marketsFold" class="fold-content">
+              <div id="marketsList" class="market-list"></div>
+            </div>
           </section>
 
-          <section class="panel-shell widget-panel">
-            <div class="panel-head">
+          <section class="panel-shell widget-panel fold-card" data-group="right">
+            <div class="panel-head panel-head-toggle">
               <h2>TOP KEYWORDS (24H)</h2>
-              <span class="chip danger">Hot</span>
+              <button
+                class="fold-toggle"
+                data-target="keywordsFold"
+                data-open-label="Masquer"
+                data-close-label="Ouvrir"
+                aria-expanded="false"
+              >
+                Ouvrir
+              </button>
             </div>
-            <div id="keywordsList" class="keyword-list"></div>
+            <div id="keywordsFold" class="fold-content">
+              <div id="keywordsList" class="keyword-list"></div>
+            </div>
           </section>
 
-          <section class="panel-shell widget-panel">
-            <div class="panel-head">
+          <section class="panel-shell widget-panel fold-card" data-group="right">
+            <div class="panel-head panel-head-toggle">
               <h2>HOTSPOT TREND</h2>
-              <span class="chip neutral">Pays</span>
+              <button
+                class="fold-toggle"
+                data-target="hotspotFold"
+                data-open-label="Masquer"
+                data-close-label="Ouvrir"
+                aria-expanded="false"
+              >
+                Ouvrir
+              </button>
             </div>
-            <canvas id="countryChart" height="120"></canvas>
+            <div id="hotspotFold" class="fold-content">
+              <canvas id="countryChart" height="120"></canvas>
+            </div>
           </section>
         </aside>
       </main>
     </div>
 
+    <div id="alertFlash" class="alert-flash" aria-live="assertive" aria-atomic="true"></div>
     <div id="toastHost" class="toast-host"></div>
 
     <script

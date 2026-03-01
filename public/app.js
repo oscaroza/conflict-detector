@@ -15,6 +15,7 @@ const state = {
 };
 
 const refs = {
+  workspaceGrid: document.getElementById("workspaceGrid"),
   alertsList: document.getElementById("alertsList"),
   alertDetails: document.getElementById("alertDetails"),
   unreadCounter: document.getElementById("unreadCounter"),
@@ -23,6 +24,8 @@ const refs = {
   criticalAlertsCount: document.getElementById("criticalAlertsCount"),
   detectionStatus: document.getElementById("detectionStatus"),
   togglePauseBtn: document.getElementById("togglePauseBtn"),
+  toggleLeftPanelBtn: document.getElementById("toggleLeftPanelBtn"),
+  toggleRightPanelBtn: document.getElementById("toggleRightPanelBtn"),
   intervalSelect: document.getElementById("intervalSelect"),
   refreshNowBtn: document.getElementById("refreshNowBtn"),
   searchInput: document.getElementById("searchInput"),
@@ -39,6 +42,7 @@ const refs = {
   mapOverlayMetric: document.getElementById("mapOverlayMetric"),
   marketsList: document.getElementById("marketsList"),
   keywordsList: document.getElementById("keywordsList"),
+  alertFlash: document.getElementById("alertFlash"),
   toastHost: document.getElementById("toastHost"),
   typeChart: document.getElementById("typeChart"),
   countryChart: document.getElementById("countryChart"),
@@ -47,6 +51,22 @@ const refs = {
 
 let audioContext = null;
 let lastSseErrorAt = 0;
+let flashTimer = null;
+let speechVoicesInitialized = false;
+
+function refreshLayout() {
+  setTimeout(() => {
+    if (state.map) {
+      state.map.invalidateSize();
+    }
+
+    Object.values(state.charts).forEach((chart) => {
+      if (chart && typeof chart.resize === "function") {
+        chart.resize();
+      }
+    });
+  }, 260);
+}
 
 function escapeHtml(value) {
   return String(value || "")
@@ -117,15 +137,78 @@ function severityLabel(value) {
   }[value] || value;
 }
 
+function normalizeSeverity(value) {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "critical" || normalized === "high" || normalized === "medium" || normalized === "low") {
+    return normalized;
+  }
+  return "medium";
+}
+
+function canonicalType(value) {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "politique" || normalized === "militaire") {
+    return "geopolitique";
+  }
+  return normalized || "autre";
+}
+
+function typeLabel(value) {
+  return {
+    geopolitique: "Geopolitique",
+    sport: "Sport",
+    economie: "Economie",
+    technologie: "Technologie",
+    humanitaire: "Humanitaire",
+    cyber: "Cyber",
+    autre: "Autre",
+    politique: "Geopolitique",
+    militaire: "Geopolitique"
+  }[String(value || "").toLowerCase()] || capitalize(String(value || "autre"));
+}
+
 function capitalize(value) {
   if (!value) return "";
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-function showToast(title, body, timeout = 5000) {
+function getSeverityTheme(severity) {
+  const normalized = normalizeSeverity(severity);
+  return {
+    critical: {
+      tone: "critical",
+      label: "CRISE CRITIQUE",
+      popupTitle: "ALERTE DE CRISE"
+    },
+    high: {
+      tone: "high",
+      label: "MENACE ELEVEE",
+      popupTitle: "ALERTE PRIORITAIRE"
+    },
+    medium: {
+      tone: "medium",
+      label: "VIGILANCE ACTIVE",
+      popupTitle: "ALERTE OPERATIONNELLE"
+    },
+    low: {
+      tone: "low",
+      label: "SURVEILLANCE",
+      popupTitle: "NOTIFICATION"
+    }
+  }[normalized];
+}
+
+function showToast(title, body, severityOrTimeout = "neutral", maybeTimeout = 5000) {
+  const isLegacyTimeoutCall = typeof severityOrTimeout === "number";
+  const severity =
+    isLegacyTimeoutCall || severityOrTimeout === "neutral" ? "neutral" : normalizeSeverity(severityOrTimeout);
+  const timeout = isLegacyTimeoutCall ? severityOrTimeout : maybeTimeout;
+  const theme = severity === "neutral" ? null : getSeverityTheme(severity);
+
   const toast = document.createElement("article");
-  toast.className = "custom-toast";
+  toast.className = `custom-toast ${theme ? `sev-${theme.tone} blink-toast` : "sev-neutral"}`;
   toast.innerHTML = `
+    ${theme ? `<p class="tone">${escapeHtml(theme.label)}</p>` : ""}
     <p class="title">${escapeHtml(title)}</p>
     <p class="body">${escapeHtml(body)}</p>
   `;
@@ -147,7 +230,77 @@ function ensureAudio() {
   }
 }
 
-function playNotificationSound() {
+function makeDistortionCurve(amount = 90) {
+  const k = typeof amount === "number" ? amount : 50;
+  const nSamples = 44100;
+  const curve = new Float32Array(nSamples);
+  const deg = Math.PI / 180;
+
+  for (let i = 0; i < nSamples; i += 1) {
+    const x = (i * 2) / nSamples - 1;
+    curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
+  }
+
+  return curve;
+}
+
+function createNoiseBuffer(context, duration = 0.14) {
+  const buffer = context.createBuffer(1, Math.floor(context.sampleRate * duration), context.sampleRate);
+  const data = buffer.getChannelData(0);
+
+  for (let i = 0; i < data.length; i += 1) {
+    data[i] = (Math.random() * 2 - 1) * 0.8;
+  }
+
+  return buffer;
+}
+
+function playRadioBurst(context, startTime, frequency, duration, gainLevel, noiseLevel) {
+  const toneOsc = context.createOscillator();
+  const bandPass = context.createBiquadFilter();
+  const shaper = context.createWaveShaper();
+  const toneGain = context.createGain();
+
+  toneOsc.type = "square";
+  toneOsc.frequency.setValueAtTime(frequency, startTime);
+  bandPass.type = "bandpass";
+  bandPass.frequency.value = 1400;
+  bandPass.Q.value = 1.7;
+  shaper.curve = makeDistortionCurve(110);
+  shaper.oversample = "4x";
+
+  toneGain.gain.setValueAtTime(0.0001, startTime);
+  toneGain.gain.exponentialRampToValueAtTime(gainLevel, startTime + 0.016);
+  toneGain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+
+  toneOsc.connect(bandPass);
+  bandPass.connect(shaper);
+  shaper.connect(toneGain);
+  toneGain.connect(context.destination);
+
+  toneOsc.start(startTime);
+  toneOsc.stop(startTime + duration + 0.01);
+
+  const noiseSource = context.createBufferSource();
+  noiseSource.buffer = createNoiseBuffer(context, duration);
+  const noiseFilter = context.createBiquadFilter();
+  const noiseGain = context.createGain();
+
+  noiseFilter.type = "highpass";
+  noiseFilter.frequency.value = 1800;
+  noiseGain.gain.setValueAtTime(0.0001, startTime);
+  noiseGain.gain.exponentialRampToValueAtTime(noiseLevel, startTime + 0.02);
+  noiseGain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+
+  noiseSource.connect(noiseFilter);
+  noiseFilter.connect(noiseGain);
+  noiseGain.connect(context.destination);
+
+  noiseSource.start(startTime);
+  noiseSource.stop(startTime + duration + 0.01);
+}
+
+function playNotificationSound(severity = "medium") {
   ensureAudio();
   if (!audioContext) return;
 
@@ -155,20 +308,244 @@ function playNotificationSound() {
     audioContext.resume().catch(() => {});
   }
 
-  const oscillator = audioContext.createOscillator();
-  const gain = audioContext.createGain();
+  const profile = {
+    critical: {
+      tones: [780, 690, 780],
+      duration: 0.14,
+      gap: 0.06,
+      gain: 0.26,
+      noise: 0.08
+    },
+    high: {
+      tones: [730, 820],
+      duration: 0.13,
+      gap: 0.06,
+      gain: 0.22,
+      noise: 0.06
+    },
+    medium: {
+      tones: [660, 660],
+      duration: 0.11,
+      gap: 0.05,
+      gain: 0.17,
+      noise: 0.05
+    },
+    low: {
+      tones: [590],
+      duration: 0.1,
+      gap: 0.05,
+      gain: 0.14,
+      noise: 0.04
+    }
+  }[normalizeSeverity(severity)];
 
-  oscillator.type = "sawtooth";
-  oscillator.frequency.value = 900;
-  gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.18, audioContext.currentTime + 0.02);
-  gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.2);
+  const now = audioContext.currentTime + 0.02;
+  profile.tones.forEach((frequency, index) => {
+    const start = now + index * (profile.duration + profile.gap);
+    playRadioBurst(audioContext, start, frequency, profile.duration, profile.gain, profile.noise);
+  });
+}
 
-  oscillator.connect(gain);
-  gain.connect(audioContext.destination);
+function getAlertVoiceSeverityLabel(severity) {
+  const normalized = normalizeSeverity(severity);
+  if (normalized === "critical" || normalized === "high") {
+    return "critique";
+  }
+  if (normalized === "medium") {
+    return "moyenne";
+  }
+  return "petite";
+}
 
-  oscillator.start();
-  oscillator.stop(audioContext.currentTime + 0.22);
+function buildAlertVoiceMessage(alert) {
+  const severityVoiceLabel = getAlertVoiceSeverityLabel(alert?.severity);
+  const country = alert?.country?.name && alert.country.name !== "Inconnu" ? alert.country.name : "zone inconnue";
+  const title = String(alert?.title || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 105);
+
+  if (title) {
+    return `Nouvelle alerte ${severityVoiceLabel} concernant ${country}. ${title}.`;
+  }
+  return `Nouvelle alerte ${severityVoiceLabel} concernant ${country}.`;
+}
+
+function initSpeechVoices() {
+  if (speechVoicesInitialized || !("speechSynthesis" in window)) return;
+  speechVoicesInitialized = true;
+
+  const warmupVoices = () => {
+    try {
+      window.speechSynthesis.getVoices();
+    } catch (error) {
+      console.warn("[speech] voix indisponibles", error);
+    }
+  };
+
+  warmupVoices();
+  if ("onvoiceschanged" in window.speechSynthesis) {
+    window.speechSynthesis.onvoiceschanged = warmupVoices;
+  }
+}
+
+function pickFrenchVoice() {
+  if (!("speechSynthesis" in window)) return null;
+  const voices = window.speechSynthesis.getVoices() || [];
+
+  return (
+    voices.find((voice) => voice.lang && voice.lang.toLowerCase().startsWith("fr")) ||
+    voices.find((voice) => voice.lang && voice.lang.toLowerCase().includes("fr")) ||
+    null
+  );
+}
+
+function speakAlertMessage(alert) {
+  if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") {
+    return;
+  }
+
+  const synth = window.speechSynthesis;
+  const utterance = new SpeechSynthesisUtterance(buildAlertVoiceMessage(alert));
+  utterance.lang = "fr-FR";
+  utterance.volume = 1;
+
+  const voice = pickFrenchVoice();
+  if (voice) {
+    utterance.voice = voice;
+  }
+
+  const severity = normalizeSeverity(alert?.severity);
+  if (severity === "critical" || severity === "high") {
+    utterance.rate = 0.9;
+    utterance.pitch = 0.82;
+  } else if (severity === "medium") {
+    utterance.rate = 0.95;
+    utterance.pitch = 0.92;
+  } else {
+    utterance.rate = 1;
+    utterance.pitch = 1;
+  }
+
+  synth.cancel();
+  setTimeout(() => {
+    try {
+      synth.speak(utterance);
+    } catch (error) {
+      console.warn("[speech] lecture impossible", error);
+    }
+  }, 220);
+}
+
+function triggerAlertFlash(alert) {
+  if (!refs.alertFlash) return;
+
+  const severity = normalizeSeverity(alert?.severity);
+  const theme = getSeverityTheme(severity);
+
+  refs.alertFlash.className = `alert-flash sev-${severity} show`;
+  refs.alertFlash.innerHTML = `
+    <div class="alert-flash-card">
+      <p class="kicker">${escapeHtml(theme.popupTitle)}</p>
+      <p class="headline">${escapeHtml(alert?.title || "Nouvelle alerte détectée")}</p>
+      <p class="meta">${escapeHtml(alert?.country?.name || "Zone inconnue")} | ${escapeHtml(
+    severityLabel(severity)
+  )}</p>
+    </div>
+  `;
+
+  if (flashTimer) {
+    clearTimeout(flashTimer);
+  }
+
+  flashTimer = setTimeout(() => {
+    refs.alertFlash.classList.remove("show");
+  }, severity === "critical" ? 6200 : 4800);
+}
+
+function updateFoldButton(button, isOpen) {
+  if (!button) return;
+  const openLabel = button.dataset.openLabel || "Masquer";
+  const closeLabel = button.dataset.closeLabel || "Ouvrir";
+  button.textContent = isOpen ? openLabel : closeLabel;
+  button.setAttribute("aria-expanded", String(isOpen));
+}
+
+function setFoldState(content, isOpen) {
+  if (!content) return;
+
+  const card = content.closest(".fold-card");
+  if (card) {
+    card.classList.toggle("is-open", isOpen);
+  }
+
+  content.classList.toggle("open", isOpen);
+
+  const toggleButton = document.querySelector(`.fold-toggle[data-target="${content.id}"]`);
+  updateFoldButton(toggleButton, isOpen);
+}
+
+function closeFoldGroup(group, exceptId) {
+  if (!group) return;
+
+  document.querySelectorAll(`.fold-card[data-group="${group}"] .fold-content.open`).forEach((content) => {
+    if (content.id !== exceptId) {
+      setFoldState(content, false);
+    }
+  });
+}
+
+function toggleFold(targetId, forcedState = null) {
+  const content = document.getElementById(targetId);
+  if (!content) return;
+
+  const currentlyOpen = content.classList.contains("open");
+  const nextState = forcedState === null ? !currentlyOpen : forcedState;
+
+  const group = content.closest(".fold-card")?.dataset.group;
+  if (nextState) {
+    closeFoldGroup(group, targetId);
+  }
+
+  setFoldState(content, nextState);
+  refreshLayout();
+}
+
+function bindFoldToggles() {
+  document.querySelectorAll(".fold-toggle").forEach((button) => {
+    const targetId = button.dataset.target;
+    const content = document.getElementById(targetId);
+    if (!content) return;
+
+    updateFoldButton(button, content.classList.contains("open"));
+
+    button.addEventListener("click", () => {
+      toggleFold(targetId);
+    });
+  });
+}
+
+function updateColumnToggleButtons() {
+  const hideLeft = refs.workspaceGrid.classList.contains("hide-left");
+  const hideRight = refs.workspaceGrid.classList.contains("hide-right");
+  refs.toggleLeftPanelBtn.textContent = hideLeft ? "Feed OFF" : "Feed ON";
+  refs.toggleRightPanelBtn.textContent = hideRight ? "Widgets OFF" : "Widgets ON";
+}
+
+function bindColumnToggles() {
+  refs.toggleLeftPanelBtn.addEventListener("click", () => {
+    refs.workspaceGrid.classList.toggle("hide-left");
+    updateColumnToggleButtons();
+    refreshLayout();
+  });
+
+  refs.toggleRightPanelBtn.addEventListener("click", () => {
+    refs.workspaceGrid.classList.toggle("hide-right");
+    updateColumnToggleButtons();
+    refreshLayout();
+  });
+
+  updateColumnToggleButtons();
 }
 
 function getCurrentFilters() {
@@ -184,7 +561,7 @@ function getCurrentFilters() {
 function matchesCurrentFilters(alert) {
   const filters = getCurrentFilters();
 
-  if (filters.type && alert.type !== filters.type) return false;
+  if (filters.type && canonicalType(alert.type) !== filters.type) return false;
   if (filters.country && alert.country?.name !== filters.country) return false;
   if (filters.region && alert.country?.region !== filters.region) return false;
   if (filters.severity && alert.severity !== filters.severity) return false;
@@ -243,7 +620,7 @@ function createMarker(alert) {
 
   marker.bindPopup(`
     <strong>${escapeHtml(alert.title)}</strong><br>
-    ${escapeHtml(alert.country?.name || "Inconnu")} | ${escapeHtml(capitalize(alert.type))}
+    ${escapeHtml(alert.country?.name || "Inconnu")} | ${escapeHtml(typeLabel(alert.type))}
   `);
 
   marker.on("click", () => {
@@ -269,11 +646,12 @@ function renderMapMarkers() {
 }
 
 function renderAlertDetails(alert) {
+  toggleFold("detailFold", true);
   refs.alertDetails.classList.remove("empty-state");
   refs.alertDetails.innerHTML = `
     <h3 class="mb-2">${escapeHtml(alert.title)}</h3>
     <div class="detail-meta mb-2">
-      <span class="meta-chip">${escapeHtml(capitalize(alert.type))}</span>
+      <span class="meta-chip">${escapeHtml(typeLabel(alert.type))}</span>
       <span class="meta-chip severity-${escapeHtml(alert.severity)}">${escapeHtml(severityLabel(alert.severity))}</span>
       <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
       <span class="meta-chip">${escapeHtml(alert.country?.region || "Global")}</span>
@@ -288,7 +666,7 @@ function renderAlertDetails(alert) {
 }
 
 function renderTicker() {
-  const source = getVisibleAlerts().slice(0, 10);
+  const source = getVisibleAlerts().slice(-10);
   if (source.length === 0) {
     refs.latestTickerContent.textContent = "Aucune alerte pour cette vue.";
     return;
@@ -322,7 +700,7 @@ function renderAlertsList() {
         <article class="alert-item ${alert.read ? "" : "unread"} ${isSelected ? "border-warning" : ""}" data-alert-id="${alert._id}">
           <p class="alert-title">${escapeHtml(alert.title)}</p>
           <div class="alert-meta">
-            <span class="meta-chip">${escapeHtml(capitalize(alert.type))}</span>
+            <span class="meta-chip">${escapeHtml(typeLabel(alert.type))}</span>
             <span class="meta-chip severity-${escapeHtml(alert.severity)}">${escapeHtml(severityLabel(alert.severity))}</span>
             <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
           </div>
@@ -498,8 +876,14 @@ function renderTensionChart() {
 }
 
 function renderCharts(stats) {
-  const typeLabels = stats.byType.map((item) => capitalize(item._id));
-  const typeValues = stats.byType.map((item) => item.count);
+  const mergedTypeCounts = new Map();
+  stats.byType.forEach((item) => {
+    const key = canonicalType(item._id);
+    mergedTypeCounts.set(key, (mergedTypeCounts.get(key) || 0) + item.count);
+  });
+  const mergedTypes = Array.from(mergedTypeCounts.entries()).sort((a, b) => b[1] - a[1]);
+  const typeLabels = mergedTypes.map(([key]) => typeLabel(key));
+  const typeValues = mergedTypes.map(([, count]) => count);
 
   if (state.charts.type) {
     state.charts.type.destroy();
@@ -594,7 +978,8 @@ async function loadAlerts() {
   });
 
   const payload = await api(`/api/alerts?${query.toString()}&limit=120`);
-  state.alerts = payload.alerts;
+  // API returns newest first; reverse to display notifications in arrival order (oldest -> newest).
+  state.alerts = [...payload.alerts].reverse();
 
   if (state.countryLayer) {
     state.countryLayer.setStyle(styleCountryFeature);
@@ -877,6 +1262,7 @@ function bindEvents() {
   document.body.addEventListener(
     "click",
     () => {
+      initSpeechVoices();
       ensureAudio();
       if (audioContext?.state === "suspended") {
         audioContext.resume().catch(() => {});
@@ -886,6 +1272,8 @@ function bindEvents() {
   );
 
   bindQuickFilters();
+  bindFoldToggles();
+  bindColumnToggles();
 }
 
 async function loadStats() {
@@ -980,7 +1368,7 @@ function connectEventStream() {
       const alreadyExists = state.alerts.some((existing) => existing._id === alert._id);
 
       if (!alreadyExists && matchesCurrentFilters(alert)) {
-        state.alerts.unshift(alert);
+        state.alerts.push(alert);
       }
 
       renderAlertsList();
@@ -992,8 +1380,15 @@ function connectEventStream() {
       loadRegionOptions().catch(() => {});
       loadStats().catch(() => {});
 
-      playNotificationSound();
-      showToast("Nouvelle alerte détectée", `${alert.country?.name || "Localisation inconnue"} | ${capitalize(alert.type)}`);
+      playNotificationSound(alert.severity);
+      speakAlertMessage(alert);
+      triggerAlertFlash(alert);
+      showToast(
+        "Nouvelle alerte détectée",
+        `${alert.country?.name || "Localisation inconnue"} | ${typeLabel(alert.type)}`,
+        alert.severity,
+        alert.severity === "critical" ? 6500 : 5200
+      );
     } catch (error) {
       console.error(error);
     }
@@ -1037,6 +1432,7 @@ function connectEventStream() {
 
 async function bootstrap() {
   bindEvents();
+  initSpeechVoices();
   initializeMap();
 
   await loadCountryGeoJson();
@@ -1045,6 +1441,7 @@ async function bootstrap() {
   await Promise.all([loadAlerts(), loadStats()]);
 
   connectEventStream();
+  refreshLayout();
 }
 
 bootstrap().catch((error) => {

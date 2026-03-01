@@ -10,12 +10,12 @@ const FEEDS = [
   {
     sourceName: "BBC World",
     url: "https://feeds.bbci.co.uk/news/world/rss.xml",
-    fallbackType: "politique"
+    fallbackType: "geopolitique"
   },
   {
     sourceName: "Al Jazeera",
     url: "https://www.aljazeera.com/xml/rss/all.xml",
-    fallbackType: "politique"
+    fallbackType: "geopolitique"
   },
   {
     sourceName: "ReliefWeb",
@@ -30,11 +30,84 @@ const FEEDS = [
   {
     sourceName: "NATO News",
     url: "https://www.nato.int/rss/news.xml",
-    fallbackType: "militaire"
+    fallbackType: "geopolitique"
+  },
+  {
+    sourceName: "BBC Sport",
+    url: "https://feeds.bbci.co.uk/sport/rss.xml?edition=uk",
+    fallbackType: "sport"
+  },
+  {
+    sourceName: "BBC Business",
+    url: "https://feeds.bbci.co.uk/news/business/rss.xml",
+    fallbackType: "economie"
   }
 ];
 
 const TYPE_KEYWORDS = {
+  geopolitique: [
+    "war",
+    "invasion",
+    "ceasefire",
+    "border",
+    "military",
+    "army",
+    "troops",
+    "missile",
+    "strike",
+    "sanction",
+    "diplomatic",
+    "government",
+    "president",
+    "minister",
+    "protest",
+    "election",
+    "geopolit",
+    "coup",
+    "rebels"
+  ],
+  sport: [
+    "football",
+    "soccer",
+    "nba",
+    "nfl",
+    "mlb",
+    "champions league",
+    "tennis",
+    "olympic",
+    "fifa",
+    "coach",
+    "player",
+    "match",
+    "tournament",
+    "formula 1",
+    "premier league"
+  ],
+  economie: [
+    "economy",
+    "market",
+    "inflation",
+    "interest rate",
+    "gdp",
+    "trade",
+    "oil prices",
+    "stocks",
+    "financial",
+    "bank",
+    "recession",
+    "investor"
+  ],
+  technologie: [
+    "technology",
+    "ai",
+    "semiconductor",
+    "startup",
+    "software",
+    "hardware",
+    "robotics",
+    "cloud",
+    "platform"
+  ],
   cyber: [
     "cyber",
     "malware",
@@ -43,17 +116,6 @@ const TYPE_KEYWORDS = {
     "cyberattack",
     "cyber attack",
     "data breach"
-  ],
-  militaire: [
-    "army",
-    "military",
-    "strike",
-    "missile",
-    "drone",
-    "troops",
-    "defense",
-    "battle",
-    "armed"
   ],
   humanitaire: [
     "humanitarian",
@@ -65,17 +127,6 @@ const TYPE_KEYWORDS = {
     "cholera",
     "earthquake",
     "flood"
-  ],
-  politique: [
-    "election",
-    "protest",
-    "government",
-    "sanction",
-    "ceasefire",
-    "tension",
-    "diplomatic",
-    "president",
-    "minister"
   ]
 };
 

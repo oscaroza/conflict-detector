@@ -18,11 +18,17 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
-  min-height: 100vh;
+  min-height: 100%;
   color: var(--text);
   font-family: "Space Grotesk", sans-serif;
+  overflow: hidden;
   background: radial-gradient(circle at 15% 10%, rgba(41, 18, 24, 0.22), transparent 38%),
     radial-gradient(circle at 82% 6%, rgba(15, 31, 47, 0.3), transparent 40%),
     linear-gradient(180deg, var(--bg-0), var(--bg-1) 55%, #05070a 100%);
@@ -41,7 +47,12 @@ body {
 .app-shell {
   max-width: 1780px;
   margin: 0 auto;
-  padding: 0.8rem;
+  padding: 0.6rem;
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 0.55rem;
+  overflow: hidden;
 }
 
 .panel-shell {
@@ -52,12 +63,12 @@ body {
 }
 
 .command-bar {
-  min-height: 70px;
+  min-height: 62px;
   display: grid;
-  gap: 0.8rem;
+  gap: 0.62rem;
   grid-template-columns: auto auto 1fr auto;
   align-items: center;
-  padding: 0.6rem 0.9rem;
+  padding: 0.45rem 0.75rem;
 }
 
 .brand-block {
@@ -186,6 +197,7 @@ h1 {
   display: flex;
   align-items: center;
   gap: 0.45rem;
+  flex-wrap: wrap;
 }
 
 .action-block .form-select {
@@ -193,11 +205,10 @@ h1 {
 }
 
 .latest-strip {
-  margin-top: 0.62rem;
   display: grid;
   grid-template-columns: auto 1fr;
   align-items: center;
-  min-height: 44px;
+  min-height: 38px;
 }
 
 .latest-label {
@@ -245,11 +256,37 @@ h1 {
 }
 
 .workspace-grid {
-  margin-top: 0.75rem;
   display: grid;
-  gap: 0.75rem;
+  gap: 0.55rem;
   grid-template-columns: minmax(300px, 355px) minmax(380px, 1fr) minmax(310px, 390px);
-  min-height: calc(100vh - 145px);
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.workspace-grid.hide-left {
+  grid-template-columns: minmax(0, 1fr) minmax(310px, 390px);
+}
+
+.workspace-grid.hide-left .left-column {
+  display: none;
+}
+
+.workspace-grid.hide-right {
+  grid-template-columns: minmax(300px, 355px) minmax(0, 1fr);
+}
+
+.workspace-grid.hide-right .right-column {
+  display: none;
+}
+
+.workspace-grid.hide-left.hide-right {
+  grid-template-columns: 1fr;
+}
+
+.workspace-grid.hide-left.hide-right .right-column,
+.workspace-grid.hide-left.hide-right .left-column {
+  display: none;
 }
 
 .left-column,
@@ -257,21 +294,22 @@ h1 {
 .right-column {
   min-height: 0;
   display: grid;
-  gap: 0.75rem;
+  gap: 0.55rem;
+  overflow: hidden;
 }
 
 .left-column {
-  grid-template-rows: minmax(460px, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .center-column {
-  grid-template-rows: minmax(500px, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .right-column {
-  grid-template-rows: auto auto auto auto auto;
-  overflow-y: auto;
-  padding-right: 0.2rem;
+  grid-template-rows: repeat(5, auto);
+  align-content: start;
+  overflow: hidden;
 }
 
 .left-panel,
@@ -280,7 +318,19 @@ h1 {
 .tension-panel,
 .details-panel,
 .widget-panel {
-  padding: 0.75rem;
+  padding: 0.6rem;
+}
+
+.left-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.panel-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 .panel-head {
@@ -288,7 +338,11 @@ h1 {
   justify-content: space-between;
   align-items: center;
   gap: 0.5rem;
-  margin-bottom: 0.6rem;
+  margin-bottom: 0.42rem;
+}
+
+.panel-head-toggle {
+  margin-bottom: 0.35rem;
 }
 
 h2,
@@ -329,7 +383,7 @@ h4 {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 0.35rem;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.4rem;
 }
 
 .quick-filter {
@@ -349,7 +403,7 @@ h4 {
 }
 
 .search-wrap {
-  margin-bottom: 0.55rem;
+  margin-bottom: 0.42rem;
 }
 
 .tiny-label {
@@ -366,7 +420,29 @@ h4 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.45rem;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.55rem;
+}
+
+.fold-toggle {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  border-radius: 0;
+  height: 24px;
+  padding: 0 0.46rem;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.fold-toggle:hover {
+  border-color: rgba(255, 210, 74, 0.55);
+  color: var(--yellow);
+}
+
+.column-toggle {
+  min-width: 66px;
 }
 
 .form-control,
@@ -393,8 +469,10 @@ h4 {
 
 .alerts-list {
   overflow-y: auto;
-  max-height: calc(100vh - 465px);
+  min-height: 0;
+  max-height: none;
   padding-right: 0.15rem;
+  flex: 1;
 }
 
 .alert-item {
@@ -459,7 +537,7 @@ h4 {
 #map {
   width: 100%;
   height: 100%;
-  min-height: 500px;
+  min-height: 0;
 }
 
 .map-overlay {
@@ -490,6 +568,19 @@ h4 {
 .details-panel,
 .settings-panel {
   background: var(--panel-soft);
+}
+
+.fold-content {
+  max-height: 1000px;
+  overflow: hidden;
+  opacity: 1;
+  transition: max-height 0.24s ease, opacity 0.18s ease;
+}
+
+.fold-content:not(.open) {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .alert-details {
@@ -539,7 +630,73 @@ h4 {
 }
 
 canvas {
-  margin-top: 0.35rem;
+  margin-top: 0.28rem;
+  max-height: 180px;
+}
+
+.alert-flash {
+  position: fixed;
+  top: 4.15rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(760px, calc(100vw - 1.4rem));
+  z-index: 2650;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.alert-flash.show {
+  opacity: 1;
+}
+
+.alert-flash-card {
+  border: 2px solid rgba(255, 210, 74, 0.72);
+  background: rgba(28, 20, 8, 0.94);
+  padding: 0.58rem 0.78rem;
+  box-shadow: 0 0 0 1px rgba(255, 210, 74, 0.34), 0 0 26px rgba(255, 210, 74, 0.25);
+  animation: crisisBlink 0.52s steps(2, end) 8;
+}
+
+.alert-flash .kicker {
+  margin: 0;
+  font-size: 0.64rem;
+  font-family: "IBM Plex Mono", monospace;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: #ffd24a;
+}
+
+.alert-flash .headline {
+  margin: 0.2rem 0 0;
+  font-size: 0.98rem;
+  line-height: 1.26;
+  font-weight: 700;
+}
+
+.alert-flash .meta {
+  margin: 0.24rem 0 0;
+  font-size: 0.71rem;
+  color: #b9c1cf;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.alert-flash.sev-critical .alert-flash-card {
+  border-color: rgba(255, 51, 65, 0.85);
+  background: rgba(36, 9, 14, 0.96);
+  box-shadow: 0 0 0 1px rgba(255, 51, 65, 0.45), 0 0 34px rgba(255, 51, 65, 0.35);
+}
+
+.alert-flash.sev-high .alert-flash-card {
+  border-color: rgba(255, 131, 82, 0.85);
+  background: rgba(40, 16, 8, 0.95);
+  box-shadow: 0 0 0 1px rgba(255, 131, 82, 0.4), 0 0 30px rgba(255, 131, 82, 0.3);
+}
+
+.alert-flash.sev-medium .alert-flash-card,
+.alert-flash.sev-low .alert-flash-card {
+  border-color: rgba(255, 210, 74, 0.82);
+  background: rgba(37, 26, 8, 0.94);
 }
 
 .toast-host {
@@ -559,6 +716,15 @@ canvas {
   animation: in 0.24s ease;
 }
 
+.custom-toast .tone {
+  margin: 0 0 0.18rem;
+  font-size: 0.58rem;
+  color: #ffd24a;
+  font-family: "IBM Plex Mono", monospace;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
 .custom-toast .title {
   margin: 0;
   font-size: 0.85rem;
@@ -569,6 +735,33 @@ canvas {
   margin: 0.18rem 0 0;
   font-size: 0.78rem;
   color: var(--muted);
+}
+
+.custom-toast.blink-toast {
+  animation: in 0.24s ease, toastBlink 0.65s steps(2, end) 5;
+}
+
+.custom-toast.sev-critical {
+  border-color: rgba(255, 51, 65, 0.72);
+  box-shadow: 0 0 22px rgba(255, 51, 65, 0.2);
+}
+
+.custom-toast.sev-high {
+  border-color: rgba(255, 131, 82, 0.66);
+  box-shadow: 0 0 20px rgba(255, 131, 82, 0.18);
+}
+
+.custom-toast.sev-medium {
+  border-color: rgba(255, 210, 74, 0.66);
+  box-shadow: 0 0 20px rgba(255, 210, 74, 0.15);
+}
+
+.custom-toast.sev-low {
+  border-color: rgba(255, 210, 74, 0.5);
+}
+
+.custom-toast.sev-neutral {
+  border-color: var(--line);
 }
 
 .severity-low {
@@ -648,6 +841,28 @@ canvas {
   }
 }
 
+@keyframes crisisBlink {
+  0%,
+  100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 0.62;
+    filter: brightness(1.28);
+  }
+}
+
+@keyframes toastBlink {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.22);
+  }
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -689,15 +904,27 @@ canvas {
 }
 
 @media (max-width: 1180px) {
+  body {
+    overflow: auto;
+  }
+
+  .app-shell {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
   .workspace-grid {
     grid-template-columns: 1fr;
-    min-height: auto;
+    height: auto;
+    overflow: visible;
   }
 
   .left-column,
   .center-column,
   .right-column {
     grid-template-rows: auto;
+    overflow: visible;
   }
 
   #map {
@@ -706,6 +933,7 @@ canvas {
 
   .alerts-list {
     max-height: 320px;
+    flex: unset;
   }
 
   .ticker-track {
@@ -734,5 +962,9 @@ canvas {
 
   .quick-row {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .column-toggle {
+    min-width: 52px;
   }
 }

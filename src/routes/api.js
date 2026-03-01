@@ -6,11 +6,26 @@ const feedService = require("../services/feedService");
 
 const router = express.Router();
 
+const TYPE_FILTER_GROUPS = {
+  geopolitique: ["geopolitique", "politique", "militaire"],
+  sport: ["sport"],
+  economie: ["economie"],
+  technologie: ["technologie"],
+  cyber: ["cyber"],
+  humanitaire: ["humanitaire"],
+  autre: ["autre"]
+};
+
 function buildAlertQuery(queryParams) {
   const query = {};
 
   if (queryParams.type) {
-    query.type = queryParams.type;
+    const normalizedType = String(queryParams.type).trim().toLowerCase();
+    if (TYPE_FILTER_GROUPS[normalizedType]) {
+      query.type = { $in: TYPE_FILTER_GROUPS[normalizedType] };
+    } else {
+      query.type = normalizedType;
+    }
   }
   if (queryParams.country) {
     query["country.name"] = queryParams.country;
