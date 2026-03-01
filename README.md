@@ -5,13 +5,13 @@ Application web interactive inspiree d'un tableau de bord de veille geopolitique
 ## Ce que fait ce projet
 
 - Carte mondiale interactive (Leaflet) avec zoom et clic sur pays.
-- Detection automatique d'evenements via des flux RSS reels (BBC, Al Jazeera, ReliefWeb, CISA, NATO).
+- Detection automatique d'evenements via des flux RSS reels axes conflits (BBC, Al Jazeera, The Guardian, Google News conflict signals).
 - Alertes en temps reel:
   - popup visuelle
   - son de notification
   - ajout instantane dans le fil d'alertes
 - Filtres par:
-  - type (politique, militaire, humanitaire, cyber)
+  - type (geopolitique)
   - pays
   - region
   - gravite
@@ -181,7 +181,7 @@ En haut:
 
 ### 7) Alertes personnalisees (bonus)
 
-- Entrez des mots-cles (ex: `ceasefire, cyberattack, sudan`).
+- Entrez des mots-cles (ex: `ceasefire, missile, ukraine`).
 - Selectionnez des pays cibles.
 - Cliquez `Enregistrer ces preferences`.
 
@@ -193,9 +193,8 @@ Seules les nouvelles alertes correspondant a ces preferences seront ingerees.
 
 - BBC World RSS
 - Al Jazeera RSS
-- ReliefWeb RSS
-- CISA Cybersecurity Advisories RSS
-- NATO News RSS
+- The Guardian World RSS
+- Google News (requetes geopolitique et signaux de conflit)
 
 ## Structure des fichiers
 

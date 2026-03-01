@@ -6,27 +6,25 @@ const feedService = require("../services/feedService");
 
 const router = express.Router();
 
+const CONFLICT_TYPES = ["geopolitique", "politique", "militaire"];
 const TYPE_FILTER_GROUPS = {
-  geopolitique: ["geopolitique", "politique", "militaire"],
-  sport: ["sport"],
-  economie: ["economie"],
-  technologie: ["technologie"],
-  cyber: ["cyber"],
-  humanitaire: ["humanitaire"],
-  autre: ["autre"]
+  geopolitique: CONFLICT_TYPES,
+  politique: CONFLICT_TYPES,
+  militaire: CONFLICT_TYPES
 };
 
-const ACTION_TYPES = ["geopolitique", "politique", "militaire", "humanitaire", "cyber"];
+const ACTION_TYPES = CONFLICT_TYPES;
 
 function buildAlertQuery(queryParams) {
-  const query = {};
+  // Always scope API results to geopolitical conflict alerts.
+  const query = {
+    type: { $in: CONFLICT_TYPES }
+  };
 
   if (queryParams.type) {
     const normalizedType = String(queryParams.type).trim().toLowerCase();
     if (TYPE_FILTER_GROUPS[normalizedType]) {
       query.type = { $in: TYPE_FILTER_GROUPS[normalizedType] };
-    } else {
-      query.type = normalizedType;
     }
   }
   if (queryParams.country) {
@@ -55,9 +53,7 @@ function buildAlertQuery(queryParams) {
       }
     ];
 
-    if (!query.type) {
-      query.type = { $in: ACTION_TYPES };
-    }
+    query.type = { $in: ACTION_TYPES };
   }
 
   return query;

@@ -71,7 +71,7 @@ const TYPE_KEYWORDS = {
   ]
 };
 
-const ACTION_FOCUS_TYPES = new Set(["geopolitique", "politique", "militaire"]);
+const ACTION_FOCUS_TYPES = new Set(["geopolitique"]);
 
 const ACTION_SIGNAL_PATTERNS = [
   /\bwar\b/i,
@@ -106,10 +106,10 @@ const ACTION_SIGNAL_PATTERNS = [
 
 function canonicalType(type) {
   const normalized = lower(type);
-  if (normalized === "politique" || normalized === "militaire") {
+  if (normalized === "politique" || normalized === "militaire" || normalized === "geopolitique") {
     return "geopolitique";
   }
-  return normalized || "autre";
+  return "autre";
 }
 
 function hasActionSignal(text) {

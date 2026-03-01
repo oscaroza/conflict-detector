@@ -148,24 +148,14 @@ function normalizeSeverity(value) {
 
 function canonicalType(value) {
   const normalized = String(value || "").toLowerCase();
-  if (normalized === "politique" || normalized === "militaire") {
+  if (normalized === "politique" || normalized === "militaire" || normalized === "geopolitique") {
     return "geopolitique";
   }
-  return normalized || "autre";
+  return "autre";
 }
 
 function typeLabel(value) {
-  return {
-    geopolitique: "Geopolitique",
-    sport: "Sport",
-    economie: "Economie",
-    technologie: "Technologie",
-    humanitaire: "Humanitaire",
-    cyber: "Cyber",
-    autre: "Autre",
-    politique: "Geopolitique",
-    militaire: "Geopolitique"
-  }[String(value || "").toLowerCase()] || capitalize(String(value || "autre"));
+  return canonicalType(value) === "geopolitique" ? "Geopolitique" : "Autre";
 }
 
 function capitalize(value) {
@@ -561,6 +551,7 @@ function getCurrentFilters() {
 
 function matchesCurrentFilters(alert) {
   const filters = getCurrentFilters();
+  if (canonicalType(alert.type) !== "geopolitique") return false;
 
   if (filters.type && canonicalType(alert.type) !== filters.type) return false;
   if (filters.country && alert.country?.name !== filters.country) return false;
@@ -586,7 +577,7 @@ function matchesSearch(alert) {
 }
 
 function getVisibleAlerts() {
-  return state.alerts.filter((alert) => matchesSearch(alert));
+  return state.alerts.filter((alert) => canonicalType(alert.type) === "geopolitique" && matchesSearch(alert));
 }
 
 function getAlertLatLng(alert) {
@@ -977,6 +968,10 @@ async function loadAlerts() {
       query.set(key, value);
     }
   });
+
+  if (!query.has("type")) {
+    query.set("type", "geopolitique");
+  }
 
   const mode = state.settings?.alertMode || "insight";
   if (mode === "action") {
@@ -1404,6 +1399,9 @@ function connectEventStream() {
     try {
       const payload = JSON.parse(event.data);
       const alert = payload.alert;
+      if (canonicalType(alert?.type) !== "geopolitique") {
+        return;
+      }
       const alreadyExists = state.alerts.some((existing) => existing._id === alert._id);
 
       if (!alreadyExists && matchesCurrentFilters(alert)) {
