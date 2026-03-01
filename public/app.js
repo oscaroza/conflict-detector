@@ -6,6 +6,8 @@ const state = {
   countryLayer: null,
   countryCentroids: new Map(),
   countryStatusLevels: new Map(),
+  countryProfileCache: new Map(),
+  selectedCountryKey: null,
   selectedAlertId: null,
   charts: {
     type: null,
@@ -17,6 +19,7 @@ const state = {
 
 const refs = {
   workspaceGrid: document.getElementById("workspaceGrid"),
+  intelOverlay: document.getElementById("intelOverlay"),
   alertsList: document.getElementById("alertsList"),
   alertDetails: document.getElementById("alertDetails"),
   totalAlertsCount: document.getElementById("totalAlertsCount"),
@@ -57,6 +60,7 @@ let speechVoicesInitialized = false;
 let uiRefreshTimer = null;
 let uiRefreshInFlight = false;
 let uiRefreshTick = 0;
+let layoutResizeTimer = null;
 
 function isSoundEnabled() {
   // Backward compatible for old settings docs missing this field.
@@ -153,6 +157,36 @@ function formatShortDate(dateString) {
     month: "2-digit",
     hour: "2-digit",
     minute: "2-digit"
+  });
+}
+
+function getAlertEventTimestamp(alert) {
+  const publishedTs = new Date(alert?.publishedAt || 0).getTime();
+  if (Number.isFinite(publishedTs) && publishedTs > 0) {
+    return publishedTs;
+  }
+
+  const createdTs = new Date(alert?.createdAt || 0).getTime();
+  if (Number.isFinite(createdTs) && createdTs > 0) {
+    return createdTs;
+  }
+
+  return 0;
+}
+
+function sortAlertsByEventTimeDesc(alerts) {
+  return [...(alerts || [])].sort((a, b) => {
+    const eventDelta = getAlertEventTimestamp(b) - getAlertEventTimestamp(a);
+    if (eventDelta !== 0) {
+      return eventDelta;
+    }
+
+    const createdDelta = new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime();
+    if (Number.isFinite(createdDelta) && createdDelta !== 0) {
+      return createdDelta;
+    }
+
+    return String(b?._id || "").localeCompare(String(a?._id || ""));
   });
 }
 
@@ -563,20 +597,26 @@ function bindFoldToggles() {
   });
 }
 
+function ensureIntelOverlayVisible() {
+  if (!refs.intelOverlay) return;
+  if (refs.intelOverlay.classList.contains("hidden")) {
+    refs.intelOverlay.classList.remove("hidden");
+    updateColumnToggleButtons();
+    refreshLayout();
+  }
+}
+
 function updateColumnToggleButtons() {
-  const hideRight = refs.workspaceGrid.classList.contains("hide-right");
+  const hidden = refs.intelOverlay?.classList.contains("hidden");
   if (refs.toggleRightPanelBtn) {
-    refs.toggleRightPanelBtn.textContent = hideRight ? "Show Panels" : "Hide Panels";
+    refs.toggleRightPanelBtn.textContent = hidden ? "Afficher panel" : "Fermer panel";
   }
 }
 
 function bindColumnToggles() {
-  // Keep feed column always visible.
-  refs.workspaceGrid.classList.remove("hide-left");
-
-  if (refs.toggleRightPanelBtn) {
+  if (refs.toggleRightPanelBtn && refs.intelOverlay) {
     refs.toggleRightPanelBtn.addEventListener("click", () => {
-      refs.workspaceGrid.classList.toggle("hide-right");
+      refs.intelOverlay.classList.toggle("hidden");
       updateColumnToggleButtons();
       refreshLayout();
     });
@@ -774,6 +814,44 @@ function getAlertLatLng(alert) {
   return [20, 0];
 }
 
+function getMarkerLimitForZoom(zoom) {
+  if (!Number.isFinite(zoom)) return 80;
+  if (zoom < 3) return 70;
+  if (zoom < 4) return 130;
+  if (zoom < 5) return 220;
+  if (zoom < 6) return 320;
+  return 460;
+}
+
+function selectAlertsForCurrentZoom(alerts) {
+  const zoom = Number(state.map?.getZoom?.() || 2);
+  const maxMarkers = getMarkerLimitForZoom(zoom);
+
+  if (!state.map || zoom < 3.5) {
+    return alerts.slice(0, maxMarkers);
+  }
+
+  const bounds = state.map.getBounds?.();
+  if (!bounds) {
+    return alerts.slice(0, maxMarkers);
+  }
+
+  const insideView = [];
+  const outsideView = [];
+
+  alerts.forEach((alert) => {
+    const [lat, lng] = getAlertLatLng(alert);
+    const point = L.latLng(lat, lng);
+    if (bounds.contains(point)) {
+      insideView.push(alert);
+    } else {
+      outsideView.push(alert);
+    }
+  });
+
+  return insideView.concat(outsideView).slice(0, maxMarkers);
+}
+
 function createMarker(alert) {
   const latLng = getAlertLatLng(alert);
   const signal = detectIncidentSignal(alert);
@@ -798,7 +876,7 @@ function createMarker(alert) {
 
   marker.bindPopup(`
     <strong>${escapeHtml(alert.title)}</strong><br>
-    ${escapeHtml(alert.country?.name || "Inconnu")} | ${escapeHtml(typeLabel(alert.type))} | ${escapeHtml(signalVisual.label)}
+    ${escapeHtml(alert.city?.name ? `${alert.city.name}, ${alert.country?.name || "Inconnu"}` : alert.country?.name || "Inconnu")} | ${escapeHtml(typeLabel(alert.type))} | ${escapeHtml(signalVisual.label)}
   `);
 
   marker.on("click", () => {
@@ -812,24 +890,50 @@ function createMarker(alert) {
 function renderMapMarkers() {
   const visibleAlerts = getVisibleAlerts();
   recomputeCountryStatusLevels();
+  updateCountryHeadlineCounters();
   state.markersLayer.clearLayers();
 
-  visibleAlerts.slice(0, 220).forEach((alert) => {
+  const zoom = Number(state.map?.getZoom?.() || 2);
+
+  if (zoom < 3.4) {
+    const countrySummaries = buildCountrySummaries(visibleAlerts);
+    const maxCountries = Math.max(45, getMarkerLimitForZoom(zoom));
+
+    countrySummaries.slice(0, maxCountries).forEach((summary) => {
+      const marker = createCountryMarker(summary);
+      state.markersLayer.addLayer(marker);
+    });
+
+    if (refs.mapOverlayMetric) {
+      refs.mapOverlayMetric.textContent = `${Math.min(countrySummaries.length, maxCountries)}/${
+        countrySummaries.length
+      } pays | ${visibleAlerts.length} alertes | zoom ${zoom.toFixed(1)}`;
+    }
+    return;
+  }
+
+  const renderedAlerts = selectAlertsForCurrentZoom(visibleAlerts);
+
+  renderedAlerts.forEach((alert) => {
     const marker = createMarker(alert);
     state.markersLayer.addLayer(marker);
   });
 
   if (refs.mapOverlayMetric) {
-    refs.mapOverlayMetric.textContent = `${visibleAlerts.length} alertes visibles`;
+    refs.mapOverlayMetric.textContent = `${renderedAlerts.length}/${visibleAlerts.length} alertes | zoom ${zoom.toFixed(
+      1
+    )}`;
   }
 }
 
 function renderAlertDetails(alert) {
+  ensureIntelOverlayVisible();
   const signalVisual = getSignalVisual(detectIncidentSignal(alert));
   const confidence = confidenceScoreValue(alert);
   const sourceCount = sourceCountValue(alert);
   const sourcesList = Array.isArray(alert?.sourceNames) && alert.sourceNames.length > 0 ? alert.sourceNames : [alert.sourceName];
 
+  state.selectedCountryKey = null;
   toggleFold("detailFold", true);
   refs.alertDetails.classList.remove("empty-state");
   refs.alertDetails.innerHTML = `
@@ -842,11 +946,13 @@ function renderAlertDetails(alert) {
   )}</span>
       <span class="meta-chip confidence-chip">Confiance ${confidence}%</span>
       <span class="meta-chip severity-${escapeHtml(alert.severity)}">${escapeHtml(severityLabel(alert.severity))}</span>
+      ${alert.city?.name ? `<span class="meta-chip">${escapeHtml(alert.city.name)}</span>` : ""}
       <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
       <span class="meta-chip">${escapeHtml(alert.country?.region || "Global")}</span>
     </div>
     <p class="mb-2"><strong>Résumé:</strong> ${escapeHtml(alert.summary || "Résumé non disponible")}</p>
     <p class="mb-2"><strong>Source:</strong> ${escapeHtml(alert.sourceName || "Inconnue")}</p>
+    <p class="mb-2"><strong>Ville:</strong> ${escapeHtml(alert.city?.name || "Non précisée")}</p>
     <p class="mb-2"><strong>Validation:</strong> ${escapeHtml(confirmationLabel(alert))} | <strong>Confiance:</strong> ${confidence}% | <strong>Sources croisées:</strong> ${sourceCount}</p>
     <p class="mb-2"><strong>Sources cluster:</strong> ${escapeHtml(sourcesList.join(", "))}</p>
     <p class="mb-2"><strong>Horodatage:</strong> ${escapeHtml(formatDate(alert.publishedAt || alert.createdAt))}</p>
@@ -911,6 +1017,7 @@ function renderAlertsList() {
       )}</span>
             <span class="meta-chip confidence-chip">${confidence}%</span>
             <span class="meta-chip severity-${escapeHtml(alert.severity)}">${escapeHtml(severityLabel(alert.severity))}</span>
+            ${alert.city?.name ? `<span class="meta-chip">${escapeHtml(alert.city.name)}</span>` : ""}
             <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
           </div>
           <p class="small text-secondary mb-2">${escapeHtml(formatDate(alert.publishedAt || alert.createdAt))} | ${escapeHtml(
@@ -1223,6 +1330,25 @@ function recomputeCountryStatusLevels() {
   state.countryStatusLevels = levels;
 }
 
+function updateCountryHeadlineCounters() {
+  let activeCountries = 0;
+  let tensionCountries = 0;
+
+  state.countryStatusLevels.forEach((level) => {
+    if (level >= 3) {
+      activeCountries += 1;
+      return;
+    }
+
+    if (level === 2) {
+      tensionCountries += 1;
+    }
+  });
+
+  refs.totalAlertsCount.textContent = String(activeCountries);
+  refs.criticalAlertsCount.textContent = String(tensionCountries);
+}
+
 function getCountryStatus(countryName) {
   const key = normalizeCountryAlias(normalizeCountryKey(countryName));
   const level = state.countryStatusLevels.get(key) || 1;
@@ -1265,6 +1391,249 @@ function getCountryHoverStyle(countryName) {
   };
 }
 
+function countryStatusLabel(status) {
+  return (
+    {
+      normal: "Normal",
+      tension: "Tension",
+      critical: "Critique"
+    }[status] || "Normal"
+  );
+}
+
+function countryStatusClass(status) {
+  return (
+    {
+      normal: "status-normal",
+      tension: "status-tension",
+      critical: "status-critical"
+    }[status] || "status-normal"
+  );
+}
+
+function getCountryKeyFromAlert(alert) {
+  const code = String(alert?.country?.code || "").toUpperCase().trim();
+  if (code && code !== "XX") {
+    return `code:${code}`;
+  }
+
+  const nameKey = normalizeCountryAlias(normalizeCountryKey(alert?.country?.name || ""));
+  return nameKey ? `name:${nameKey}` : "";
+}
+
+function getCountryCenter(group) {
+  const countryName = group?.country?.name;
+  if (countryName && state.countryCentroids.has(countryName)) {
+    return state.countryCentroids.get(countryName);
+  }
+
+  let latSum = 0;
+  let lngSum = 0;
+  let count = 0;
+
+  group.alerts.slice(0, 40).forEach((alert) => {
+    const [lat, lng] = getAlertLatLng(alert);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      latSum += lat;
+      lngSum += lng;
+      count += 1;
+    }
+  });
+
+  if (count > 0) {
+    return [latSum / count, lngSum / count];
+  }
+
+  return [20, 0];
+}
+
+function buildCountrySummaries(alerts) {
+  const groups = new Map();
+
+  alerts.forEach((alert) => {
+    const countryKey = getCountryKeyFromAlert(alert);
+    if (!countryKey) {
+      return;
+    }
+
+    if (!groups.has(countryKey)) {
+      groups.set(countryKey, {
+        key: countryKey,
+        country: {
+          name: alert?.country?.name || "Inconnu",
+          code: alert?.country?.code || "XX",
+          region: alert?.country?.region || "Global"
+        },
+        alerts: []
+      });
+    }
+
+    groups.get(countryKey).alerts.push(alert);
+  });
+
+  return Array.from(groups.values())
+    .map((group) => {
+      const sortedAlerts = sortAlertsByEventTimeDesc(group.alerts);
+      const latest = sortedAlerts[0];
+      const status = getCountryStatus(group.country.name);
+
+      return {
+        ...group,
+        alerts: sortedAlerts,
+        latestAt: getAlertEventTimestamp(latest),
+        status,
+        center: getCountryCenter({ ...group, alerts: sortedAlerts })
+      };
+    })
+    .sort((a, b) => b.latestAt - a.latestAt);
+}
+
+function getCountryLabelCode(summary) {
+  const code = String(summary?.country?.code || "").toUpperCase().trim();
+  if (code && code !== "XX") {
+    return code;
+  }
+
+  const fallback = String(summary?.country?.name || "?")
+    .replace(/[^A-Za-z]/g, "")
+    .slice(0, 2)
+    .toUpperCase();
+
+  return fallback || "??";
+}
+
+function createCountryMarker(summary) {
+  const [lat, lng] = summary.center || [20, 0];
+  const statusClass = countryStatusClass(summary.status);
+  const labelCode = getCountryLabelCode(summary);
+
+  const marker = L.marker([lat, lng], {
+    icon: L.divIcon({
+      className: "",
+      html: `<div class="country-marker ${statusClass}"><span>${escapeHtml(labelCode)}</span></div>`,
+      iconSize: [34, 34],
+      iconAnchor: [17, 17]
+    })
+  });
+
+  marker.bindPopup(`
+    <strong>${escapeHtml(summary.country.name || "Inconnu")}</strong><br>
+    Statut: ${escapeHtml(countryStatusLabel(summary.status))} | ${summary.alerts.length} alertes
+  `);
+
+  marker.on("click", () => {
+    renderCountryDetails(summary).catch((error) => {
+      showToast("Erreur profil pays", error.message);
+    });
+  });
+
+  return marker;
+}
+
+async function fetchCountryProfile(summary) {
+  const code = String(summary?.country?.code || "").toUpperCase().trim();
+  const cacheKey = code && code !== "XX" ? `code:${code}` : `name:${normalizeCountryKey(summary?.country?.name || "")}`;
+
+  if (state.countryProfileCache.has(cacheKey)) {
+    return state.countryProfileCache.get(cacheKey);
+  }
+
+  const params = new URLSearchParams();
+  if (code && code !== "XX") {
+    params.set("code", code);
+  } else if (summary?.country?.name) {
+    params.set("name", summary.country.name);
+  }
+
+  if (!params.toString()) {
+    return null;
+  }
+
+  try {
+    const profile = await api(`/api/country-profile?${params.toString()}`);
+    state.countryProfileCache.set(cacheKey, profile);
+    return profile;
+  } catch (error) {
+    return null;
+  }
+}
+
+function formatPopulation(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) {
+    return "Non disponible";
+  }
+  return amount.toLocaleString("fr-FR");
+}
+
+async function renderCountryDetails(summary) {
+  ensureIntelOverlayVisible();
+  const key = summary?.key || `${summary?.country?.name || "country"}-${Date.now()}`;
+  state.selectedCountryKey = key;
+  state.selectedAlertId = null;
+
+  const statusLabel = countryStatusLabel(summary.status);
+  const statusClass = countryStatusClass(summary.status);
+
+  toggleFold("detailFold", true);
+  refs.alertDetails.classList.remove("empty-state");
+  refs.alertDetails.innerHTML = `
+    <h3 class="mb-2">${escapeHtml(summary.country.name || "Pays inconnu")}</h3>
+    <div class="detail-meta mb-2">
+      <span class="meta-chip ${statusClass}">${escapeHtml(statusLabel)}</span>
+      <span class="meta-chip">${summary.alerts.length} alertes</span>
+      <span class="meta-chip">${escapeHtml(summary.country.region || "Global")}</span>
+    </div>
+    <p class="mb-0 small text-secondary">Chargement du profil pays...</p>
+  `;
+
+  const profile = await fetchCountryProfile(summary);
+  if (state.selectedCountryKey !== key) {
+    return;
+  }
+
+  const latestAlerts = summary.alerts.slice(0, 5);
+  const countryName = profile?.name || summary.country.name || "Inconnu";
+  const flag = profile?.flag || "🏳️";
+  const capital = profile?.capital || "Non disponible";
+  const subregion = profile?.subregion || "";
+  const population = formatPopulation(profile?.population);
+  const leader = profile?.leader || "Non disponible";
+
+  refs.alertDetails.innerHTML = `
+    <h3 class="mb-2">${escapeHtml(countryName)} <span class="country-flag">${escapeHtml(flag)}</span></h3>
+    <div class="detail-meta mb-2">
+      <span class="meta-chip ${statusClass}">${escapeHtml(statusLabel)}</span>
+      <span class="meta-chip">${latestAlerts.length} derniers événements</span>
+      <span class="meta-chip">${escapeHtml(summary.country.code || "XX")}</span>
+    </div>
+    <p class="mb-1"><strong>Capitale:</strong> ${escapeHtml(capital)}</p>
+    <p class="mb-1"><strong>Région:</strong> ${escapeHtml(summary.country.region || "Global")}${
+      subregion ? ` / ${escapeHtml(subregion)}` : ""
+    }</p>
+    <p class="mb-1"><strong>Population:</strong> ${escapeHtml(population)}</p>
+    <p class="mb-2"><strong>Président / dirigeant:</strong> ${escapeHtml(leader)}</p>
+    <div class="country-events">
+      <h4 class="country-events-title">Dernières alertes</h4>
+      ${latestAlerts
+        .map(
+          (alert) => `
+        <article class="country-event-item">
+          <p class="country-event-title"><span class="severity-${escapeHtml(alert.severity)}">${escapeHtml(
+            severityLabel(alert.severity)
+          )}</span> - ${escapeHtml(alert.title)}</p>
+          <p class="country-event-meta">${escapeHtml(formatDate(alert.publishedAt || alert.createdAt))} | ${escapeHtml(
+            alert.sourceName || "Source inconnue"
+          )}</p>
+          <a href="${escapeHtml(alert.sourceUrl)}" target="_blank" rel="noopener noreferrer">Ouvrir la source</a>
+        </article>
+      `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 async function loadAlerts() {
   const filters = getCurrentFilters();
   const query = new URLSearchParams();
@@ -1285,8 +1654,8 @@ async function loadAlerts() {
   }
 
   const payload = await api(`/api/alerts?${query.toString()}&limit=120`);
-  // API returns newest first; reverse to display notifications in arrival order (oldest -> newest).
-  state.alerts = [...payload.alerts].reverse();
+  // Always render newest events on top based on event time.
+  state.alerts = sortAlertsByEventTimeDesc(payload.alerts);
 
   if (state.countryLayer) {
     state.countryLayer.setStyle(styleCountryFeature);
@@ -1695,17 +2064,20 @@ function bindEvents() {
   bindQuickFilters();
   bindFoldToggles();
   bindColumnToggles();
+
+  window.addEventListener("resize", () => {
+    if (layoutResizeTimer) {
+      clearTimeout(layoutResizeTimer);
+    }
+    layoutResizeTimer = setTimeout(() => {
+      refreshLayout();
+    }, 150);
+  });
 }
 
 async function loadStats() {
   const mode = state.settings?.alertMode === "action" ? "action" : "";
   const stats = await api(mode ? `/api/stats?mode=${mode}` : "/api/stats");
-
-  const total = stats.byType.reduce((acc, item) => acc + item.count, 0);
-  const critical = (stats.bySeverity.find((item) => item._id === "critical") || {}).count || 0;
-
-  refs.totalAlertsCount.textContent = String(total);
-  refs.criticalAlertsCount.textContent = String(critical);
 
   renderCharts(stats);
   renderRiskMix(stats);
@@ -1764,6 +2136,14 @@ function initializeMap() {
   }).addTo(state.map);
 
   state.markersLayer = L.layerGroup().addTo(state.map);
+
+  state.map.on("zoomend", () => {
+    renderMapMarkers();
+  });
+
+  state.map.on("moveend", () => {
+    renderMapMarkers();
+  });
 }
 
 function connectEventStream() {
@@ -1784,6 +2164,7 @@ function connectEventStream() {
 
       if (!alreadyExists && matchesCurrentFilters(alert)) {
         state.alerts.push(alert);
+        state.alerts = sortAlertsByEventTimeDesc(state.alerts);
       }
 
       renderAlertsList();
@@ -1813,7 +2194,9 @@ function connectEventStream() {
 
   state.eventSource.addEventListener("alert-updated", (event) => {
     const payload = JSON.parse(event.data);
-    state.alerts = state.alerts.map((alert) => (alert._id === payload.alert._id ? payload.alert : alert));
+    state.alerts = sortAlertsByEventTimeDesc(
+      state.alerts.map((alert) => (alert._id === payload.alert._id ? payload.alert : alert))
+    );
     renderAlertsList();
     renderMapMarkers();
     renderTicker();

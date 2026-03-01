@@ -3,6 +3,7 @@ const Alert = require("../models/Alert");
 const Settings = require("../models/Settings");
 const streamService = require("../services/streamService");
 const feedService = require("../services/feedService");
+const { getCountryProfile } = require("../utils/countryProfile");
 
 const router = express.Router();
 
@@ -156,6 +157,22 @@ router.get("/regions", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+router.get("/country-profile", (req, res) => {
+  const code = String(req.query.code || "").trim().toUpperCase();
+  const name = String(req.query.name || "").trim();
+
+  if (!code && !name) {
+    return res.status(400).json({ error: "Parametre code ou name requis" });
+  }
+
+  const profile = getCountryProfile({ code, name });
+  if (!profile) {
+    return res.status(404).json({ error: "Profil pays introuvable" });
+  }
+
+  return res.json(profile);
 });
 
 router.get("/stats", async (req, res, next) => {

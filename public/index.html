@@ -53,13 +53,6 @@
           </article>
         </div>
 
-        <div class="utility-nav">
-          <button class="btn btn-sm btn-outline-light tone-btn nav-btn">Predictions</button>
-          <button class="btn btn-sm btn-outline-warning tone-btn nav-btn warning">Subscribe</button>
-          <button class="btn btn-sm btn-outline-light tone-btn nav-btn">Anonyme</button>
-          <button class="btn btn-sm btn-outline-danger tone-btn nav-btn pulse">Pulse</button>
-        </div>
-
         <div class="action-block">
           <button id="toggleCoverageBtn" class="btn btn-sm btn-outline-success tone-btn coverage-toggle-btn">Global ON</button>
           <label class="tiny-label" for="alertModeSelect">Mode</label>
@@ -77,6 +70,7 @@
             <option value="900">15 min</option>
           </select>
           <button id="toggleSoundBtn" class="btn btn-sm btn-outline-light tone-btn sound-toggle-btn">Son ON</button>
+          <button id="toggleRightPanelBtn" class="btn btn-sm btn-outline-light tone-btn panel-toggle-top">Fermer panel</button>
           <button id="refreshNowBtn" class="btn btn-sm btn-warning pulse-btn">Analyser</button>
         </div>
       </header>
@@ -160,28 +154,6 @@
 
             <div id="alertsList" class="alerts-list"></div>
           </section>
-
-          <section class="panel-shell settings-panel fold-card">
-            <div class="panel-head panel-head-toggle">
-              <h2>SMART DIGEST</h2>
-              <button
-                class="fold-toggle"
-                data-target="settingsFold"
-                data-open-label="Masquer"
-                data-close-label="Ouvrir"
-                aria-expanded="false"
-              >
-                Ouvrir
-              </button>
-            </div>
-            <div id="settingsFold" class="fold-content">
-              <label class="tiny-label" for="keywordInput">Mots-clés</label>
-              <input id="keywordInput" class="form-control form-control-sm" placeholder="iran, ceasefire, missile..." />
-              <label class="tiny-label mt-2" for="settingsCountryFilter">Pays ciblés</label>
-              <select id="settingsCountryFilter" class="form-select form-select-sm" multiple></select>
-              <button id="saveSettingsBtn" class="btn btn-sm btn-outline-warning mt-2 w-100">Enregistrer</button>
-            </div>
-          </section>
         </aside>
 
         <section class="center-column">
@@ -191,124 +163,141 @@
               <strong id="mapOverlayMetric">0 alertes actives</strong>
             </div>
             <div id="map"></div>
-          </section>
+            <aside id="intelOverlay" class="intel-overlay">
+              <section class="panel-shell settings-panel fold-card is-open">
+                <div class="panel-head panel-head-toggle">
+                  <h2>SMART DIGEST</h2>
+                  <button
+                    class="fold-toggle"
+                    data-target="settingsFold"
+                    data-open-label="Masquer"
+                    data-close-label="Ouvrir"
+                    aria-expanded="true"
+                  >
+                    Masquer
+                  </button>
+                </div>
+                <div id="settingsFold" class="fold-content open">
+                  <label class="tiny-label" for="keywordInput">Mots-clés</label>
+                  <input id="keywordInput" class="form-control form-control-sm" placeholder="iran, ceasefire, missile..." />
+                  <label class="tiny-label mt-2" for="settingsCountryFilter">Pays ciblés</label>
+                  <select id="settingsCountryFilter" class="form-select form-select-sm" multiple></select>
+                  <button id="saveSettingsBtn" class="btn btn-sm btn-outline-warning mt-2 w-100">Enregistrer</button>
+                </div>
+              </section>
 
-          <section class="panel-shell tension-panel">
-            <div class="panel-head panel-head-toggle">
-              <h2>TENSION INDEX</h2>
-              <button
-                class="fold-toggle"
-                data-target="tensionFold"
-                data-open-label="Masquer"
-                data-close-label="Ouvrir"
-                aria-expanded="false"
-              >
-                Ouvrir
-              </button>
-            </div>
-            <div id="tensionFold" class="fold-content">
-              <canvas id="tensionChart" height="92"></canvas>
-            </div>
+              <section class="panel-shell tension-panel fold-card is-open">
+                <div class="panel-head panel-head-toggle">
+                  <h2>TENSION INDEX</h2>
+                  <button
+                    class="fold-toggle"
+                    data-target="tensionFold"
+                    data-open-label="Masquer"
+                    data-close-label="Ouvrir"
+                    aria-expanded="true"
+                  >
+                    Masquer
+                  </button>
+                </div>
+                <div id="tensionFold" class="fold-content open">
+                  <canvas id="tensionChart" height="92"></canvas>
+                </div>
+              </section>
+
+              <section class="panel-shell details-panel fold-card is-open">
+                <div class="panel-head panel-head-toggle">
+                  <h2>EVENT DETAIL</h2>
+                  <button
+                    class="fold-toggle"
+                    data-target="detailFold"
+                    data-open-label="Masquer"
+                    data-close-label="Ouvrir"
+                    aria-expanded="true"
+                  >
+                    Masquer
+                  </button>
+                </div>
+                <div id="detailFold" class="fold-content open">
+                  <div id="alertDetails" class="alert-details empty-state">
+                    Cliquez sur une alerte pour afficher le détail complet.
+                  </div>
+                </div>
+              </section>
+
+              <section class="panel-shell widget-panel fold-card is-open">
+                <div class="panel-head panel-head-toggle">
+                  <h2>TOP PREDICTIONS</h2>
+                  <button
+                    class="fold-toggle"
+                    data-target="predictionsFold"
+                    data-open-label="Masquer"
+                    data-close-label="Ouvrir"
+                    aria-expanded="true"
+                  >
+                    Masquer
+                  </button>
+                </div>
+                <div id="predictionsFold" class="fold-content open">
+                  <canvas id="typeChart" height="120"></canvas>
+                </div>
+              </section>
+
+              <section class="panel-shell widget-panel fold-card is-open">
+                <div class="panel-head panel-head-toggle">
+                  <h2>RISK MIX</h2>
+                  <button
+                    class="fold-toggle"
+                    data-target="marketsFold"
+                    data-open-label="Masquer"
+                    data-close-label="Ouvrir"
+                    aria-expanded="true"
+                  >
+                    Masquer
+                  </button>
+                </div>
+                <div id="marketsFold" class="fold-content open">
+                  <div id="marketsList" class="market-list"></div>
+                </div>
+              </section>
+
+              <section class="panel-shell widget-panel fold-card is-open">
+                <div class="panel-head panel-head-toggle">
+                  <h2>TOP KEYWORDS (24H)</h2>
+                  <button
+                    class="fold-toggle"
+                    data-target="keywordsFold"
+                    data-open-label="Masquer"
+                    data-close-label="Ouvrir"
+                    aria-expanded="true"
+                  >
+                    Masquer
+                  </button>
+                </div>
+                <div id="keywordsFold" class="fold-content open">
+                  <div id="keywordsList" class="keyword-list"></div>
+                </div>
+              </section>
+
+              <section class="panel-shell widget-panel fold-card is-open">
+                <div class="panel-head panel-head-toggle">
+                  <h2>HOTSPOT RATE</h2>
+                  <button
+                    class="fold-toggle"
+                    data-target="hotspotFold"
+                    data-open-label="Masquer"
+                    data-close-label="Ouvrir"
+                    aria-expanded="true"
+                  >
+                    Masquer
+                  </button>
+                </div>
+                <div id="hotspotFold" class="fold-content open">
+                  <canvas id="countryChart" height="120"></canvas>
+                </div>
+              </section>
+            </aside>
           </section>
         </section>
-
-        <aside class="right-column">
-          <section class="right-control-row">
-            <button id="toggleRightPanelBtn" class="btn btn-sm btn-outline-light tone-btn column-toggle">Hide Panels</button>
-          </section>
-
-          <section class="panel-shell details-panel fold-card">
-            <div class="panel-head panel-head-toggle">
-              <h2>EVENT DETAIL</h2>
-              <button
-                class="fold-toggle"
-                data-target="detailFold"
-                data-open-label="Masquer"
-                data-close-label="Ouvrir"
-                aria-expanded="false"
-              >
-                Ouvrir
-              </button>
-            </div>
-            <div id="detailFold" class="fold-content">
-              <div id="alertDetails" class="alert-details empty-state">
-                Cliquez sur une alerte pour afficher le détail complet.
-              </div>
-            </div>
-          </section>
-
-          <section class="panel-shell widget-panel fold-card is-open">
-            <div class="panel-head panel-head-toggle">
-              <h2>TOP PREDICTIONS</h2>
-              <button
-                class="fold-toggle"
-                data-target="predictionsFold"
-                data-open-label="Masquer"
-                data-close-label="Ouvrir"
-                aria-expanded="true"
-              >
-                Masquer
-              </button>
-            </div>
-            <div id="predictionsFold" class="fold-content open">
-              <canvas id="typeChart" height="120"></canvas>
-            </div>
-          </section>
-
-          <section class="panel-shell widget-panel fold-card is-open">
-            <div class="panel-head panel-head-toggle">
-              <h2>RISK MIX</h2>
-              <button
-                class="fold-toggle"
-                data-target="marketsFold"
-                data-open-label="Masquer"
-                data-close-label="Ouvrir"
-                aria-expanded="true"
-              >
-                Masquer
-              </button>
-            </div>
-            <div id="marketsFold" class="fold-content open">
-              <div id="marketsList" class="market-list"></div>
-            </div>
-          </section>
-
-          <section class="panel-shell widget-panel fold-card is-open">
-            <div class="panel-head panel-head-toggle">
-              <h2>TOP KEYWORDS (24H)</h2>
-              <button
-                class="fold-toggle"
-                data-target="keywordsFold"
-                data-open-label="Masquer"
-                data-close-label="Ouvrir"
-                aria-expanded="true"
-              >
-                Masquer
-              </button>
-            </div>
-            <div id="keywordsFold" class="fold-content open">
-              <div id="keywordsList" class="keyword-list"></div>
-            </div>
-          </section>
-
-          <section class="panel-shell widget-panel fold-card is-open">
-            <div class="panel-head panel-head-toggle">
-              <h2>HOTSPOT RATE</h2>
-              <button
-                class="fold-toggle"
-                data-target="hotspotFold"
-                data-open-label="Masquer"
-                data-close-label="Ouvrir"
-                aria-expanded="true"
-              >
-                Masquer
-              </button>
-            </div>
-            <div id="hotspotFold" class="fold-content open">
-              <canvas id="countryChart" height="120"></canvas>
-            </div>
-          </section>
-        </aside>
       </main>
     </div>
 

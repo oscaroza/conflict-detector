@@ -2,6 +2,7 @@ const Parser = require("rss-parser");
 const Alert = require("../models/Alert");
 const Settings = require("../models/Settings");
 const { extractCountry } = require("../utils/countryMatcher");
+const { extractCity } = require("../utils/cityMatcher");
 const streamService = require("./streamService");
 
 const parser = new Parser({
@@ -671,7 +672,17 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
       .trim();
 
     const articleText = `${title} ${summary}`;
-    const countryInfo = extractCountry(articleText);
+    let countryInfo = extractCountry(articleText);
+    const cityInfo = extractCity(articleText, countryInfo);
+    if (cityInfo && (!countryInfo || countryInfo.code === "XX" || countryInfo.name === "Inconnu")) {
+      countryInfo = {
+        name: cityInfo.countryName,
+        code: cityInfo.countryCode,
+        region: cityInfo.region || "Global",
+        lat: cityInfo.lat,
+        lng: cityInfo.lng
+      };
+    }
 
     if (!matchesSettingsFilters(articleText, countryInfo, settings)) {
       continue;
@@ -690,6 +701,8 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
     const publishedAt = item.isoDate || item.pubDate ? new Date(item.isoDate || item.pubDate) : new Date();
 
     const sourceName = inferSourceName(item, title);
+    const markerLat = Number.isFinite(cityInfo?.lat) ? cityInfo.lat : countryInfo.lat || 20;
+    const markerLng = Number.isFinite(cityInfo?.lng) ? cityInfo.lng : countryInfo.lng || 0;
 
     const payload = {
       title,
@@ -709,9 +722,14 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
         code: countryInfo.code,
         region: countryInfo.region
       },
+      city: {
+        name: cityInfo?.name || "",
+        lat: Number.isFinite(cityInfo?.lat) ? cityInfo.lat : null,
+        lng: Number.isFinite(cityInfo?.lng) ? cityInfo.lng : null
+      },
       location: {
         type: "Point",
-        coordinates: [countryInfo.lng || 0, countryInfo.lat || 20]
+        coordinates: [markerLng, markerLat]
       }
     };
 
