@@ -159,6 +159,161 @@ function updateCoverageToggleUI() {
   refs.toggleCoverageBtn.classList.toggle("is-off", !enabled);
 }
 
+function getMapMode() {
+  return state.mapMode === "3d" ? "3d" : "2d";
+}
+
+function getSeverityColorHex(severity) {
+  const normalized = normalizeSeverity(severity);
+  return (
+    {
+      critical: "#ff3341",
+      high: "#ff6a3f",
+      medium: "#ffd24a",
+      low: "#35ef9f"
+    }[normalized] || "#39d0ff"
+  );
+}
+
+function updateMapModeUI() {
+  const mode = getMapMode();
+  const is3d = mode === "3d";
+  const hasGlobeSupport = typeof window.Globe === "function";
+
+  if (refs.mapView) {
+    refs.mapView.classList.toggle("hidden-view", is3d);
+  }
+  if (refs.globeView) {
+    refs.globeView.classList.toggle("hidden-view", !is3d);
+    refs.globeView.setAttribute("aria-hidden", String(!is3d));
+  }
+
+  if (refs.toggleMapModeBtn) {
+    refs.toggleMapModeBtn.disabled = !hasGlobeSupport;
+    refs.toggleMapModeBtn.textContent = is3d ? "Vue 2D" : "Vue 3D";
+    refs.toggleMapModeBtn.title = !hasGlobeSupport
+      ? "Moteur 3D indisponible"
+      : is3d
+        ? "Revenir à la carte 2D Leaflet"
+        : "Basculer vers le globe 3D";
+  }
+}
+
+function resizeGlobeViewport() {
+  if (!state.globe || !refs.globeView) return;
+  const width = refs.globeView.clientWidth;
+  const height = refs.globeView.clientHeight;
+  if (width > 0 && height > 0) {
+    state.globe.width(width).height(height);
+  }
+}
+
+function initializeGlobe() {
+  if (state.globe) {
+    return true;
+  }
+
+  if (!refs.globeView || typeof window.Globe !== "function") {
+    return false;
+  }
+
+  const globe = window.Globe()(refs.globeView)
+    .backgroundColor("rgba(0,0,0,0)")
+    .globeImageUrl("https://unpkg.com/three-globe/example/img/earth-night.jpg")
+    .bumpImageUrl("https://unpkg.com/three-globe/example/img/earth-topology.png")
+    .showAtmosphere(true)
+    .atmosphereColor("#39d0ff")
+    .atmosphereAltitude(0.16)
+    .pointLat("lat")
+    .pointLng("lng")
+    .pointColor("color")
+    .pointAltitude("altitude")
+    .pointRadius("radius")
+    .pointLabel("label")
+    .onPointClick((point) => {
+      const alert = point?.alert;
+      if (!alert) return;
+      state.selectedAlertId = alert._id;
+      renderAlertDetails(alert);
+      renderAlertsList();
+    });
+
+  if (typeof globe.controls === "function") {
+    const controls = globe.controls();
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.09;
+    controls.rotateSpeed = 0.58;
+    controls.minDistance = 140;
+    controls.maxDistance = 420;
+    controls.autoRotate = false;
+  }
+
+  state.globe = globe;
+  resizeGlobeViewport();
+  return true;
+}
+
+function renderGlobeMarkers(alerts) {
+  if (!state.globe) return;
+
+  const points = sortAlertsByEventTimeDesc(alerts)
+    .slice(0, 420)
+    .map((alert) => {
+      const [lat, lng] = getAlertLatLng(alert);
+      if (!isValidLatLng(lat, lng)) {
+        return null;
+      }
+
+      const severity = normalizeSeverity(alert?.severity);
+      const signalVisual = getSignalVisual(detectIncidentSignal(alert));
+      const pointColor = getSeverityColorHex(severity);
+      const title = escapeHtml(alert?.title || "Alerte");
+      const country = escapeHtml(alert?.country?.name || "Inconnu");
+      const eventTime = escapeHtml(formatAlertEventTime(alert, { allowPublicationFallback: true }));
+
+      return {
+        lat,
+        lng,
+        color: pointColor,
+        altitude: severity === "critical" ? 0.03 : severity === "high" ? 0.022 : 0.015,
+        radius: severity === "critical" ? 0.26 : severity === "high" ? 0.2 : 0.15,
+        alert,
+        label: `<div style="font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.35;">
+          <strong>${title}</strong><br>${country} | ${escapeHtml(signalVisual.label)} | ${eventTime}
+        </div>`
+      };
+    })
+    .filter(Boolean);
+
+  state.globe.pointsData(points);
+
+  if (refs.mapOverlayMetric) {
+    refs.mapOverlayMetric.textContent = `${points.length}/${alerts.length} alertes | globe 3D`;
+  }
+}
+
+function toggleMapMode() {
+  const nextMode = getMapMode() === "2d" ? "3d" : "2d";
+
+  if (nextMode === "3d") {
+    const ready = initializeGlobe();
+    if (!ready) {
+      showToast("Vue 3D indisponible", "Chargement du moteur Globe impossible sur ce navigateur.");
+      return;
+    }
+  }
+
+  state.mapMode = nextMode;
+  updateMapModeUI();
+  renderMapMarkers();
+
+  if (nextMode === "2d") {
+    state.map?.invalidateSize?.();
+  } else {
+    resizeGlobeViewport();
+  }
+}
+
 function browserNotificationsSupported() {
   return typeof window !== "undefined" && "Notification" in window && window.isSecureContext;
 }
@@ -350,6 +505,8 @@ function refreshLayout() {
     if (state.map) {
       state.map.invalidateSize();
     }
+
+    resizeGlobeViewport();
 
     Object.values(state.charts).forEach((chart) => {
       if (chart && typeof chart.resize === "function") {
@@ -1506,6 +1663,22 @@ function renderMapMarkers() {
   const visibleAlerts = getVisibleAlerts();
   recomputeCountryStatusLevels();
   updateCountryHeadlineCounters();
+
+  if (getMapMode() === "3d") {
+    if (state.markersLayer) {
+      state.markersLayer.clearLayers();
+    }
+    if (!state.globe) {
+      initializeGlobe();
+    }
+    renderGlobeMarkers(visibleAlerts);
+    return;
+  }
+
+  if (!state.markersLayer || !state.map) {
+    return;
+  }
+
   state.markersLayer.clearLayers();
 
   const zoom = Number(state.map?.getZoom?.() || 2);
@@ -3033,6 +3206,12 @@ function bindEvents() {
     });
   }
 
+  if (refs.toggleMapModeBtn) {
+    refs.toggleMapModeBtn.addEventListener("click", () => {
+      toggleMapMode();
+    });
+  }
+
   if (refs.toggleCoverageBtn) {
     refs.toggleCoverageBtn.addEventListener("click", () => {
       toggleCoverage().catch((error) => showToast("Erreur", error.message));
@@ -3328,6 +3507,7 @@ async function bootstrap() {
 
   await runBootStage("map", "Initialisation de la carte...", async () => {
     initializeMap();
+    updateMapModeUI();
   });
 
   await runBootStage("countries", "Chargement des contours pays...", async () => {

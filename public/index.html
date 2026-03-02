@@ -108,6 +108,7 @@
           <button id="toggleSoundBtn" class="btn btn-sm btn-outline-light tone-btn sound-toggle-btn">Son ON</button>
           <button id="toggleVoiceBtn" class="btn btn-sm btn-outline-light tone-btn sound-toggle-btn" title="Voix locale navigateur (fallback)">Voix SYS ON</button>
           <button id="toggleBrowserNotifBtn" class="btn btn-sm btn-outline-light tone-btn sound-toggle-btn" title="Notifications systeme Safari">Notif Safari OFF</button>
+          <button id="toggleMapModeBtn" class="btn btn-sm btn-outline-light tone-btn sound-toggle-btn" title="Basculer entre carte 2D et globe 3D">Vue 3D</button>
           <button id="toggleRightPanelBtn" class="btn btn-sm btn-outline-light tone-btn panel-toggle-top">Masquer panel</button>
           <button id="refreshNowBtn" class="btn btn-sm btn-warning pulse-btn">Analyser</button>
         </div>
@@ -212,7 +213,8 @@
               <span>LIVE THEATER</span>
               <strong id="mapOverlayMetric">0 alertes actives</strong>
             </div>
-            <div id="map"></div>
+            <div id="map" class="map-view"></div>
+            <div id="globe" class="map-view hidden-view" aria-hidden="true"></div>
             <aside id="intelOverlay" class="intel-overlay">
               <section class="panel-shell settings-panel fold-card is-open">
                 <div class="panel-head panel-head-toggle">
@@ -365,6 +367,7 @@
       crossorigin=""
     ></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://unpkg.com/globe.gl"></script>
     <script src="./app.js"></script>
   </body>
 </html>
