@@ -6,3 +6,4 @@ conflict-detector-backend/.venv
 conflict-detector-backend/__pycache__
 conflict-detector-backend/*.session
 conflict-detector-backend/*.db
+conflict-detector-backend/generate_session.py

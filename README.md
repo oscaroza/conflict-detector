@@ -100,6 +100,8 @@ cp .env.example .env
 PORT=3000
 MONGODB_URI=mongodb://127.0.0.1:27017/conflict_detector
 POLL_INTERVAL_SECONDS=300
+TELEGRAM_OSINT_API_URL=
+TELEGRAM_OSINT_FETCH_LIMIT=120
 TTS_PROVIDER=none
 ELEVENLABS_API_KEY=
 ELEVENLABS_VOICE_ID=
@@ -107,6 +109,18 @@ ELEVENLABS_MODEL_ID=eleven_multilingual_v2
 ```
 
 Si Atlas: remplacez `MONGODB_URI` par votre URI Atlas.
+
+### Option fusion Telegram + medias RSS
+
+Si vous avez aussi le backend Python Telegram (service Render separe), configurez:
+
+```env
+TELEGRAM_OSINT_API_URL=https://votre-backend-python.onrender.com
+TELEGRAM_OSINT_FETCH_LIMIT=120
+```
+
+Le backend Node fusionnera automatiquement les alertes Telegram et RSS dans le meme flux UI.
+La source affichera soit un canal Telegram (`@...`), soit le media (`Fox News`, `BBC`, etc.).
 
 ### Option voix cloud (recommande pour un meilleur accent)
 
@@ -220,6 +234,7 @@ Seules les nouvelles alertes correspondant a ces preferences seront ingerees.
 - Al Jazeera RSS
 - The Guardian World RSS
 - Google News (requetes geopolitique et signaux de conflit)
+- Backend Telegram OSINT FastAPI (optionnel, via `TELEGRAM_OSINT_API_URL`)
 
 ## Structure des fichiers
 

@@ -17,6 +17,8 @@ const parser = new Parser({
 
 const FETCH_TIMEOUT_MS = 15000;
 const GDELT_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc";
+const TELEGRAM_SYNC_TIMEOUT_MS = 12000;
+const TELEGRAM_SYNC_DEFAULT_LIMIT = 120;
 
 const FEEDS = [
   {
@@ -91,6 +93,103 @@ const GDELT_STREAMS = [
     maxRecords: 70
   }
 ];
+
+function resolveTelegramBackendBaseUrl() {
+  const raw = String(process.env.TELEGRAM_OSINT_API_URL || "").trim();
+  if (!raw) return "";
+  return raw.replace(/\/+$/, "");
+}
+
+function resolveTelegramFetchLimit() {
+  const raw = Number(process.env.TELEGRAM_OSINT_FETCH_LIMIT);
+  if (Number.isFinite(raw) && raw >= 10 && raw <= 500) {
+    return Math.round(raw);
+  }
+  return TELEGRAM_SYNC_DEFAULT_LIMIT;
+}
+
+function normalizeTelegramSourceName(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "Telegram OSINT";
+  return raw.startsWith("@") ? raw : `@${raw.replace(/^@+/, "")}`;
+}
+
+function buildTelegramChannelBaseUrl(sourceName) {
+  const raw = String(sourceName || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
+  const handle = raw.replace(/^@+/, "").trim();
+  if (!handle) return "";
+  return `https://t.me/${encodeURIComponent(handle)}`;
+}
+
+function buildTelegramSourceUrl(alert, sourceName, backendBaseUrl) {
+  const uniqueToken = encodeURIComponent(String(alert?.id || `${Date.now()}`));
+  const channelBase = buildTelegramChannelBaseUrl(sourceName);
+  if (channelBase) {
+    return `${channelBase}#alert-${uniqueToken}`;
+  }
+  if (backendBaseUrl) {
+    return `${backendBaseUrl}/api/alerts?limit=1#telegram-${uniqueToken}`;
+  }
+  return `https://t.me/#telegram-${uniqueToken}`;
+}
+
+function normalizeTelegramSeverity(rawSeverity, text) {
+  const normalized = String(rawSeverity || "")
+    .trim()
+    .toLowerCase();
+
+  const mapped = {
+    critique: "critical",
+    critical: "critical",
+    haute: "high",
+    high: "high",
+    moyen: "medium",
+    medium: "medium",
+    faible: "low",
+    low: "low"
+  }[normalized];
+
+  if (mapped) return mapped;
+  return classifySeverity(text);
+}
+
+function clampConfidence(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 35;
+  return Math.max(0, Math.min(100, Math.round(num)));
+}
+
+function resolveTelegramCountryInfo(rawAlert, articleText) {
+  const declaredCountry = String(rawAlert?.country || "").trim();
+  const declaredRegion = String(rawAlert?.region || "").trim();
+  const declaredLat = Number(rawAlert?.lat);
+  const declaredLng = Number(rawAlert?.lng);
+
+  let countryInfo = extractCountry(`${declaredCountry} ${articleText}`.trim());
+  if (!countryInfo || countryInfo.code === "XX") {
+    countryInfo = {
+      name: declaredCountry || "Inconnu",
+      code: "XX",
+      region: declaredRegion || "Global",
+      lat: Number.isFinite(declaredLat) ? declaredLat : 20,
+      lng: Number.isFinite(declaredLng) ? declaredLng : 0
+    };
+    return countryInfo;
+  }
+
+  if (declaredRegion) {
+    countryInfo.region = declaredRegion;
+  }
+  if (Number.isFinite(declaredLat)) {
+    countryInfo.lat = declaredLat;
+  }
+  if (Number.isFinite(declaredLng)) {
+    countryInfo.lng = declaredLng;
+  }
+  return countryInfo;
+}
 
 const TYPE_KEYWORDS = {
   geopolitique: [
@@ -695,13 +794,156 @@ async function fetchGdeltItems(stream) {
   }
 }
 
+async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
+  const backendBaseUrl = resolveTelegramBackendBaseUrl();
+  if (!backendBaseUrl) {
+    return [];
+  }
+
+  const endpoint = `${backendBaseUrl}/api/alerts?limit=${resolveTelegramFetchLimit()}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TELEGRAM_SYNC_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(endpoint, {
+      headers: {
+        Accept: "application/json"
+      },
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`Status code ${response.status}`);
+    }
+
+    const payload = await response.json();
+    const telegramAlerts = Array.isArray(payload?.alerts) ? payload.alerts : [];
+
+    const mapped = [];
+
+    for (const rawAlert of telegramAlerts) {
+      const title = String(rawAlert?.title || "").trim();
+      if (!title) {
+        continue;
+      }
+
+      const summary = String(rawAlert?.original_text || rawAlert?.summary || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 2800);
+
+      const articleText = `${title} ${summary}`.trim();
+      let countryInfo = resolveTelegramCountryInfo(rawAlert, articleText);
+      const cityInfo = extractCity(articleText, countryInfo);
+
+      if (cityInfo && (!countryInfo || countryInfo.code === "XX" || countryInfo.name === "Inconnu")) {
+        countryInfo = {
+          name: cityInfo.countryName,
+          code: cityInfo.countryCode,
+          region: cityInfo.region || "Global",
+          lat: cityInfo.lat,
+          lng: cityInfo.lng
+        };
+      }
+
+      if (!matchesSettingsFilters(articleText, countryInfo, settings)) {
+        continue;
+      }
+
+      const parsedPublishedAt = parsePublishedAt(rawAlert?.timestamp);
+      if (parsedPublishedAt && isEventTooOld(parsedPublishedAt, maxAgeMinutes)) {
+        continue;
+      }
+      const publishedAt = parsedPublishedAt || new Date();
+
+      const canonicalAlertType = canonicalType(String(rawAlert?.type || "geopolitique"));
+      if (canonicalAlertType !== "geopolitique") {
+        continue;
+      }
+
+      const severity = normalizeTelegramSeverity(rawAlert?.severity, articleText);
+      const actionable = isActionableAlert(canonicalAlertType, severity, articleText);
+      const sourceName = normalizeTelegramSourceName(rawAlert?.source_channel);
+      const sourceUrl = buildTelegramSourceUrl(rawAlert, sourceName, backendBaseUrl);
+
+      const markerLat = Number.isFinite(cityInfo?.lat)
+        ? cityInfo.lat
+        : Number.isFinite(Number(rawAlert?.lat))
+          ? Number(rawAlert?.lat)
+          : countryInfo.lat || 20;
+      const markerLng = Number.isFinite(cityInfo?.lng)
+        ? cityInfo.lng
+        : Number.isFinite(Number(rawAlert?.lng))
+          ? Number(rawAlert?.lng)
+          : countryInfo.lng || 0;
+
+      mapped.push({
+        title,
+        summary,
+        sourceName,
+        sourceUrl,
+        publishedAt,
+        occurredAt: parsePublishedAt(rawAlert?.timestamp) || null,
+        occurredAtSource: "telegram",
+        type: canonicalAlertType,
+        severity,
+        actionable,
+        confirmed: false,
+        confidenceScore: clampConfidence(rawAlert?.confidence),
+        sourceCount: 1,
+        sourceNames: [sourceName],
+        country: {
+          name: countryInfo.name,
+          code: countryInfo.code,
+          region: countryInfo.region
+        },
+        city: {
+          name: cityInfo?.name || "",
+          lat: Number.isFinite(cityInfo?.lat) ? cityInfo.lat : null,
+          lng: Number.isFinite(cityInfo?.lng) ? cityInfo.lng : null
+        },
+        location: {
+          type: "Point",
+          coordinates: [markerLng, markerLat]
+        }
+      });
+    }
+
+    return mapped;
+  } catch (error) {
+    console.warn(`[telegram-sync] Echec ${error.message}`);
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function persistAlertPayload(payload, reason, newAlerts) {
+  try {
+    const created = await Alert.create(payload);
+    const enrichedAlert = await enrichConfirmationForAlert(created);
+    newAlerts.push(enrichedAlert);
+
+    streamService.sendEvent("new-alert", {
+      reason,
+      alert: enrichedAlert
+    });
+  } catch (error) {
+    if (error && error.code === 11000) {
+      return;
+    }
+    console.warn(`[feeds] Insertion ignoree: ${error.message}`);
+  }
+}
+
 async function detectAndStoreAlerts(settings, reason = "scheduled") {
-  const [feedItemsGroups, gdeltGroups] = await Promise.all([
+  const maxAgeMinutes = resolveMaxAgeMinutes(settings);
+  const [feedItemsGroups, gdeltGroups, telegramPayloads] = await Promise.all([
     Promise.all(FEEDS.map((feed) => fetchFeedItems(feed))),
-    Promise.all(GDELT_STREAMS.map((stream) => fetchGdeltItems(stream)))
+    Promise.all(GDELT_STREAMS.map((stream) => fetchGdeltItems(stream))),
+    fetchTelegramAlertPayloads(settings, maxAgeMinutes)
   ]);
   const feedItems = [...feedItemsGroups.flat(), ...gdeltGroups.flat()];
-  const maxAgeMinutes = resolveMaxAgeMinutes(settings);
 
   const newAlerts = [];
 
@@ -787,21 +1029,11 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
       }
     };
 
-    try {
-      const created = await Alert.create(payload);
-      const enrichedAlert = await enrichConfirmationForAlert(created);
-      newAlerts.push(enrichedAlert);
+    await persistAlertPayload(payload, reason, newAlerts);
+  }
 
-      streamService.sendEvent("new-alert", {
-        reason,
-        alert: enrichedAlert
-      });
-    } catch (error) {
-      if (error && error.code === 11000) {
-        continue;
-      }
-      console.warn(`[feeds] Insertion ignoree: ${error.message}`);
-    }
+  for (const telegramPayload of telegramPayloads) {
+    await persistAlertPayload(telegramPayload, `${reason}-telegram`, newAlerts);
   }
 
   if (newAlerts.length > 0) {
