@@ -26,6 +26,7 @@ const state = {
     tension: null
   },
   eventSource: null,
+  smartDigestEnabled: true,
   browserNotifications: {
     supported: false,
     enabled: false,
@@ -55,6 +56,7 @@ const refs = {
   alertModeSelect: document.getElementById("alertModeSelect"),
   intervalSelect: document.getElementById("intervalSelect"),
   toggleCoverageBtn: document.getElementById("toggleCoverageBtn"),
+  toggleSmartDigestBtn: document.getElementById("toggleSmartDigestBtn"),
   toggleSoundBtn: document.getElementById("toggleSoundBtn"),
   toggleVoiceBtn: document.getElementById("toggleVoiceBtn"),
   toggleBrowserNotifBtn: document.getElementById("toggleBrowserNotifBtn"),
@@ -72,6 +74,7 @@ const refs = {
   saveSettingsBtn: document.getElementById("saveSettingsBtn"),
   latestTickerContent: document.getElementById("latestTickerContent"),
   mapOverlayMetric: document.getElementById("mapOverlayMetric"),
+  smartDigestCard: document.getElementById("smartDigestCard"),
   mapView: document.getElementById("map"),
   globeView: document.getElementById("globe"),
   marketsList: document.getElementById("marketsList"),
@@ -103,6 +106,7 @@ let activeVoiceAudio = null;
 let activeVoiceBlobUrl = null;
 let lastVoiceFallbackNoticeAt = 0;
 const BROWSER_NOTIF_STORAGE_KEY = "cd_browser_notifications_enabled";
+const SMART_DIGEST_STORAGE_KEY = "cd_smart_digest_enabled";
 
 const bootStageBlueprint = [
   { id: "ui", label: "Interface utilisateur" },
@@ -524,6 +528,50 @@ function toggleMapMode() {
       }, 130);
     });
   }
+}
+
+function readSmartDigestPreference() {
+  try {
+    const value = window.localStorage.getItem(SMART_DIGEST_STORAGE_KEY);
+    if (value === null) {
+      return true;
+    }
+    return value !== "0";
+  } catch (error) {
+    return true;
+  }
+}
+
+function writeSmartDigestPreference(enabled) {
+  try {
+    window.localStorage.setItem(SMART_DIGEST_STORAGE_KEY, enabled ? "1" : "0");
+  } catch (error) {
+    // Ignore localStorage failures.
+  }
+}
+
+function updateSmartDigestToggleUI() {
+  const enabled = state.smartDigestEnabled !== false;
+
+  if (refs.toggleSmartDigestBtn) {
+    refs.toggleSmartDigestBtn.textContent = enabled ? "Smart ON" : "Smart OFF";
+    refs.toggleSmartDigestBtn.classList.toggle("is-off", !enabled);
+    refs.toggleSmartDigestBtn.setAttribute("aria-pressed", String(!enabled));
+  }
+
+  if (refs.smartDigestCard) {
+    refs.smartDigestCard.hidden = !enabled;
+  }
+}
+
+function toggleSmartDigest() {
+  const currentlyEnabled = state.smartDigestEnabled !== false;
+  const nextEnabled = !currentlyEnabled;
+  state.smartDigestEnabled = nextEnabled;
+  writeSmartDigestPreference(nextEnabled);
+  updateSmartDigestToggleUI();
+  refreshLayout();
+  showToast("Smart Digest", nextEnabled ? "Smart Digest active." : "Smart Digest desactive.");
 }
 
 function browserNotificationsSupported() {
@@ -1557,6 +1605,23 @@ function bindFiltersSidebarToggle() {
   updateFiltersSidebarToggleButton();
 }
 
+function applyPhoneLayoutDefaults() {
+  if (!window.matchMedia("(max-width: 760px)").matches) {
+    return;
+  }
+
+  if (refs.intelOverlay && !refs.intelOverlay.classList.contains("hidden")) {
+    refs.intelOverlay.classList.add("hidden");
+  }
+
+  if (refs.leftPanel && !refs.leftPanel.classList.contains("filters-collapsed")) {
+    refs.leftPanel.classList.add("filters-collapsed");
+  }
+
+  updateColumnToggleButtons();
+  updateFiltersSidebarToggleButton();
+}
+
 function getCurrentFilters() {
   return {
     type: refs.typeFilter.value,
@@ -2518,37 +2583,128 @@ function normalizeCountryAlias(key) {
   return aliases[key] || key;
 }
 
-function severityToCountryLevel(severity) {
+function getSeverityRank(severity) {
   const normalized = normalizeSeverity(severity);
-  if (normalized === "critical" || normalized === "high") {
-    return 3;
+  if (normalized === "critical") return 4;
+  if (normalized === "high") return 3;
+  if (normalized === "medium") return 2;
+  if (normalized === "low") return 1;
+  return 0;
+}
+
+function getCountrySignalBaseWeight(severity) {
+  const normalized = normalizeSeverity(severity);
+  if (normalized === "critical") return 6.2;
+  if (normalized === "high") return 4.1;
+  if (normalized === "medium") return 2.3;
+  if (normalized === "low") return 1.1;
+  return 0.8;
+}
+
+function getCountrySignalTimeWeight(ageMs) {
+  if (!Number.isFinite(ageMs) || ageMs < 0) return 1;
+  if (ageMs <= 2 * 60 * 60 * 1000) return 1.35; // <= 2h
+  if (ageMs <= 6 * 60 * 60 * 1000) return 1.05; // <= 6h
+  if (ageMs <= 24 * 60 * 60 * 1000) return 0.62; // <= 24h
+  if (ageMs <= 48 * 60 * 60 * 1000) return 0.32; // <= 48h
+  if (ageMs <= 96 * 60 * 60 * 1000) return 0.14; // <= 96h
+  return 0; // too old, no longer contributes to current country status
+}
+
+function computeCountryAlertSignal(alert, nowTs) {
+  if (canonicalType(alert?.type) !== "geopolitique") {
+    return null;
   }
-  if (normalized === "medium" || normalized === "low") {
-    return 2;
+
+  const countryName = alert?.country?.name;
+  if (!countryName || countryName === "Inconnu") {
+    return null;
   }
+
+  const countryKey = normalizeCountryAlias(normalizeCountryKey(countryName));
+  if (!countryKey) {
+    return null;
+  }
+
+  const eventTs = getAlertEventTimestamp(alert);
+  if (!Number.isFinite(eventTs) || eventTs <= 0) {
+    return null;
+  }
+
+  const ageMs = Math.max(0, nowTs - eventTs);
+  const timeWeight = getCountrySignalTimeWeight(ageMs);
+  if (timeWeight <= 0) {
+    return null;
+  }
+
+  const severity = normalizeSeverity(alert?.severity);
+  const severityRank = getSeverityRank(severity);
+  const baseWeight = getCountrySignalBaseWeight(severity);
+  const confidenceFactor = 0.75 + (confidenceScoreValue(alert) / 100) * 0.45;
+  const sourceBonus = Math.max(0, Math.min(3, sourceCountValue(alert) - 1)) * 0.22;
+  const confirmedBonus = alert?.confirmed ? 0.45 : 0;
+  const score = baseWeight * timeWeight * confidenceFactor + sourceBonus + confirmedBonus;
+
+  return {
+    countryKey,
+    severityRank,
+    eventTs,
+    score,
+    hasRecentCritical: severity === "critical" && ageMs <= 24 * 60 * 60 * 1000,
+    hasRecentHigh: severity === "high" && ageMs <= 12 * 60 * 60 * 1000,
+    hasRecentMediumPlus:
+      (severity === "medium" || severity === "high" || severity === "critical") && ageMs <= 24 * 60 * 60 * 1000
+  };
+}
+
+function levelFromCountrySnapshot(snapshot) {
+  if (!snapshot) {
+    return 1;
+  }
+
+  // ACTIVE country: critical in last 24h, or dense recent high-risk cluster.
+  if (snapshot.recentCritical >= 1) return 3;
+  if (snapshot.weightedScore >= 9.5) return 3;
+  if (snapshot.recentHigh >= 2) return 3;
+  if (snapshot.recentHigh >= 1 && snapshot.weightedScore >= 7.2) return 3;
+
+  // TENSION country: medium+ recency or enough weighted conflict signal.
+  if (snapshot.recentMediumPlus >= 2) return 2;
+  if (snapshot.weightedScore >= 3.2) return 2;
+  if (snapshot.maxSeverityRank >= 2) return 2;
+
   return 1;
 }
 
 function recomputeCountryStatusLevels() {
-  const levels = new Map();
+  const snapshots = new Map();
+  const nowTs = Date.now();
 
   state.alerts.forEach((alert) => {
-    if (canonicalType(alert?.type) !== "geopolitique") {
-      return;
+    const signal = computeCountryAlertSignal(alert, nowTs);
+    if (!signal) return;
+
+    if (!snapshots.has(signal.countryKey)) {
+      snapshots.set(signal.countryKey, {
+        weightedScore: 0,
+        maxSeverityRank: 0,
+        recentCritical: 0,
+        recentHigh: 0,
+        recentMediumPlus: 0
+      });
     }
 
-    const countryName = alert?.country?.name;
-    if (!countryName || countryName === "Inconnu") {
-      return;
-    }
+    const snapshot = snapshots.get(signal.countryKey);
+    snapshot.weightedScore += signal.score;
+    snapshot.maxSeverityRank = Math.max(snapshot.maxSeverityRank, signal.severityRank);
+    if (signal.hasRecentCritical) snapshot.recentCritical += 1;
+    if (signal.hasRecentHigh) snapshot.recentHigh += 1;
+    if (signal.hasRecentMediumPlus) snapshot.recentMediumPlus += 1;
+  });
 
-    const key = normalizeCountryAlias(normalizeCountryKey(countryName));
-    if (!key) {
-      return;
-    }
-
-    const previous = levels.get(key) || 1;
-    levels.set(key, Math.max(previous, severityToCountryLevel(alert?.severity)));
+  const levels = new Map();
+  snapshots.forEach((snapshot, countryKey) => {
+    levels.set(countryKey, levelFromCountrySnapshot(snapshot));
   });
 
   state.countryStatusLevels = levels;
@@ -3442,6 +3598,12 @@ function bindEvents() {
     });
   }
 
+  if (refs.toggleSmartDigestBtn) {
+    refs.toggleSmartDigestBtn.addEventListener("click", () => {
+      toggleSmartDigest();
+    });
+  }
+
   refs.alertModeSelect.addEventListener("change", () => {
     updateAlertMode().catch((error) => showToast("Erreur", error.message));
   });
@@ -3493,7 +3655,8 @@ function bindEvents() {
   bindFiltersSidebarToggle();
 
   window.addEventListener("resize", () => {
-    if (window.matchMedia("(max-width: 1180px)").matches && refs.leftPanel?.classList.contains("filters-collapsed")) {
+    const isTabletViewport = window.matchMedia("(min-width: 761px) and (max-width: 1180px)").matches;
+    if (isTabletViewport && refs.leftPanel?.classList.contains("filters-collapsed")) {
       refs.leftPanel.classList.remove("filters-collapsed");
       updateFiltersSidebarToggleButton();
     }
@@ -3732,7 +3895,10 @@ async function bootstrap() {
   beginBootOverlay();
 
   await runBootStage("ui", "Préparation de l'interface...", async () => {
+    state.smartDigestEnabled = readSmartDigestPreference();
     bindEvents();
+    updateSmartDigestToggleUI();
+    applyPhoneLayoutDefaults();
     initSpeechVoices();
     syncBrowserNotificationState();
   });
