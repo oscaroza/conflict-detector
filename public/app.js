@@ -226,7 +226,9 @@ function collectGlobeCountryPolygons(alerts) {
     return [];
   }
 
-  const summaries = buildCountrySummaries(alerts).slice(0, 220);
+  const allSummaries = buildCountrySummaries(alerts);
+  const prioritySummaries = allSummaries.filter((summary) => summary?.status === "critical" || summary?.status === "tension");
+  const summaries = (prioritySummaries.length ? prioritySummaries : allSummaries).slice(0, 280);
   const polygons = [];
   const seen = new Set();
 
@@ -448,9 +450,9 @@ function initializeGlobe() {
   return true;
 }
 
-function renderGlobeMarkers(alerts) {
+function renderGlobeMarkers(alerts, statusAlerts = alerts) {
   if (!state.globe) return;
-  const countrySummaries = buildCountrySummaries(alerts);
+  const countrySummaries = buildCountrySummaries(statusAlerts);
   const globeLegendItems = buildGlobeCountryLegendItems(countrySummaries);
 
   const points = sortAlertsByEventTimeDesc(alerts)
@@ -502,7 +504,7 @@ function renderGlobeMarkers(alerts) {
       period: point.severity === "critical" ? 1080 : 1320
     }));
 
-  const polygons = collectGlobeCountryPolygons(alerts);
+  const polygons = collectGlobeCountryPolygons(statusAlerts);
 
   state.globe
     .pointsData(points)
@@ -538,7 +540,7 @@ function renderGlobeMarkers(alerts) {
   }
 
   if (refs.mapOverlayMetric) {
-    refs.mapOverlayMetric.textContent = `${points.length}/${alerts.length} points actifs | ${globeLegendItems.length} legendes pays | globe 3D`;
+    refs.mapOverlayMetric.textContent = `${points.length}/${alerts.length} points actifs | ${globeLegendItems.length} pays tension/actifs | globe 3D`;
   }
 }
 
@@ -2158,6 +2160,276 @@ function detectIncidentSignal(alert) {
 
   if (
     includesAny(text, [
+      "chemical weapon",
+      "chemical attack",
+      "chemical strike",
+      "gas attack",
+      "sarin",
+      "chlorine attack",
+      "biological attack",
+      "bio weapon",
+      "agent chimique",
+      "attaque chimique",
+      "arme chimique",
+      "attaque biologique"
+    ])
+  ) {
+    return "chemical";
+  }
+
+  if (
+    includesAny(text, ["missile", "rocket", "ballistic", "hypersonic"]) &&
+    includesAny(text, ["hit", "strike", "impact", "touche", "frappe", "attack", "landed"])
+  ) {
+    return "missile";
+  }
+
+  if (
+    includesAny(text, [
+      "air raid",
+      "airstrike",
+      "aerial bombardment",
+      "ground attack",
+      "drone strike",
+      "raid aerien",
+      "attaque au sol",
+      "attaque sol",
+      "frappe aerienne",
+      "bombardement aerien"
+    ])
+  ) {
+    return "air-raid";
+  }
+
+  if (
+    includesAny(text, [
+      "intercepted",
+      "intercept",
+      "interception",
+      "shot down",
+      "air defense",
+      "air-defence",
+      "patriot battery",
+      "iron dome",
+      "anti-air",
+      "anti missile",
+      "abattu",
+      "intercepte",
+      "intercepté",
+      "defense aerienne",
+      "defense antiaerienne"
+    ])
+  ) {
+    return "interception";
+  }
+
+  if (
+    includesAny(text, [
+      "drone",
+      "uav",
+      "kamikaze drone",
+      "loitering munition",
+      "shahed",
+      "fpv drone",
+      "quadcopter",
+      "drone swarm",
+      "essaim de drones"
+    ])
+  ) {
+    return "drone";
+  }
+
+  if (
+    includesAny(text, [
+      "warship",
+      "destroyer",
+      "frigate",
+      "aircraft carrier",
+      "carrier strike group",
+      "naval strike",
+      "naval base",
+      "fleet",
+      "submarine",
+      "torpedo",
+      "blocus naval",
+      "porte-avions",
+      "porte avions",
+      "sous-marin"
+    ])
+  ) {
+    return "naval";
+  }
+
+  if (
+    includesAny(text, [
+      "cyberattack",
+      "cyber attack",
+      "digital attack",
+      "digital warfare",
+      "cyber strike",
+      "hacked",
+      "hack",
+      "malware",
+      "ransomware",
+      "ddos",
+      "network down",
+      "communication blackout",
+      "gps spoofing",
+      "attaque cyber",
+      "cyberattaque",
+      "attaque numerique",
+      "attaque numérique",
+      "piratage",
+      "reseau hors service",
+      "réseau hors service"
+    ])
+  ) {
+    return "cyber";
+  }
+
+  if (
+    includesAny(text, [
+      "infrastructure hit",
+      "power station",
+      "power plant",
+      "substation",
+      "grid failure",
+      "oil refinery",
+      "pipeline hit",
+      "fuel depot",
+      "port explosion",
+      "airport closed",
+      "blackout",
+      "centrale electrique",
+      "centrale électrique",
+      "raffinerie",
+      "pipeline",
+      "depot de carburant",
+      "dépôt de carburant"
+    ])
+  ) {
+    return "infrastructure";
+  }
+
+  if (
+    includesAny(text, [
+      "fire",
+      "burning",
+      "blaze",
+      "wildfire",
+      "incendie",
+      "en feu",
+      "flames"
+    ])
+  ) {
+    return "fire";
+  }
+
+  if (
+    includesAny(text, [
+      "ground assault",
+      "ground offensive",
+      "troops advance",
+      "urban combat",
+      "street fighting",
+      "tank column",
+      "armored vehicles",
+      "infantry",
+      "clashes",
+      "heavy fighting",
+      "offensive terrestre",
+      "combat urbain",
+      "char",
+      "chars",
+      "affrontements"
+    ])
+  ) {
+    return "ground-combat";
+  }
+
+  if (
+    includesAny(text, [
+      "hostage",
+      "hostages",
+      "kidnapped",
+      "abducted",
+      "captives",
+      "otage",
+      "otages",
+      "enleve",
+      "enlevé",
+      "enleves",
+      "enlevés"
+    ])
+  ) {
+    return "hostage";
+  }
+
+  if (
+    includesAny(text, [
+      "protest",
+      "riot",
+      "civil unrest",
+      "mass demonstration",
+      "manifestation",
+      "emeute",
+      "émeute",
+      "troubles civils"
+    ])
+  ) {
+    return "civil-unrest";
+  }
+
+  if (
+    includesAny(text, [
+      "ceasefire",
+      "truce",
+      "de-escalation",
+      "peace talks",
+      "armistice",
+      "cessez-le-feu",
+      "cessez le feu",
+      "treve",
+      "trêve",
+      "desescalade",
+      "désescalade"
+    ])
+  ) {
+    return "ceasefire";
+  }
+
+  if (
+    includesAny(text, [
+      "sanction",
+      "sanctions",
+      "embargo",
+      "asset freeze",
+      "trade ban",
+      "restriction",
+      "blocage economique",
+      "blocage économique"
+    ])
+  ) {
+    return "sanctions";
+  }
+
+  if (
+    includesAny(text, [
+      "bomb",
+      "bombing",
+      "car bomb",
+      "ied",
+      "blast",
+      "detonation",
+      "grenade",
+      "explosion"
+    ])
+  ) {
+    return "bomb";
+  }
+
+  if (
+    includesAny(text, [
       "killed",
       "dead",
       "deaths",
@@ -2180,42 +2452,6 @@ function detectIncidentSignal(alert) {
     return "casualty";
   }
 
-  if (
-    includesAny(text, ["missile", "rocket", "ballistic", "hypersonic"]) &&
-    includesAny(text, ["hit", "strike", "impact", "touche", "frappe", "attack", "landed"])
-  ) {
-    return "missile";
-  }
-
-  if (
-    includesAny(text, [
-      "air raid",
-      "airstrike",
-      "aerial bombardment",
-      "drone strike",
-      "raid aerien",
-      "frappe aerienne",
-      "bombardement aerien"
-    ])
-  ) {
-    return "air-raid";
-  }
-
-  if (
-    includesAny(text, [
-      "bomb",
-      "bombing",
-      "car bomb",
-      "ied",
-      "blast",
-      "detonation",
-      "grenade",
-      "explosion"
-    ])
-  ) {
-    return "bomb";
-  }
-
   return "conflict";
 }
 
@@ -2232,15 +2468,75 @@ function getSignalVisual(signal) {
         glyph: "☢",
         className: "signal-nuclear"
       },
+      chemical: {
+        label: "Incident chimique / biologique",
+        glyph: "☣",
+        className: "signal-chemical"
+      },
       missile: {
         label: "Frappe missile",
         glyph: "🚀",
         className: "signal-missile"
       },
+      interception: {
+        label: "Interception / defense aerienne",
+        glyph: "🛡",
+        className: "signal-interception"
+      },
+      drone: {
+        label: "Attaque drone / UAV",
+        glyph: "🛸",
+        className: "signal-drone"
+      },
       "air-raid": {
         label: "Raid aerien",
         glyph: "✈",
         className: "signal-air-raid"
+      },
+      naval: {
+        label: "Incident naval",
+        glyph: "⚓",
+        className: "signal-naval"
+      },
+      cyber: {
+        label: "Attaque numerique / cyber",
+        glyph: "💻",
+        className: "signal-cyber"
+      },
+      infrastructure: {
+        label: "Infrastructure critique touchee",
+        glyph: "🏭",
+        className: "signal-infrastructure"
+      },
+      fire: {
+        label: "Incendie / feu",
+        glyph: "🔥",
+        className: "signal-fire"
+      },
+      "ground-combat": {
+        label: "Attaque au sol / combat terrestre",
+        glyph: "⚔",
+        className: "signal-ground-combat"
+      },
+      hostage: {
+        label: "Otages / enlevements",
+        glyph: "⛓",
+        className: "signal-hostage"
+      },
+      "civil-unrest": {
+        label: "Manifestations / emeutes",
+        glyph: "📢",
+        className: "signal-civil-unrest"
+      },
+      ceasefire: {
+        label: "Cessez-le-feu / treve",
+        glyph: "🕊",
+        className: "signal-ceasefire"
+      },
+      sanctions: {
+        label: "Sanctions / embargo",
+        glyph: "⛔",
+        className: "signal-sanctions"
       },
       bomb: {
         label: "Explosion / bombe",
@@ -2415,7 +2711,7 @@ function renderMapMarkers() {
   const activeMapSignals = filterActiveMapSignals(visibleAlerts);
   recomputeCountryStatusLevels();
   updateCountryHeadlineCounters();
-  const countrySummaries = buildCountrySummaries(activeMapSignals);
+  const countrySummaries = buildCountrySummaries(visibleAlerts);
 
   if (getMapMode() === "3d") {
     if (state.markersLayer) {
@@ -2427,7 +2723,7 @@ function renderMapMarkers() {
     if (!state.globe) {
       initializeGlobe();
     }
-    renderGlobeMarkers(activeMapSignals);
+    renderGlobeMarkers(activeMapSignals, visibleAlerts);
     scheduleMapSignalExpiryRefresh(activeMapSignals);
     return;
   }
@@ -2439,10 +2735,11 @@ function renderMapMarkers() {
   state.markersLayer.clearLayers();
   state.countryLegendLayer?.clearLayers();
 
-  const zoom = Number(state.map?.getZoom?.() || 2);
-
   const renderedAlerts = selectAlertsForCurrentZoom(activeMapSignals);
-  const countryLegends = sortCountrySummariesForLegend(countrySummaries).slice(0, getCountryLegendLimitForZoom(zoom));
+  const priorityCountrySummaries = sortCountrySummariesForLegend(countrySummaries).filter(
+    (summary) => summary?.status === "critical" || summary?.status === "tension"
+  );
+  const countryLegends = priorityCountrySummaries.length ? priorityCountrySummaries.slice(0, 280) : [];
 
   renderedAlerts.forEach((alert) => {
     const marker = createMarker(alert);
@@ -2455,9 +2752,7 @@ function renderMapMarkers() {
   });
 
   if (refs.mapOverlayMetric) {
-    refs.mapOverlayMetric.textContent = `${renderedAlerts.length}/${activeMapSignals.length} points actifs | ${countryLegends.length} legendes pays | zoom ${zoom.toFixed(
-      1
-    )}`;
+    refs.mapOverlayMetric.textContent = `${renderedAlerts.length}/${activeMapSignals.length} points actifs | ${countryLegends.length} pays tension/actifs`;
   }
 
   scheduleMapSignalExpiryRefresh(activeMapSignals);
@@ -3621,8 +3916,12 @@ function getCountryLegendLimitForZoom(zoom) {
 }
 
 function buildGlobeCountryLegendItems(countrySummaries) {
-  return sortCountrySummariesForLegend(countrySummaries)
-    .slice(0, 22)
+  const sorted = sortCountrySummariesForLegend(countrySummaries);
+  const prioritySummaries = sorted.filter((summary) => summary?.status === "critical" || summary?.status === "tension");
+  const source = prioritySummaries.length ? prioritySummaries : sorted.slice(0, 40);
+
+  return source
+    .slice(0, 280)
     .map((summary) => {
       const [lat, lng] = summary?.center || [null, null];
       if (!isValidLatLng(lat, lng)) {
