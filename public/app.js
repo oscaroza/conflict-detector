@@ -107,8 +107,11 @@ let activeVoiceBlobUrl = null;
 let activeVoiceMediaSource = null;
 let activeVoiceFxNodes = [];
 let lastVoiceFallbackNoticeAt = 0;
+let mapSignalExpiryTimer = null;
 const BROWSER_NOTIF_STORAGE_KEY = "cd_browser_notifications_enabled";
 const SMART_DIGEST_STORAGE_KEY = "cd_smart_digest_enabled";
+const MAP_SIGNAL_TTL_MINUTES = 30;
+const MAP_SIGNAL_TTL_MS = MAP_SIGNAL_TTL_MINUTES * 60 * 1000;
 
 const bootStageBlueprint = [
   { id: "ui", label: "Interface utilisateur" },
@@ -989,6 +992,28 @@ function getAlertEventTimestamp(alert) {
   return getAlertPublicationTimestamp(alert);
 }
 
+function isActiveMapSignal(alert, nowMs = Date.now()) {
+  const eventTs = getAlertEventTimestamp(alert);
+  if (!Number.isFinite(eventTs) || eventTs <= 0) {
+    return false;
+  }
+
+  const ageMs = nowMs - eventTs;
+  if (!Number.isFinite(ageMs)) {
+    return false;
+  }
+
+  if (ageMs < 0) {
+    return true;
+  }
+
+  return ageMs <= MAP_SIGNAL_TTL_MS;
+}
+
+function filterActiveMapSignals(alerts, nowMs = Date.now()) {
+  return (alerts || []).filter((alert) => isActiveMapSignal(alert, nowMs));
+}
+
 function sortAlertsByEventTimeDesc(alerts) {
   return [...(alerts || [])].sort((a, b) => {
     const eventDelta = getAlertEventTimestamp(b) - getAlertEventTimestamp(a);
@@ -1008,6 +1033,45 @@ function sortAlertsByEventTimeDesc(alerts) {
 
     return String(b?._id || "").localeCompare(String(a?._id || ""));
   });
+}
+
+function scheduleMapSignalExpiryRefresh(alerts = []) {
+  if (mapSignalExpiryTimer) {
+    clearTimeout(mapSignalExpiryTimer);
+    mapSignalExpiryTimer = null;
+  }
+
+  if (!Array.isArray(alerts) || alerts.length === 0) {
+    return;
+  }
+
+  const now = Date.now();
+  let nearestExpiryDelayMs = null;
+
+  alerts.forEach((alert) => {
+    const eventTs = getAlertEventTimestamp(alert);
+    if (!Number.isFinite(eventTs) || eventTs <= 0) {
+      return;
+    }
+
+    const remainingMs = eventTs + MAP_SIGNAL_TTL_MS - now;
+    if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+      return;
+    }
+
+    if (nearestExpiryDelayMs === null || remainingMs < nearestExpiryDelayMs) {
+      nearestExpiryDelayMs = remainingMs;
+    }
+  });
+
+  if (nearestExpiryDelayMs === null) {
+    return;
+  }
+
+  const delayMs = Math.max(800, Math.min(nearestExpiryDelayMs + 150, 2 * 60 * 1000));
+  mapSignalExpiryTimer = setTimeout(() => {
+    renderMapMarkers();
+  }, delayMs);
 }
 
 function severityLabel(value) {
@@ -2174,6 +2238,7 @@ function createMarker(alert) {
 
 function renderMapMarkers() {
   const visibleAlerts = getVisibleAlerts();
+  const activeMapSignals = filterActiveMapSignals(visibleAlerts);
   recomputeCountryStatusLevels();
   updateCountryHeadlineCounters();
 
@@ -2184,7 +2249,8 @@ function renderMapMarkers() {
     if (!state.globe) {
       initializeGlobe();
     }
-    renderGlobeMarkers(visibleAlerts);
+    renderGlobeMarkers(activeMapSignals);
+    scheduleMapSignalExpiryRefresh(activeMapSignals);
     return;
   }
 
@@ -2197,7 +2263,7 @@ function renderMapMarkers() {
   const zoom = Number(state.map?.getZoom?.() || 2);
 
   if (zoom < 3.4) {
-    const countrySummaries = buildCountrySummaries(visibleAlerts);
+    const countrySummaries = buildCountrySummaries(activeMapSignals);
     const maxCountries = Math.max(45, getMarkerLimitForZoom(zoom));
 
     countrySummaries.slice(0, maxCountries).forEach((summary) => {
@@ -2208,12 +2274,13 @@ function renderMapMarkers() {
     if (refs.mapOverlayMetric) {
       refs.mapOverlayMetric.textContent = `${Math.min(countrySummaries.length, maxCountries)}/${
         countrySummaries.length
-      } pays | ${visibleAlerts.length} alertes | zoom ${zoom.toFixed(1)}`;
+      } pays | ${activeMapSignals.length} alertes <= ${MAP_SIGNAL_TTL_MINUTES} min | zoom ${zoom.toFixed(1)}`;
     }
+    scheduleMapSignalExpiryRefresh(activeMapSignals);
     return;
   }
 
-  const renderedAlerts = selectAlertsForCurrentZoom(visibleAlerts);
+  const renderedAlerts = selectAlertsForCurrentZoom(activeMapSignals);
 
   renderedAlerts.forEach((alert) => {
     const marker = createMarker(alert);
@@ -2221,10 +2288,12 @@ function renderMapMarkers() {
   });
 
   if (refs.mapOverlayMetric) {
-    refs.mapOverlayMetric.textContent = `${renderedAlerts.length}/${visibleAlerts.length} alertes | zoom ${zoom.toFixed(
+    refs.mapOverlayMetric.textContent = `${renderedAlerts.length}/${activeMapSignals.length} alertes <= ${MAP_SIGNAL_TTL_MINUTES} min | zoom ${zoom.toFixed(
       1
     )}`;
   }
+
+  scheduleMapSignalExpiryRefresh(activeMapSignals);
 }
 
 function renderAlertDetails(alert) {
