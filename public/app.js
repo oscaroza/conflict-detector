@@ -1594,12 +1594,13 @@ function renderTicker() {
   const source = getTickerSourceAlerts().slice(0, 12);
 
   if (source.length === 0) {
+    refs.latestTickerContent.classList.remove("is-scrolling");
     refs.latestTickerContent.classList.add("no-scroll");
+    refs.latestTickerContent.style.removeProperty("--ticker-duration");
     refs.latestTickerContent.textContent = "Aucune alerte pour cette vue.";
     return;
   }
 
-  const shouldScroll = source.length > 1;
   const singleTrack = source
     .map(
       (alert) =>
@@ -1609,8 +1610,30 @@ function renderTicker() {
     )
     .join("");
 
-  refs.latestTickerContent.classList.toggle("no-scroll", !shouldScroll);
-  refs.latestTickerContent.innerHTML = shouldScroll ? `${singleTrack}${singleTrack}` : singleTrack;
+  // Start in static mode, then enable marquee only if content actually overflows.
+  refs.latestTickerContent.classList.remove("is-scrolling");
+  refs.latestTickerContent.classList.add("no-scroll");
+  refs.latestTickerContent.style.removeProperty("--ticker-duration");
+  refs.latestTickerContent.innerHTML = singleTrack;
+
+  const viewportWidth = refs.latestTickerContent.parentElement?.clientWidth || 0;
+  const baseTrackWidth = refs.latestTickerContent.scrollWidth || 0;
+  const shouldScroll = source.length > 1 && baseTrackWidth > viewportWidth + 24;
+
+  if (!shouldScroll) {
+    return;
+  }
+
+  refs.latestTickerContent.innerHTML = `${singleTrack}<span class="ticker-divider" aria-hidden="true">•</span>${singleTrack}`;
+
+  const fullTrackWidth = refs.latestTickerContent.scrollWidth || baseTrackWidth * 2;
+  const halfTrackWidth = Math.max(1, Math.round(fullTrackWidth / 2));
+  const speedPxPerSecond = 58;
+  const durationSeconds = Math.max(16, Math.min(90, Math.round(halfTrackWidth / speedPxPerSecond)));
+
+  refs.latestTickerContent.style.setProperty("--ticker-duration", `${durationSeconds}s`);
+  refs.latestTickerContent.classList.remove("no-scroll");
+  refs.latestTickerContent.classList.add("is-scrolling");
 }
 
 function renderAlertsList() {
@@ -1920,6 +1943,149 @@ function getFeatureCountryCode(feature) {
 
   // Keep only alpha-2 country codes for direct matching with alert.country.code.
   return normalized.length === 2 ? normalized : "";
+}
+
+function normalizeLongitude(value) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  let lng = value;
+  while (lng > 180) lng -= 360;
+  while (lng < -180) lng += 360;
+  return lng;
+}
+
+function isValidLatLng(lat, lng) {
+  return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+}
+
+function unwrapRingLongitudes(ring) {
+  const cleaned = ring
+    .map((point) => [Number(point?.[0]), Number(point?.[1])])
+    .filter((point) => Number.isFinite(point[0]) && Number.isFinite(point[1]));
+
+  if (cleaned.length < 3) {
+    return [];
+  }
+
+  const unwrapped = [[cleaned[0][0], cleaned[0][1]]];
+
+  for (let i = 1; i < cleaned.length; i += 1) {
+    let lng = cleaned[i][0];
+    const lat = cleaned[i][1];
+    const prevLng = unwrapped[unwrapped.length - 1][0];
+
+    while (lng - prevLng > 180) lng -= 360;
+    while (lng - prevLng < -180) lng += 360;
+
+    unwrapped.push([lng, lat]);
+  }
+
+  const first = unwrapped[0];
+  const last = unwrapped[unwrapped.length - 1];
+  if (first[0] !== last[0] || first[1] !== last[1]) {
+    unwrapped.push([first[0], first[1]]);
+  }
+
+  return unwrapped;
+}
+
+function computeRingMetrics(ring) {
+  const points = unwrapRingLongitudes(ring);
+  if (points.length < 4) {
+    return null;
+  }
+
+  let doubleArea = 0;
+  let cxTimes6A = 0;
+  let cyTimes6A = 0;
+
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[i + 1];
+    const cross = x1 * y2 - x2 * y1;
+    doubleArea += cross;
+    cxTimes6A += (x1 + x2) * cross;
+    cyTimes6A += (y1 + y2) * cross;
+  }
+
+  const absArea = Math.abs(doubleArea) / 2;
+
+  if (Math.abs(doubleArea) > 1e-9) {
+    const lng = normalizeLongitude(cxTimes6A / (3 * doubleArea));
+    const lat = cyTimes6A / (3 * doubleArea);
+    if (isValidLatLng(lat, lng)) {
+      return {
+        area: absArea,
+        center: [lat, lng]
+      };
+    }
+  }
+
+  const unique = points.slice(0, -1);
+  const avgLng = normalizeLongitude(unique.reduce((sum, point) => sum + point[0], 0) / unique.length);
+  const avgLat = unique.reduce((sum, point) => sum + point[1], 0) / unique.length;
+  if (isValidLatLng(avgLat, avgLng)) {
+    return {
+      area: absArea,
+      center: [avgLat, avgLng]
+    };
+  }
+
+  return null;
+}
+
+function computeFeatureCenterFromGeometry(feature) {
+  const geometry = feature?.geometry;
+  if (!geometry || !Array.isArray(geometry.coordinates)) {
+    return null;
+  }
+
+  const polygons = [];
+  if (geometry.type === "Polygon") {
+    polygons.push(geometry.coordinates);
+  } else if (geometry.type === "MultiPolygon") {
+    geometry.coordinates.forEach((poly) => polygons.push(poly));
+  } else {
+    return null;
+  }
+
+  let best = null;
+
+  polygons.forEach((polygon) => {
+    if (!Array.isArray(polygon) || !Array.isArray(polygon[0])) {
+      return;
+    }
+
+    const outerRing = polygon[0];
+    const metrics = computeRingMetrics(outerRing);
+    if (!metrics) {
+      return;
+    }
+
+    if (!best || metrics.area > best.area) {
+      best = metrics;
+    }
+  });
+
+  return best?.center || null;
+}
+
+function deriveFeatureCenter(feature, layer) {
+  const geometryCenter = computeFeatureCenterFromGeometry(feature);
+  if (geometryCenter) {
+    return geometryCenter;
+  }
+
+  if (layer && typeof layer.getCenter === "function") {
+    const center = layer.getCenter();
+    if (center && isValidLatLng(center.lat, center.lng)) {
+      return [center.lat, center.lng];
+    }
+  }
+
+  const boundsCenter = layer.getBounds().getCenter();
+  return [boundsCenter.lat, boundsCenter.lng];
 }
 
 function normalizeCountryKey(value) {
@@ -2974,8 +3140,7 @@ async function loadCountryGeoJson() {
       const countryName = getFeatureCountryName(feature);
       const countryCode = getFeatureCountryCode(feature);
       const countryKey = normalizeCountryAlias(normalizeCountryKey(countryName));
-      const center = layer.getBounds().getCenter();
-      const centerPoint = [center.lat, center.lng];
+      const centerPoint = deriveFeatureCenter(feature, layer);
 
       state.countryCentroids.set(countryName, centerPoint);
       if (countryKey && !state.countryCentroidsByKey.has(countryKey)) {

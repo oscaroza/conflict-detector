@@ -583,6 +583,7 @@ h1 {
   display: inline-flex;
   align-items: center;
   min-width: 100%;
+  width: max-content;
   white-space: nowrap;
   gap: 2rem;
   padding-left: 1.1rem;
@@ -590,12 +591,24 @@ h1 {
   font-size: 0.86rem;
   letter-spacing: 0.35px;
   color: #e8edf9;
-  animation: ticker-slide 34s linear infinite;
+  animation: none;
+  will-change: transform;
+}
+
+.ticker-track.is-scrolling {
+  animation: ticker-slide var(--ticker-duration, 34s) linear infinite;
 }
 
 .ticker-track.no-scroll {
   animation: none;
   white-space: nowrap;
+  width: 100%;
+}
+
+.ticker-divider {
+  color: rgba(152, 163, 183, 0.8);
+  font-size: 0.72rem;
+  margin: 0 0.2rem;
 }
 
 .ticker-item {
