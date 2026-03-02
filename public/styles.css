@@ -1685,13 +1685,61 @@ canvas {
   color: #ff6f6f;
 }
 
+.threat-marker.signal-interception .threat-marker__glyph {
+  color: #7ec5ff;
+}
+
+.threat-marker.signal-drone .threat-marker__glyph {
+  color: #9ec3ff;
+}
+
 .threat-marker.signal-air-raid .threat-marker__glyph {
   color: #57d8ff;
+}
+
+.threat-marker.signal-naval .threat-marker__glyph {
+  color: #5fe6d9;
+}
+
+.threat-marker.signal-cyber .threat-marker__glyph {
+  color: #6db7ff;
 }
 
 .threat-marker.signal-nuclear .threat-marker__glyph,
 .threat-marker.signal-nuclear-plant .threat-marker__glyph {
   color: #8eff52;
+}
+
+.threat-marker.signal-chemical .threat-marker__glyph {
+  color: #b2ff66;
+}
+
+.threat-marker.signal-infrastructure .threat-marker__glyph {
+  color: #ffc96e;
+}
+
+.threat-marker.signal-fire .threat-marker__glyph {
+  color: #ff8748;
+}
+
+.threat-marker.signal-ground-combat .threat-marker__glyph {
+  color: #ffa0a0;
+}
+
+.threat-marker.signal-hostage .threat-marker__glyph {
+  color: #c9cde1;
+}
+
+.threat-marker.signal-civil-unrest .threat-marker__glyph {
+  color: #ffe37a;
+}
+
+.threat-marker.signal-ceasefire .threat-marker__glyph {
+  color: #8fffd8;
+}
+
+.threat-marker.signal-sanctions .threat-marker__glyph {
+  color: #ffae88;
 }
 
 .threat-marker.signal-conflict .threat-marker__glyph {
