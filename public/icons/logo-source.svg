@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Conflict Detector logo">
+  <defs>
+    <linearGradient id="bgShade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#07070d"/>
+      <stop offset="100%" stop-color="#030306"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="1008" height="1008" rx="100" fill="url(#bgShade)" stroke="#ef1d12" stroke-width="14"/>
+  <rect x="28" y="28" width="968" height="968" rx="85" fill="none" stroke="#111219" stroke-width="8"/>
+
+  <g fill="none" stroke="#ff1e12" stroke-linecap="round">
+    <circle cx="512" cy="320" r="140" stroke-width="16"/>
+    <circle cx="512" cy="320" r="90" stroke-width="12"/>
+    <line x1="512" y1="165" x2="512" y2="475" stroke-width="12"/>
+    <line x1="357" y1="320" x2="667" y2="320" stroke-width="12"/>
+    <line x1="512" y1="290" x2="512" y2="350" stroke-width="10"/>
+    <line x1="482" y1="320" x2="542" y2="320" stroke-width="10"/>
+  </g>
+
+  <text x="512" y="680" fill="#ff1e12" text-anchor="middle"
+    font-family="Impact, Haettenschweiler, 'Arial Black', sans-serif"
+    font-size="170" letter-spacing="4">CONFLICT</text>
+  <text x="512" y="840" fill="#f2f3f5" text-anchor="middle"
+    font-family="Impact, Haettenschweiler, 'Arial Black', sans-serif"
+    font-size="150" letter-spacing="4">DETECTOR</text>
+</svg>
