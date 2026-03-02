@@ -556,11 +556,16 @@ function updateSmartDigestToggleUI() {
   if (refs.toggleSmartDigestBtn) {
     refs.toggleSmartDigestBtn.textContent = enabled ? "Smart ON" : "Smart OFF";
     refs.toggleSmartDigestBtn.classList.toggle("is-off", !enabled);
-    refs.toggleSmartDigestBtn.setAttribute("aria-pressed", String(!enabled));
+    refs.toggleSmartDigestBtn.setAttribute("aria-pressed", String(enabled));
+    refs.toggleSmartDigestBtn.title = enabled
+      ? "Masquer le module Smart Digest"
+      : "Afficher le module Smart Digest";
   }
 
   if (refs.smartDigestCard) {
     refs.smartDigestCard.hidden = !enabled;
+    refs.smartDigestCard.classList.toggle("smart-digest-hidden", !enabled);
+    refs.smartDigestCard.style.display = enabled ? "" : "none";
   }
 }
 
@@ -570,6 +575,12 @@ function toggleSmartDigest() {
   state.smartDigestEnabled = nextEnabled;
   writeSmartDigestPreference(nextEnabled);
   updateSmartDigestToggleUI();
+
+  if (nextEnabled && refs.intelOverlay?.classList.contains("hidden")) {
+    refs.intelOverlay.classList.remove("hidden");
+    updateColumnToggleButtons();
+  }
+
   refreshLayout();
   showToast("Smart Digest", nextEnabled ? "Smart Digest active." : "Smart Digest desactive.");
 }
