@@ -26,6 +26,15 @@ DEFAULT_CHANNELS: List[str] = [
     "@IntelTower",
     "@nexta_live",
     "@clashreport",
+    "@geopolitics_prime",
+    "@verkhovnaraofukraine",
+    "@frontier_conflict1",
+    "War Monitor",
+    "Ukraine War - Intel News",
+    "War Noir",
+    "Lord Of War",
+    "Mannie's War Room",
+    "Israel War Live",
 ]
 
 
@@ -37,12 +46,19 @@ def _normalize_channel(value: str) -> Optional[str]:
     if "t.me/" in raw:
         raw = raw.split("t.me/", 1)[1]
 
-    raw = raw.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    raw = raw.strip().lstrip("@")
+    raw = raw.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0].strip()
     if not raw:
         return None
 
-    return f"@{raw}"
+    # Keep channel titles as-is (they may contain spaces).
+    if any(ch.isspace() for ch in raw):
+        return raw
+
+    # Normalize username-like tokens to @handle.
+    handle = raw.lstrip("@").strip()
+    if not handle:
+        return None
+    return f"@{handle}"
 
 
 def resolve_channels() -> List[str]:
@@ -90,6 +106,7 @@ class TelegramScraper:
             "off",
         }
         self._last_seen_ids: Dict[str, int] = {}
+        self._watched_channels: List[Dict[str, Any]] = []
         self._backfill_done = False
         self.channels = resolve_channels()
 
@@ -141,12 +158,44 @@ class TelegramScraper:
         except Exception:
             logger.warning("telegram_event_processing_skipped")
 
+    def _channel_cache_key(self, value: str) -> str:
+        normalized = _normalize_channel(value)
+        if not normalized:
+            return str(value or "").strip().lower()
+        if normalized.startswith("@"):
+            return normalized.lower()
+        return normalized.lower()
+
+    async def _resolve_watched_channels(self) -> List[Dict[str, Any]]:
+        if self.client is None:
+            return []
+
+        resolved: List[Dict[str, Any]] = []
+        seen_keys = set()
+
+        for requested in self.channels:
+            try:
+                entity = await self.client.get_entity(requested)
+                username = getattr(entity, "username", None)
+                source_channel = f"@{username}" if username else str(requested)
+                key = self._channel_cache_key(source_channel)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                resolved.append(
+                    {
+                        "requested": requested,
+                        "entity": entity,
+                        "source_channel": source_channel,
+                    }
+                )
+            except Exception:
+                logger.warning("telegram_channel_unresolved channel=%s", requested)
+
+        return resolved
+
     async def _run_once(self) -> None:
         self.client = self._build_client()
-
-        @self.client.on(events.NewMessage(chats=self.channels))
-        async def _on_new_message(event: events.NewMessage.Event) -> None:
-            await self._handle_event(event)
 
         await self.client.connect()
 
@@ -158,9 +207,24 @@ class TelegramScraper:
             await asyncio.sleep(max(30, self._unauthorized_sleep))
             return
 
+        self._watched_channels = await self._resolve_watched_channels()
+        if not self._watched_channels:
+            logger.error("telegram_no_channels_resolved")
+            await self.client.disconnect()
+            await asyncio.sleep(max(30, self._unauthorized_sleep))
+            return
+
+        async def _on_new_message(event: events.NewMessage.Event) -> None:
+            await self._handle_event(event)
+
+        self.client.add_event_handler(
+            _on_new_message,
+            events.NewMessage(chats=[entry["entity"] for entry in self._watched_channels]),
+        )
+
         if not self._backfill_done and self._backfill_limit > 0:
             try:
-                await self._run_backfill()
+                await self._run_backfill(self._watched_channels)
             finally:
                 # Avoid rerunning full bootstrap history on each reconnect loop.
                 self._backfill_done = True
@@ -171,7 +235,7 @@ class TelegramScraper:
 
         logger.info(
             "telegram_listener_started channels=%s polling=%s poll_seconds=%s poll_limit=%s",
-            ",".join(self.channels),
+            ",".join(entry["source_channel"] for entry in self._watched_channels),
             "on" if self._enable_polling else "off",
             self._poll_seconds,
             self._poll_limit,
@@ -186,21 +250,23 @@ class TelegramScraper:
                 except asyncio.CancelledError:
                     pass
 
-    async def _run_backfill(self) -> None:
+    async def _run_backfill(self, channels: Optional[List[Dict[str, Any]]] = None) -> None:
         if self.client is None or self._backfill_limit <= 0:
             return
+        if channels is None:
+            channels = self._watched_channels
 
         logger.info("telegram_backfill_started per_channel_limit=%s", self._backfill_limit)
         total_messages = 0
 
-        for channel in self.channels:
+        for channel_info in channels:
             accepted = 0
             skipped_empty = 0
 
             try:
-                entity = await self.client.get_entity(channel)
-                channel_name = getattr(entity, "username", None)
-                source_channel = f"@{channel_name}" if channel_name else channel
+                entity = channel_info["entity"]
+                source_channel = channel_info["source_channel"]
+                requested = channel_info["requested"]
                 source_key = _normalize_channel(source_channel) or source_channel
                 max_seen = int(self._last_seen_ids.get(source_key, 0))
 
@@ -228,7 +294,7 @@ class TelegramScraper:
 
                 if max_seen > 0:
                     self._last_seen_ids[source_key] = max_seen
-                    normalized_channel = _normalize_channel(channel)
+                    normalized_channel = _normalize_channel(requested)
                     if normalized_channel:
                         self._last_seen_ids[normalized_channel] = max_seen
 
@@ -240,10 +306,18 @@ class TelegramScraper:
                 )
             except FloodWaitError as exc:
                 wait_seconds = max(5, int(getattr(exc, "seconds", 5)))
-                logger.warning("telegram_backfill_flood_wait channel=%s wait_seconds=%s", channel, wait_seconds)
+                logger.warning(
+                    "telegram_backfill_flood_wait channel=%s wait_seconds=%s",
+                    channel_info.get("source_channel") or channel_info.get("requested"),
+                    wait_seconds,
+                )
                 await asyncio.sleep(wait_seconds)
             except Exception as exc:
-                logger.warning("telegram_backfill_channel_failed channel=%s error=%s", channel, exc)
+                logger.warning(
+                    "telegram_backfill_channel_failed channel=%s error=%s",
+                    channel_info.get("source_channel") or channel_info.get("requested"),
+                    exc,
+                )
 
         logger.info("telegram_backfill_complete processed=%s", total_messages)
 
@@ -257,15 +331,15 @@ class TelegramScraper:
             self._poll_seconds,
         )
         while not self._stop.is_set() and self.client is not None and self.client.is_connected():
-            for channel in self.channels:
+            for channel_info in self._watched_channels:
                 if self._stop.is_set() or self.client is None or not self.client.is_connected():
                     break
 
-                normalized_channel = _normalize_channel(channel) or channel
+                requested = channel_info["requested"]
+                source_channel = channel_info["source_channel"]
+                normalized_channel = _normalize_channel(requested) or requested
                 try:
-                    entity = await self.client.get_entity(channel)
-                    channel_name = getattr(entity, "username", None)
-                    source_channel = f"@{channel_name}" if channel_name else channel
+                    entity = channel_info["entity"]
                     source_key = _normalize_channel(source_channel) or source_channel
 
                     last_seen = int(
@@ -310,10 +384,10 @@ class TelegramScraper:
                     await asyncio.sleep(0.08)
                 except FloodWaitError as exc:
                     wait_seconds = max(5, int(getattr(exc, "seconds", 5)))
-                    logger.warning("telegram_poll_flood_wait channel=%s wait_seconds=%s", channel, wait_seconds)
+                    logger.warning("telegram_poll_flood_wait channel=%s wait_seconds=%s", source_channel, wait_seconds)
                     await asyncio.sleep(wait_seconds)
                 except Exception as exc:
-                    logger.warning("telegram_poll_channel_failed channel=%s error=%s", channel, exc)
+                    logger.warning("telegram_poll_channel_failed channel=%s error=%s", source_channel, exc)
 
             await asyncio.sleep(self._poll_seconds)
 
