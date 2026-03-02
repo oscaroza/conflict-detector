@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from pathlib import Path
 from datetime import timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -35,6 +36,11 @@ class TelegramScraper:
         self.session_string = os.getenv("TELEGRAM_SESSION_STRING", "").strip()
         self._stop = asyncio.Event()
         self.client: Optional[TelegramClient] = None
+        self._unauthorized_sleep = int(os.getenv("TELEGRAM_UNAUTHORIZED_RETRY_SECONDS", "300"))
+
+    def has_local_session_file(self) -> bool:
+        path = Path(f"{self.session_name}.session")
+        return path.exists()
 
     def _build_client(self) -> TelegramClient:
         session = StringSession(self.session_string) if self.session_string else self.session_name
@@ -83,14 +89,13 @@ class TelegramScraper:
             await self._handle_event(event)
 
         await self.client.connect()
-        await self.client.start()
 
         if not await self.client.is_user_authorized():
             logger.error(
-                "telegram_not_authorized: lance une premiere auth locale Telethon (session) avant Render"
+                "telegram_not_authorized: configure TELEGRAM_SESSION_STRING (Render) ou cree une session locale"
             )
             await self.client.disconnect()
-            await asyncio.sleep(20)
+            await asyncio.sleep(max(30, self._unauthorized_sleep))
             return
 
         logger.info("telegram_listener_started channels=%s", ",".join(CHANNELS))

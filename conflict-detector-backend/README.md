@@ -39,6 +39,7 @@ Renseigne ensuite dans `.env`:
 ```env
 TELEGRAM_API_ID=123456
 TELEGRAM_API_HASH=abcdef123456...
+TELEGRAM_SESSION_STRING=
 ```
 
 ## 2) Premier lancement (auth Telegram)
@@ -49,6 +50,22 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 Au premier lancement Telethon peut demander une authentification utilisateur Telegram (code SMS/app).  
 Une session locale sera ensuite réutilisée automatiquement.
+
+Pour Render (non interactif), génère une StringSession locale puis colle-la dans `TELEGRAM_SESSION_STRING`:
+
+```bash
+python3 - <<'PY'
+from telethon.sync import TelegramClient
+from telethon.sessions import StringSession
+
+api_id = int(input("API ID: ").strip())
+api_hash = input("API HASH: ").strip()
+
+with TelegramClient(StringSession(), api_id, api_hash) as client:
+    print("\nSESSION STRING:\n")
+    print(client.session.save())
+PY
+```
 
 ## 3) API
 
@@ -73,6 +90,18 @@ Retourne:
 - compteurs par sévérité
 - top pays actifs
 - top canaux
+
+### GET `/api/countries`
+
+Liste des pays actifs.
+
+### GET `/api/regions`
+
+Liste des régions actives.
+
+### SSE `/api/stream`
+
+Flux temps réel compatible EventSource (`new-alert`).
 
 ### WebSocket `/ws`
 
@@ -110,6 +139,7 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 5. Variables d’environnement Render:
    - `TELEGRAM_API_ID`
    - `TELEGRAM_API_HASH`
+   - `TELEGRAM_SESSION_STRING` (obligatoire en pratique sur Render)
 
 ## 5) Comportement du pipeline
 
