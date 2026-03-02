@@ -1,4 +1,4 @@
-telethon
-fastapi
-uvicorn[standard]
-aiosqlite
+aiosqlite==0.20.0
+fastapi==0.115.6
+telethon==1.41.1
+uvicorn[standard]==0.32.1

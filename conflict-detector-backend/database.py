@@ -1,30 +1,58 @@
-from __future__ import annotations
-
 import asyncio
+import os
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 import aiosqlite
 
+DB_PATH = os.getenv("SQLITE_PATH", "conflict_detector.db")
 MAX_ALERTS = 500
-DEDUP_WINDOW_SECONDS = 60
-DEDUP_SIMILARITY_THRESHOLD = 0.80
+DUPLICATE_WINDOW_SECONDS = 60
+SIMILARITY_THRESHOLD = 0.80
+
+_write_lock = asyncio.Lock()
 
 
-class AlertDatabase:
-    def __init__(self, db_path: str = "alerts.db") -> None:
-        self.db_path = db_path
-        self._connection: aiosqlite.Connection | None = None
-        self._write_lock = asyncio.Lock()
+def _normalize_text(value: str) -> str:
+    return " ".join(str(value or "").strip().lower().split())
 
-    async def connect(self) -> None:
-        self._connection = await aiosqlite.connect(self.db_path)
-        self._connection.row_factory = aiosqlite.Row
 
-        await self._connection.execute("PRAGMA journal_mode=WAL;")
-        await self._connection.execute("PRAGMA synchronous=NORMAL;")
-        await self._connection.execute(
+def _parse_timestamp(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    raw = str(value or "").strip()
+    if not raw:
+        return datetime.now(timezone.utc)
+
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return datetime.now(timezone.utc)
+
+
+async def _connect() -> aiosqlite.Connection:
+    conn = await aiosqlite.connect(DB_PATH)
+    conn.row_factory = aiosqlite.Row
+    return conn
+
+
+def _row_to_dict(row: Optional[aiosqlite.Row]) -> Optional[Dict[str, Any]]:
+    if row is None:
+        return None
+    return dict(row)
+
+
+async def init_db() -> None:
+    conn = await _connect()
+    try:
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,89 +61,91 @@ class AlertDatabase:
                 type TEXT NOT NULL,
                 country TEXT NOT NULL,
                 region TEXT NOT NULL,
-                lat REAL,
-                lng REAL,
+                lat REAL NOT NULL,
+                lng REAL NOT NULL,
                 severity TEXT NOT NULL,
                 confidence INTEGER NOT NULL,
                 source_channel TEXT NOT NULL,
                 original_text TEXT NOT NULL,
                 score INTEGER NOT NULL
-            );
+            )
             """
         )
-        await self._connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp DESC);"
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp DESC)"
         )
-        await self._connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);"
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity)"
         )
-        await self._connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_alerts_country ON alerts(country);"
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alerts_country ON alerts(country)"
         )
-        await self._connection.commit()
+        await conn.commit()
+    finally:
+        await conn.close()
 
-    async def close(self) -> None:
-        if self._connection is not None:
-            await self._connection.close()
-            self._connection = None
 
-    @staticmethod
-    def _normalize_text(text: str) -> str:
-        return " ".join(text.lower().split())
+async def _find_duplicate(
+    conn: aiosqlite.Connection, message_text: str, event_ts: datetime
+) -> Optional[Dict[str, Any]]:
+    since = (event_ts - timedelta(seconds=DUPLICATE_WINDOW_SECONDS)).isoformat()
+    cursor = await conn.execute(
+        """
+        SELECT id, original_text, timestamp
+        FROM alerts
+        WHERE timestamp >= ?
+        ORDER BY timestamp DESC
+        LIMIT 100
+        """,
+        (since,),
+    )
+    rows = await cursor.fetchall()
+    await cursor.close()
 
-    @staticmethod
-    def _to_iso_utc(timestamp: datetime | str | None = None) -> tuple[datetime, str]:
-        if timestamp is None:
-            dt = datetime.now(timezone.utc)
-        elif isinstance(timestamp, str):
-            cleaned = timestamp.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(cleaned)
-        else:
-            dt = timestamp
+    current = _normalize_text(message_text)
+    if not current:
+        return None
 
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        else:
-            dt = dt.astimezone(timezone.utc)
+    for row in rows:
+        candidate = _normalize_text(row["original_text"])
+        ratio = SequenceMatcher(None, current, candidate).ratio()
+        if ratio >= SIMILARITY_THRESHOLD:
+            return {
+                "duplicate_id": row["id"],
+                "similarity": ratio,
+                "timestamp": row["timestamp"],
+            }
 
-        dt = dt.replace(microsecond=0)
-        return dt, dt.isoformat().replace("+00:00", "Z")
+    return None
 
-    async def _is_duplicate(self, original_text: str, timestamp_dt: datetime) -> bool:
-        if self._connection is None:
-            raise RuntimeError("Database not connected")
 
-        threshold = (timestamp_dt - timedelta(seconds=DEDUP_WINDOW_SECONDS)).isoformat().replace(
-            "+00:00", "Z"
+async def _prune_alerts(conn: aiosqlite.Connection) -> None:
+    await conn.execute(
+        """
+        DELETE FROM alerts
+        WHERE id NOT IN (
+            SELECT id
+            FROM alerts
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
         )
-        query = (
-            "SELECT original_text FROM alerts "
-            "WHERE timestamp >= ? ORDER BY id DESC LIMIT 200"
-        )
+        """,
+        (MAX_ALERTS,),
+    )
 
-        async with self._connection.execute(query, (threshold,)) as cursor:
-            recent_rows = await cursor.fetchall()
 
-        normalized_new = self._normalize_text(original_text)
-        for row in recent_rows:
-            normalized_existing = self._normalize_text(row["original_text"])
-            ratio = SequenceMatcher(None, normalized_new, normalized_existing).ratio()
-            if ratio >= DEDUP_SIMILARITY_THRESHOLD:
-                return True
+async def insert_alert(alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    event_ts = _parse_timestamp(alert.get("timestamp"))
+    source_text = str(alert.get("original_text") or "")
 
-        return False
+    async with _write_lock:
+        conn = await _connect()
+        try:
+            duplicate = await _find_duplicate(conn, source_text, event_ts)
+            if duplicate is not None:
+                return None
 
-    async def insert_alert(self, alert: dict[str, Any]) -> bool:
-        if self._connection is None:
-            raise RuntimeError("Database not connected")
-
-        timestamp_dt, timestamp_iso = self._to_iso_utc(alert.get("timestamp"))
-
-        async with self._write_lock:
-            if await self._is_duplicate(alert["original_text"], timestamp_dt):
-                return False
-
-            await self._connection.execute(
+            cursor = await conn.execute(
                 """
                 INSERT INTO alerts (
                     timestamp, title, type, country, region, lat, lng,
@@ -123,123 +153,83 @@ class AlertDatabase:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    timestamp_iso,
-                    alert["title"],
-                    alert["type"],
-                    alert["country"],
-                    alert["region"],
-                    alert.get("lat"),
-                    alert.get("lng"),
-                    alert["severity"],
-                    int(alert["confidence"]),
-                    alert["source_channel"],
-                    alert["original_text"],
-                    int(alert["score"]),
+                    event_ts.isoformat(),
+                    str(alert.get("title") or "")[:220] or "Alerte terrain",
+                    str(alert.get("type") or "geopolitique"),
+                    str(alert.get("country") or "Inconnu"),
+                    str(alert.get("region") or "Global"),
+                    float(alert.get("lat") or 0.0),
+                    float(alert.get("lng") or 0.0),
+                    str(alert.get("severity") or "moyen"),
+                    int(alert.get("confidence") or 0),
+                    str(alert.get("source_channel") or "unknown"),
+                    source_text[:8000],
+                    int(alert.get("score") or 0),
                 ),
             )
-            await self._connection.execute(
-                """
-                DELETE FROM alerts
-                WHERE id NOT IN (
-                    SELECT id FROM alerts
-                    ORDER BY timestamp DESC, id DESC
-                    LIMIT ?
-                )
-                """,
-                (MAX_ALERTS,),
+            alert_id = cursor.lastrowid
+            await cursor.close()
+            await _prune_alerts(conn)
+            await conn.commit()
+
+            fetch = await conn.execute(
+                "SELECT * FROM alerts WHERE id = ? LIMIT 1",
+                (alert_id,),
             )
-            await self._connection.commit()
+            row = await fetch.fetchone()
+            await fetch.close()
+            return _row_to_dict(row)
+        finally:
+            await conn.close()
 
-        return True
 
-    async def get_alerts(
-        self,
-        *,
-        severity: str | None = None,
-        country: str | None = None,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        if self._connection is None:
-            raise RuntimeError("Database not connected")
+async def get_alerts(
+    limit: int = 100,
+    severity: Optional[str] = None,
+    country: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    safe_limit = max(1, min(limit, 500))
+    sql = "SELECT * FROM alerts WHERE 1=1"
+    params: List[Any] = []
 
-        query = "SELECT * FROM alerts WHERE 1=1"
-        params: list[Any] = []
+    if severity:
+        sql += " AND lower(severity) = lower(?)"
+        params.append(severity.strip())
 
-        if severity:
-            query += " AND LOWER(severity) = LOWER(?)"
-            params.append(severity)
+    if country:
+        sql += " AND lower(country) = lower(?)"
+        params.append(country.strip())
 
-        if country:
-            query += " AND LOWER(country) = LOWER(?)"
-            params.append(country)
+    sql += " ORDER BY timestamp DESC, id DESC LIMIT ?"
+    params.append(safe_limit)
 
-        query += " ORDER BY timestamp DESC, id DESC LIMIT ?"
-        params.append(limit)
-
-        async with self._connection.execute(query, tuple(params)) as cursor:
-            rows = await cursor.fetchall()
-
+    conn = await _connect()
+    try:
+        cursor = await conn.execute(sql, tuple(params))
+        rows = await cursor.fetchall()
+        await cursor.close()
         return [dict(row) for row in rows]
+    finally:
+        await conn.close()
 
-    async def get_recent_alerts(self, hours: int = 2) -> list[dict[str, Any]]:
-        if self._connection is None:
-            raise RuntimeError("Database not connected")
 
-        threshold = (
-            datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=hours)
-        ).isoformat().replace("+00:00", "Z")
+async def get_alerts_since(hours: int = 2) -> List[Dict[str, Any]]:
+    window_hours = max(1, min(hours, 72))
+    since = (datetime.now(timezone.utc) - timedelta(hours=window_hours)).isoformat()
 
-        query = "SELECT * FROM alerts WHERE timestamp >= ? ORDER BY timestamp DESC, id DESC"
-        async with self._connection.execute(query, (threshold,)) as cursor:
-            rows = await cursor.fetchall()
-
-        return [dict(row) for row in rows]
-
-    async def get_severity_counts(self, hours: int = 24) -> dict[str, int]:
-        if self._connection is None:
-            raise RuntimeError("Database not connected")
-
-        threshold = (
-            datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=hours)
-        ).isoformat().replace("+00:00", "Z")
-
-        query = (
-            "SELECT severity, COUNT(*) AS total FROM alerts "
-            "WHERE timestamp >= ? GROUP BY severity"
+    conn = await _connect()
+    try:
+        cursor = await conn.execute(
+            """
+            SELECT *
+            FROM alerts
+            WHERE timestamp >= ?
+            ORDER BY timestamp DESC, id DESC
+            """,
+            (since,),
         )
-        async with self._connection.execute(query, (threshold,)) as cursor:
-            rows = await cursor.fetchall()
-
-        counts = {"critique": 0, "haute": 0, "moyen": 0, "faible": 0}
-        for row in rows:
-            counts[row["severity"]] = row["total"]
-
-        return counts
-
-    async def get_top_countries(self, hours: int = 24, limit: int = 5) -> list[dict[str, Any]]:
-        if self._connection is None:
-            raise RuntimeError("Database not connected")
-
-        threshold = (
-            datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=hours)
-        ).isoformat().replace("+00:00", "Z")
-
-        query = (
-            "SELECT country, COUNT(*) AS total FROM alerts "
-            "WHERE timestamp >= ? AND country != 'Unknown' "
-            "GROUP BY country ORDER BY total DESC LIMIT ?"
-        )
-
-        async with self._connection.execute(query, (threshold, limit)) as cursor:
-            rows = await cursor.fetchall()
-
+        rows = await cursor.fetchall()
+        await cursor.close()
         return [dict(row) for row in rows]
-
-    async def count_alerts(self) -> int:
-        if self._connection is None:
-            raise RuntimeError("Database not connected")
-
-        async with self._connection.execute("SELECT COUNT(*) AS total FROM alerts") as cursor:
-            row = await cursor.fetchone()
-
-        return int(row["total"] if row else 0)
+    finally:
+        await conn.close()

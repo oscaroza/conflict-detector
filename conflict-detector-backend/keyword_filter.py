@@ -1,10 +1,8 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
 import re
-from typing import Any
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List
 
-KEYWORDS = {
+KEYWORDS: Dict[str, Dict[str, Any]] = {
     "frappe": {
         "mots": [
             "strike",
@@ -83,7 +81,7 @@ KEYWORDS = {
     },
 }
 
-SEVERITY_KEYWORDS = {
+SEVERITY_KEYWORDS: Dict[str, List[str]] = {
     "critique": [
         "nuclear",
         "nuke",
@@ -124,123 +122,154 @@ SEVERITY_KEYWORDS = {
     ],
 }
 
-RELIABLE_CHANNELS = {
-    "@bnonews",
-    "@osintdefender",
-}
-
+TRUSTED_CHANNELS = {"bnonews", "osintdefender"}
 LESS_VERIFIED_CHANNELS = {
-    "@middleeastspectator",
-    "@intelcrab",
-    "@warmonitor3",
-    "@gazawarnews",
-    "@tpyxialert",
+    "middleeastspectator",
+    "gazawarnews",
+    "warmonitor3",
+    "intelcrab",
+    "tpyxialert",
 }
 
 GPS_PATTERN = re.compile(
-    r"\b-?(?:[1-8]?\d(?:\.\d+)?|90(?:\.0+)?)\s*,\s*-?(?:\d{1,2}(?:\.\d+)?|1[0-7]\d(?:\.\d+)?|180(?:\.0+)?)\b"
+    r"\b-?(?:90(?:\.0+)?|[1-8]?\d(?:\.\d+)?)\s*,\s*-?(?:180(?:\.0+)?|1[0-7]\d(?:\.\d+)?|[1-9]?\d(?:\.\d+)?)\b"
 )
-URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
+LINK_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
-@dataclass(slots=True)
+@dataclass
 class FilterResult:
     accepted: bool
     score: int
     severity: str
     confidence: int
-    event_type: str
-    keyword_hits: dict[str, list[str]]
+    matched: Dict[str, Any]
+    reason: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 def _normalize_text(text: str) -> str:
-    return " ".join(text.lower().strip().split())
+    return " ".join(str(text or "").lower().split())
 
 
-def _find_hits(normalized_text: str, candidates: list[str]) -> list[str]:
-    return [keyword for keyword in candidates if keyword in normalized_text]
+def _normalize_channel(channel: str) -> str:
+    return str(channel or "").strip().lower().lstrip("@")
 
 
-def score_message(text: str) -> tuple[int, dict[str, list[str]]]:
-    normalized_text = _normalize_text(text)
-    total_score = 0
-    hits: dict[str, list[str]] = {}
+def _contains_term(text: str, term: str) -> bool:
+    term = term.strip().lower()
+    if not term:
+        return False
+    pattern = r"\b" + re.escape(term) + r"\b"
+    return re.search(pattern, text) is not None
 
-    for category, config in KEYWORDS.items():
-        category_hits = _find_hits(normalized_text, config["mots"])
-        if not category_hits:
+
+def _find_matches(text: str, words: List[str]) -> List[str]:
+    matches: List[str] = []
+    seen = set()
+    for word in words:
+        normalized = word.strip().lower()
+        if not normalized or normalized in seen:
             continue
-        total_score += len(category_hits) * int(config["poids"])
-        hits[category] = category_hits
+        if _contains_term(text, normalized):
+            matches.append(normalized)
+            seen.add(normalized)
+    return matches
 
-    return total_score, hits
+
+def _compute_score(text: str) -> Dict[str, Any]:
+    details: Dict[str, Any] = {}
+    total_score = 0
+    for category, payload in KEYWORDS.items():
+        words = payload["mots"]
+        weight = int(payload["poids"])
+        matches = _find_matches(text, words)
+        if not matches:
+            continue
+
+        delta = len(matches) * weight
+        total_score += delta
+        details[category] = {
+            "matches": matches,
+            "count": len(matches),
+            "weight": weight,
+            "delta": delta,
+        }
+    return {"score": total_score, "details": details}
 
 
-def determine_severity(text: str) -> str:
-    normalized_text = _normalize_text(text)
+def _compute_severity(text: str) -> str:
     for severity in ("critique", "haute", "moyen", "faible"):
-        for keyword in SEVERITY_KEYWORDS[severity]:
-            if keyword in normalized_text:
+        for token in SEVERITY_KEYWORDS[severity]:
+            if _contains_term(text, token):
                 return severity
-    return "faible"
+    return "moyen"
 
 
-def calculate_confidence(text: str, source_channel: str) -> int:
-    normalized_text = _normalize_text(text)
-    channel = source_channel.lower().strip()
-    score = 0
+def _compute_confidence(text: str, source_channel: str) -> Dict[str, Any]:
+    confidence = 0
+    factors: List[str] = []
+    normalized_channel = _normalize_channel(source_channel)
 
-    if channel in RELIABLE_CHANNELS:
-        score += 30
+    if normalized_channel in TRUSTED_CHANNELS:
+        confidence += 30
+        factors.append("trusted_channel:+30")
 
-    if "confirmed" in normalized_text or "breaking" in normalized_text:
-        score += 20
+    if _contains_term(text, "confirmed") or _contains_term(text, "breaking"):
+        confidence += 20
+        factors.append("confirmed_or_breaking:+20")
 
     if GPS_PATTERN.search(text):
-        score += 20
+        confidence += 20
+        factors.append("gps_detected:+20")
 
     if len(text) > 100:
-        score += 15
+        confidence += 15
+        factors.append("long_message:+15")
 
-    if URL_PATTERN.search(text):
-        score += 15
+    if LINK_PATTERN.search(text):
+        confidence += 15
+        factors.append("external_link:+15")
 
-    if channel in LESS_VERIFIED_CHANNELS:
-        score -= 20
+    if normalized_channel in LESS_VERIFIED_CHANNELS:
+        confidence -= 20
+        factors.append("less_verified_channel:-20")
 
-    return max(0, min(score, 100))
-
-
-def determine_event_type(keyword_hits: dict[str, list[str]]) -> str:
-    if keyword_hits.get("frappe"):
-        return "frappe"
-    if keyword_hits.get("terrain_confirme"):
-        return "terrain_confirme"
-    return "incident"
+    confidence = max(0, min(100, confidence))
+    return {"confidence": confidence, "factors": factors}
 
 
-def evaluate_message(text: str, source_channel: str) -> FilterResult:
-    score, hits = score_message(text)
-    severity = determine_severity(text)
-    confidence = calculate_confidence(text, source_channel)
-    accepted = score >= 10
+def analyze_message(message_text: str, source_channel: str) -> FilterResult:
+    text = _normalize_text(message_text)
+    if not text:
+        return FilterResult(
+            accepted=False,
+            score=0,
+            severity="faible",
+            confidence=0,
+            matched={},
+            reason="empty_message",
+        )
+
+    score_data = _compute_score(text)
+    severity = _compute_severity(text)
+    confidence_data = _compute_confidence(text, source_channel)
+
+    accepted = score_data["score"] >= 10
+    reason = "accepted" if accepted else "score_below_threshold"
+    if "exclusion" in score_data["details"] and not accepted:
+        reason = "excluded_by_keywords"
 
     return FilterResult(
         accepted=accepted,
-        score=score,
+        score=int(score_data["score"]),
         severity=severity,
-        confidence=confidence,
-        event_type=determine_event_type(hits),
-        keyword_hits=hits,
+        confidence=int(confidence_data["confidence"]),
+        matched={
+            "keywords": score_data["details"],
+            "confidence_factors": confidence_data["factors"],
+        },
+        reason=reason,
     )
-
-
-def result_to_dict(result: FilterResult) -> dict[str, Any]:
-    return {
-        "accepted": result.accepted,
-        "score": result.score,
-        "severity": result.severity,
-        "confidence": result.confidence,
-        "event_type": result.event_type,
-        "keyword_hits": result.keyword_hits,
-    }
