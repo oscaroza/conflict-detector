@@ -550,9 +550,9 @@ h1 {
 
 .action-block {
   gap: 0.45rem;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
-  min-width: 420px;
+  min-width: 300px;
   padding-right: 0.84rem;
 }
 
@@ -560,17 +560,90 @@ h1 {
   min-width: 118px;
 }
 
+.site-settings-menu {
+  position: relative;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.site-settings-menu summary {
+  list-style: none;
+}
+
+.site-settings-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.site-settings-menu[open] .settings-gear-btn {
+  border-color: rgba(255, 210, 74, 0.58);
+  color: #ffe39b;
+}
+
+.settings-gear-btn {
+  min-width: 128px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  justify-content: center;
+}
+
+.gear-icon {
+  font-size: 0.8rem;
+  line-height: 1;
+}
+
+.site-settings-popover {
+  position: absolute;
+  top: calc(100% + 0.42rem);
+  right: 0;
+  z-index: 1300;
+  width: min(350px, calc(100vw - 1rem));
+  padding: 0.55rem;
+  display: grid;
+  gap: 0.52rem;
+  background: rgba(6, 10, 16, 0.97);
+}
+
+.site-settings-title {
+  margin: 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.7rem;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #d9e1ef;
+}
+
+.site-settings-row {
+  display: grid;
+  gap: 0.22rem;
+}
+
+.site-settings-row .tiny-label {
+  margin: 0;
+  font-size: 0.6rem;
+  letter-spacing: 0.85px;
+}
+
+.site-settings-row .form-select {
+  min-height: 32px;
+}
+
 #alertModeSelect {
-  width: clamp(132px, 20vw, 170px);
+  width: 100%;
 }
 
 #intervalSelect {
-  width: clamp(80px, 12vw, 95px);
+  width: 100%;
 }
 
-.action-block .tiny-label {
-  margin-bottom: 0;
-  margin-right: -0.12rem;
+.site-settings-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.36rem;
+}
+
+.site-settings-buttons .btn {
+  width: 100%;
 }
 
 .latest-strip {
@@ -1814,42 +1887,31 @@ canvas {
   .action-block {
     display: flex;
     align-items: center;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
+    flex-wrap: wrap;
     gap: 0.3rem;
     padding-right: 0;
     padding-bottom: 0.1rem;
   }
 
-  .action-block::-webkit-scrollbar {
-    display: none;
-  }
-
-  .action-block .btn,
-  .action-block .form-select {
+  .action-block .btn {
     width: auto;
-    min-width: 112px;
+    min-width: 106px;
     flex: 0 0 auto;
     min-height: 32px;
   }
 
-  .action-block .tiny-label {
-    display: none;
+  .site-settings-menu {
+    margin-left: auto;
   }
 
-  #alertModeSelect,
-  #intervalSelect {
-    width: auto;
+  .settings-gear-btn {
+    min-width: 122px;
   }
 
-  #alertModeSelect {
-    min-width: 142px;
-  }
-
-  #intervalSelect {
-    min-width: 106px;
+  .site-settings-popover {
+    right: 0;
+    left: auto;
+    width: min(340px, calc(100vw - 0.9rem));
   }
 
   #refreshNowBtn {
@@ -1996,11 +2058,6 @@ canvas {
     padding-bottom: 0.16rem;
   }
 
-  #toggleVoiceBtn,
-  #toggleBrowserNotifBtn {
-    display: none;
-  }
-
   .headline-card {
     padding: 0.2rem;
   }
@@ -2026,6 +2083,19 @@ canvas {
   .sound-toggle-btn,
   .coverage-toggle-btn {
     min-width: 0;
+  }
+
+  .settings-gear-btn {
+    min-width: 118px;
+  }
+
+  .site-settings-popover {
+    width: calc(100vw - 0.64rem);
+    right: 0;
+  }
+
+  .site-settings-buttons {
+    grid-template-columns: 1fr;
   }
 
   #map,
