@@ -1404,6 +1404,70 @@ canvas {
   background: radial-gradient(circle at 35% 30%, rgba(255, 88, 102, 0.96), rgba(146, 31, 41, 0.96));
 }
 
+.country-callout {
+  min-height: 24px;
+  max-width: 220px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.12rem 0.42rem 0.12rem 0.3rem;
+  border: 1px solid rgba(255, 255, 255, 0.36);
+  border-radius: 0;
+  background: rgba(7, 11, 18, 0.9);
+  color: #f3f7ff;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.25px;
+  line-height: 1.15;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.62), 0 5px 14px rgba(0, 0, 0, 0.34);
+  pointer-events: auto;
+}
+
+.country-callout__arrow {
+  font-size: 0.76rem;
+  opacity: 0.95;
+}
+
+.country-callout__flag {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.country-callout__name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+  color: #e6edf8;
+}
+
+.country-callout.status-normal {
+  border-color: rgba(53, 239, 159, 0.6);
+  box-shadow: 0 0 0 1px rgba(53, 239, 159, 0.28), 0 5px 14px rgba(0, 0, 0, 0.32);
+}
+
+.country-callout.status-normal .country-callout__arrow {
+  color: #58f2aa;
+}
+
+.country-callout.status-tension {
+  border-color: rgba(255, 210, 74, 0.62);
+  box-shadow: 0 0 0 1px rgba(255, 210, 74, 0.3), 0 5px 14px rgba(0, 0, 0, 0.32);
+}
+
+.country-callout.status-tension .country-callout__arrow {
+  color: #ffd24a;
+}
+
+.country-callout.status-critical {
+  border-color: rgba(255, 82, 94, 0.72);
+  box-shadow: 0 0 0 1px rgba(255, 82, 94, 0.36), 0 5px 14px rgba(0, 0, 0, 0.32);
+}
+
+.country-callout.status-critical .country-callout__arrow {
+  color: #ff5967;
+}
+
 .threat-marker {
   width: 24px;
   height: 24px;

@@ -4,6 +4,7 @@ const state = {
   settings: null,
   map: null,
   markersLayer: null,
+  countryLegendLayer: null,
   mapMode: "2d",
   globe: null,
   countryGeoFeaturesByKey: new Map(),
@@ -439,6 +440,8 @@ function initializeGlobe() {
 
 function renderGlobeMarkers(alerts) {
   if (!state.globe) return;
+  const countrySummaries = buildCountrySummaries(alerts);
+  const globeLegendItems = buildGlobeCountryLegendItems(countrySummaries);
 
   const points = sortAlertsByEventTimeDesc(alerts)
     .slice(0, 520)
@@ -502,8 +505,30 @@ function renderGlobeMarkers(alerts) {
     .ringRepeatPeriod("period")
     .polygonsData(polygons);
 
+  if (typeof state.globe.labelsData === "function") {
+    state.globe
+      .labelsData(globeLegendItems)
+      .labelLat("lat")
+      .labelLng("lng")
+      .labelText((item) => item?.text || "")
+      .labelColor((item) => item?.color || "#f4f8ff")
+      .labelSize((item) => item?.size || 0.78)
+      .labelDotRadius((item) => item?.dotRadius || 0.18)
+      .labelAltitude((item) => item?.altitude || 0.023)
+      .labelResolution(3);
+
+    if (typeof state.globe.onLabelClick === "function") {
+      state.globe.onLabelClick((item) => {
+        if (!item?.summary) return;
+        renderCountryDetails(item.summary).catch((error) => {
+          showToast("Erreur profil pays", error.message);
+        });
+      });
+    }
+  }
+
   if (refs.mapOverlayMetric) {
-    refs.mapOverlayMetric.textContent = `${points.length}/${alerts.length} alertes | ${polygons.length} pays | globe 3D`;
+    refs.mapOverlayMetric.textContent = `${points.length}/${alerts.length} points actifs | ${globeLegendItems.length} legendes pays | globe 3D`;
   }
 }
 
@@ -2241,10 +2266,14 @@ function renderMapMarkers() {
   const activeMapSignals = filterActiveMapSignals(visibleAlerts);
   recomputeCountryStatusLevels();
   updateCountryHeadlineCounters();
+  const countrySummaries = buildCountrySummaries(activeMapSignals);
 
   if (getMapMode() === "3d") {
     if (state.markersLayer) {
       state.markersLayer.clearLayers();
+    }
+    if (state.countryLegendLayer) {
+      state.countryLegendLayer.clearLayers();
     }
     if (!state.globe) {
       initializeGlobe();
@@ -2259,36 +2288,25 @@ function renderMapMarkers() {
   }
 
   state.markersLayer.clearLayers();
+  state.countryLegendLayer?.clearLayers();
 
   const zoom = Number(state.map?.getZoom?.() || 2);
 
-  if (zoom < 3.4) {
-    const countrySummaries = buildCountrySummaries(activeMapSignals);
-    const maxCountries = Math.max(45, getMarkerLimitForZoom(zoom));
-
-    countrySummaries.slice(0, maxCountries).forEach((summary) => {
-      const marker = createCountryMarker(summary);
-      state.markersLayer.addLayer(marker);
-    });
-
-    if (refs.mapOverlayMetric) {
-      refs.mapOverlayMetric.textContent = `${Math.min(countrySummaries.length, maxCountries)}/${
-        countrySummaries.length
-      } pays | ${activeMapSignals.length} alertes <= ${MAP_SIGNAL_TTL_MINUTES} min | zoom ${zoom.toFixed(1)}`;
-    }
-    scheduleMapSignalExpiryRefresh(activeMapSignals);
-    return;
-  }
-
   const renderedAlerts = selectAlertsForCurrentZoom(activeMapSignals);
+  const countryLegends = sortCountrySummariesForLegend(countrySummaries).slice(0, getCountryLegendLimitForZoom(zoom));
 
   renderedAlerts.forEach((alert) => {
     const marker = createMarker(alert);
     state.markersLayer.addLayer(marker);
   });
 
+  countryLegends.forEach((summary) => {
+    const legendMarker = createCountryLegendMarker(summary);
+    state.countryLegendLayer?.addLayer(legendMarker);
+  });
+
   if (refs.mapOverlayMetric) {
-    refs.mapOverlayMetric.textContent = `${renderedAlerts.length}/${activeMapSignals.length} alertes <= ${MAP_SIGNAL_TTL_MINUTES} min | zoom ${zoom.toFixed(
+    refs.mapOverlayMetric.textContent = `${renderedAlerts.length}/${activeMapSignals.length} points actifs | ${countryLegends.length} legendes pays | zoom ${zoom.toFixed(
       1
     )}`;
   }
@@ -3302,32 +3320,96 @@ function buildCountrySummaries(alerts) {
     .sort((a, b) => b.latestAt - a.latestAt);
 }
 
-function getCountryLabelCode(summary) {
-  const code = String(summary?.country?.code || "").toUpperCase().trim();
-  if (code && code !== "XX") {
-    return code;
+function countryCodeToFlagEmoji(code) {
+  const normalized = normalizeCountryCode(code);
+  if (normalized.length !== 2) {
+    return "🏳️";
   }
 
-  const fallback = String(summary?.country?.name || "?")
-    .replace(/[^A-Za-z]/g, "")
-    .slice(0, 2)
-    .toUpperCase();
-
-  return fallback || "??";
+  try {
+    return String.fromCodePoint(
+      ...normalized.split("").map((char) => 127397 + char.charCodeAt(0))
+    );
+  } catch (error) {
+    return "🏳️";
+  }
 }
 
-function createCountryMarker(summary) {
+function compactCountryName(name, maxLen = 26) {
+  const raw = String(name || "Inconnu").trim();
+  if (raw.length <= maxLen) {
+    return raw;
+  }
+  return `${raw.slice(0, Math.max(8, maxLen - 1)).trim()}…`;
+}
+
+function getLegendStatusColor(status) {
+  if (status === "critical") return "#ff6b76";
+  if (status === "tension") return "#ffd874";
+  return "#6dffc0";
+}
+
+function countryLegendPriority(summary) {
+  const statusWeight = summary?.status === "critical" ? 3 : summary?.status === "tension" ? 2 : 1;
+  const latestAt = Number(summary?.latestAt || 0);
+  const countWeight = Number(summary?.alerts?.length || 0);
+  return statusWeight * 1_000_000_000_000 + latestAt + countWeight * 1000;
+}
+
+function sortCountrySummariesForLegend(summaries) {
+  return [...(summaries || [])].sort((a, b) => countryLegendPriority(b) - countryLegendPriority(a));
+}
+
+function getCountryLegendLimitForZoom(zoom) {
+  if (!Number.isFinite(zoom)) return 14;
+  if (zoom < 3) return 16;
+  if (zoom < 4) return 20;
+  if (zoom < 5) return 15;
+  if (zoom < 6) return 10;
+  return 7;
+}
+
+function buildGlobeCountryLegendItems(countrySummaries) {
+  return sortCountrySummariesForLegend(countrySummaries)
+    .slice(0, 22)
+    .map((summary) => {
+      const [lat, lng] = summary?.center || [null, null];
+      if (!isValidLatLng(lat, lng)) {
+        return null;
+      }
+
+      const countryName = summary?.country?.name || "Inconnu";
+      const flag = countryCodeToFlagEmoji(summary?.country?.code);
+
+      return {
+        lat,
+        lng,
+        summary,
+        text: `↗ ${flag} ${compactCountryName(countryName, 24)}`,
+        color: getLegendStatusColor(summary?.status),
+        size: summary?.status === "critical" ? 0.98 : summary?.status === "tension" ? 0.9 : 0.82,
+        dotRadius: summary?.status === "critical" ? 0.22 : 0.17,
+        altitude: summary?.status === "critical" ? 0.034 : 0.026
+      };
+    })
+    .filter(Boolean);
+}
+
+function createCountryLegendMarker(summary) {
   const [lat, lng] = summary.center || [20, 0];
   const statusClass = countryStatusClass(summary.status);
-  const labelCode = getCountryLabelCode(summary);
+  const countryName = summary?.country?.name || "Inconnu";
+  const compactName = compactCountryName(countryName, 28);
+  const flag = countryCodeToFlagEmoji(summary?.country?.code);
 
   const marker = L.marker([lat, lng], {
     icon: L.divIcon({
       className: "",
-      html: `<div class="country-marker ${statusClass}"><span>${escapeHtml(labelCode)}</span></div>`,
-      iconSize: [34, 34],
-      iconAnchor: [17, 17]
-    })
+      html: `<div class="country-callout ${statusClass}" title="${escapeHtml(countryName)}"><span class="country-callout__arrow">➤</span><span class="country-callout__flag">${escapeHtml(flag)}</span><span class="country-callout__name">${escapeHtml(compactName)}</span></div>`,
+      iconSize: [226, 30],
+      iconAnchor: [8, 15]
+    }),
+    zIndexOffset: 460
   });
 
   marker.bindPopup(`
@@ -4065,6 +4147,7 @@ function initializeMap() {
   }).addTo(state.map);
 
   state.markersLayer = L.layerGroup().addTo(state.map);
+  state.countryLegendLayer = L.layerGroup().addTo(state.map);
 
   state.map.on("zoomend", () => {
     renderMapMarkers();
