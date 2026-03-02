@@ -18,7 +18,27 @@ const parser = new Parser({
 const FETCH_TIMEOUT_MS = 15000;
 const GDELT_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc";
 const TELEGRAM_SYNC_TIMEOUT_MS = 12000;
-const TELEGRAM_SYNC_DEFAULT_LIMIT = 250;
+const TELEGRAM_SYNC_DEFAULT_LIMIT = 120;
+
+function readNumberEnv(name, defaultValue, min, max) {
+  const raw = Number(process.env[name]);
+  if (!Number.isFinite(raw)) {
+    return defaultValue;
+  }
+  return Math.min(max, Math.max(min, Math.round(raw)));
+}
+
+function readBooleanEnv(name, defaultValue = true) {
+  const raw = String(process.env[name] ?? "").trim().toLowerCase();
+  if (!raw) return defaultValue;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  return defaultValue;
+}
+
+const ENABLE_GDELT = readBooleanEnv("ENABLE_GDELT", true);
+const TELEGRAM_SYNC_MIN_INTERVAL_MS = readNumberEnv("TELEGRAM_SYNC_MIN_INTERVAL_SECONDS", 45, 10, 900) * 1000;
+const TELEGRAM_SYNC_CACHE_MAX_AGE_MS = readNumberEnv("TELEGRAM_SYNC_CACHE_MAX_AGE_SECONDS", 180, 30, 3600) * 1000;
 
 const FEEDS = [
   {
@@ -102,7 +122,7 @@ function resolveTelegramBackendBaseUrl() {
 
 function resolveTelegramFetchLimit() {
   const raw = Number(process.env.TELEGRAM_OSINT_FETCH_LIMIT);
-  if (Number.isFinite(raw) && raw >= 10 && raw <= 500) {
+  if (Number.isFinite(raw) && raw >= 10 && raw <= 300) {
     return Math.round(raw);
   }
   return TELEGRAM_SYNC_DEFAULT_LIMIT;
@@ -814,6 +834,19 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
     return [];
   }
 
+  const now = Date.now();
+  if (now < telegramSyncCooldownUntilMs) {
+    const cacheAge = now - telegramSyncCacheAtMs;
+    if (telegramSyncCache.length > 0 && cacheAge <= TELEGRAM_SYNC_CACHE_MAX_AGE_MS) {
+      return telegramSyncCache;
+    }
+    return [];
+  }
+
+  if (telegramSyncCache.length > 0 && now - telegramSyncLastFetchAtMs < TELEGRAM_SYNC_MIN_INTERVAL_MS) {
+    return telegramSyncCache;
+  }
+
   const endpoint = `${backendBaseUrl}/api/alerts?limit=${resolveTelegramFetchLimit()}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TELEGRAM_SYNC_TIMEOUT_MS);
@@ -827,6 +860,14 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
     });
 
     if (!response.ok) {
+      if (response.status === 429) {
+        const retryAfterRaw = response.headers.get("retry-after");
+        let retryAfterSeconds = Number.parseInt(retryAfterRaw || "", 10);
+        if (!Number.isFinite(retryAfterSeconds) || retryAfterSeconds <= 0) {
+          retryAfterSeconds = Math.ceil(TELEGRAM_SYNC_MIN_INTERVAL_MS / 1000);
+        }
+        telegramSyncCooldownUntilMs = Date.now() + Math.max(retryAfterSeconds, 15) * 1000;
+      }
       throw new Error(`Status code ${response.status}`);
     }
 
@@ -923,8 +964,17 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
       });
     }
 
+    telegramSyncCache = mapped;
+    telegramSyncCacheAtMs = Date.now();
+    telegramSyncLastFetchAtMs = Date.now();
+    telegramSyncCooldownUntilMs = 0;
     return mapped;
   } catch (error) {
+    const cacheAge = Date.now() - telegramSyncCacheAtMs;
+    if (telegramSyncCache.length > 0 && cacheAge <= TELEGRAM_SYNC_CACHE_MAX_AGE_MS) {
+      console.warn(`[telegram-sync] Echec ${error.message} | cache utilisee (${telegramSyncCache.length})`);
+      return telegramSyncCache;
+    }
     console.warn(`[telegram-sync] Echec ${error.message}`);
     return [];
   } finally {
@@ -952,9 +1002,13 @@ async function persistAlertPayload(payload, reason, newAlerts) {
 
 async function detectAndStoreAlerts(settings, reason = "scheduled") {
   const maxAgeMinutes = resolveMaxAgeMinutes(settings);
+  const gdeltPromise = ENABLE_GDELT
+    ? Promise.all(GDELT_STREAMS.map((stream) => fetchGdeltItems(stream)))
+    : Promise.resolve([]);
+
   const [feedItemsGroups, gdeltGroups, telegramPayloads] = await Promise.all([
     Promise.all(FEEDS.map((feed) => fetchFeedItems(feed))),
-    Promise.all(GDELT_STREAMS.map((stream) => fetchGdeltItems(stream))),
+    gdeltPromise,
     fetchTelegramAlertPayloads(settings, maxAgeMinutes)
   ]);
   const feedItems = [...feedItemsGroups.flat(), ...gdeltGroups.flat()];
@@ -1063,6 +1117,10 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
 
 let timer = null;
 let running = false;
+let telegramSyncLastFetchAtMs = 0;
+let telegramSyncCooldownUntilMs = 0;
+let telegramSyncCache = [];
+let telegramSyncCacheAtMs = 0;
 
 async function runDetection(reason = "scheduled", options = {}) {
   if (running) {
