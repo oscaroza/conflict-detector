@@ -954,23 +954,26 @@ function formatShortDate(dateString) {
   });
 }
 
+function getAlertPublicationValue(alert) {
+  return alert?.publishedAt || alert?.timestamp || alert?.createdAt || "";
+}
+
+function getAlertPublicationTimestamp(alert) {
+  const publishedTs = new Date(getAlertPublicationValue(alert)).getTime();
+  if (Number.isFinite(publishedTs) && publishedTs > 0) {
+    return publishedTs;
+  }
+  return 0;
+}
+
 function getAlertEventTimestamp(alert) {
   const occurredTs = new Date(alert?.occurredAt || 0).getTime();
   if (Number.isFinite(occurredTs) && occurredTs > 0) {
     return occurredTs;
   }
 
-  const publishedTs = new Date(alert?.publishedAt || 0).getTime();
-  if (Number.isFinite(publishedTs) && publishedTs > 0) {
-    return publishedTs;
-  }
-
-  const createdTs = new Date(alert?.createdAt || 0).getTime();
-  if (Number.isFinite(createdTs) && createdTs > 0) {
-    return createdTs;
-  }
-
-  return 0;
+  // User rule: if act time is unknown, sort by publication time.
+  return getAlertPublicationTimestamp(alert);
 }
 
 function sortAlertsByEventTimeDesc(alerts) {
@@ -978,6 +981,11 @@ function sortAlertsByEventTimeDesc(alerts) {
     const eventDelta = getAlertEventTimestamp(b) - getAlertEventTimestamp(a);
     if (eventDelta !== 0) {
       return eventDelta;
+    }
+
+    const publicationDelta = getAlertPublicationTimestamp(b) - getAlertPublicationTimestamp(a);
+    if (publicationDelta !== 0) {
+      return publicationDelta;
     }
 
     const createdDelta = new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime();
@@ -1277,7 +1285,7 @@ function formatAlertEventTime(alert, options = {}) {
   }
 
   if (allowPublicationFallback) {
-    return formatShortDate(alert?.publishedAt || alert?.createdAt) || "Heure inconnue";
+    return formatShortDate(getAlertPublicationValue(alert)) || "Heure inconnue";
   }
 
   return "Acte inconnu";
@@ -1291,7 +1299,7 @@ function formatAlertEventDateLong(alert, options = {}) {
   }
 
   if (allowPublicationFallback) {
-    return formatDate(alert?.publishedAt || alert?.createdAt);
+    return formatDate(getAlertPublicationValue(alert));
   }
 
   return "Heure acte inconnue";
@@ -2025,7 +2033,7 @@ function renderAlertDetails(alert) {
     <p class="mb-2"><strong>Validation:</strong> ${escapeHtml(confirmationLabel(alert))} | <strong>Confiance:</strong> ${confidence}% | <strong>Sources croisées:</strong> ${sourceCount}</p>
     <p class="mb-2"><strong>Sources cluster:</strong> ${escapeHtml(sourcesList.join(", "))}</p>
     <p class="mb-1"><strong>Heure de l'acte:</strong> ${escapeHtml(formatAlertEventDateLong(alert))}</p>
-    <p class="mb-2"><strong>Heure publication:</strong> ${escapeHtml(formatDate(alert.publishedAt || alert.createdAt))}</p>
+    <p class="mb-2"><strong>Heure publication:</strong> ${escapeHtml(formatDate(getAlertPublicationValue(alert)))}</p>
     <a href="${escapeHtml(alert.sourceUrl)}" class="btn btn-sm btn-outline-warning" target="_blank" rel="noopener noreferrer">
       Ouvrir l'article officiel
     </a>
@@ -2122,7 +2130,7 @@ function renderAlertsList() {
             <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
           </div>
           <p class="small text-secondary mb-2">Acte: ${escapeHtml(formatAlertEventDateLong(alert))} | Pub: ${escapeHtml(
-        formatDate(alert.publishedAt || alert.createdAt)
+        formatDate(getAlertPublicationValue(alert))
       )} | Source: ${escapeHtml(sourceName)} | ${sourceCount} source(s)</p>
           <div class="alert-actions">
             <button class="btn btn-outline-danger" data-action="delete" data-id="${alert._id}">Supprimer</button>
@@ -2241,7 +2249,7 @@ function renderTensionChart() {
   };
 
   state.alerts.forEach((alert) => {
-    const eventDate = new Date(alert?.occurredAt || alert?.publishedAt || alert?.createdAt || 0);
+    const eventDate = new Date(alert?.occurredAt || getAlertPublicationValue(alert) || 0);
     if (!Number.isFinite(eventDate.getTime())) {
       return;
     }
@@ -3131,7 +3139,7 @@ async function renderCountryDetails(summary) {
             severityLabel(alert.severity)
           )}</span> - ${escapeHtml(alert.title)} ${sourceBadgeHtml(alert, "source-chip-inline")}</p>
           <p class="country-event-meta">Acte: ${escapeHtml(formatAlertEventDateLong(alert))} | Pub: ${escapeHtml(
-            formatDate(alert.publishedAt || alert.createdAt)
+            formatDate(getAlertPublicationValue(alert))
           )} | ${escapeHtml(alert.sourceName || "Source inconnue")}</p>
           <a href="${escapeHtml(alert.sourceUrl)}" target="_blank" rel="noopener noreferrer">Ouvrir la source</a>
         </article>
