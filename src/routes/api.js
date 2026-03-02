@@ -94,6 +94,47 @@ router.get("/alerts", async (req, res, next) => {
   }
 });
 
+router.get("/alerts/:id/related", async (req, res, next) => {
+  try {
+    const limit = Math.min(30, Math.max(2, Number(req.query.limit) || 12));
+    const anchorAlert = await Alert.findById(req.params.id).lean();
+
+    if (!anchorAlert) {
+      return res.status(404).json({ error: "Alerte introuvable" });
+    }
+
+    const eventGroupId = String(anchorAlert.eventGroupId || "").trim();
+    const relatedQuery = {
+      type: { $in: CONFLICT_TYPES }
+    };
+
+    if (eventGroupId) {
+      relatedQuery.eventGroupId = eventGroupId;
+    } else {
+      relatedQuery._id = anchorAlert._id;
+    }
+
+    let relatedAlerts = await Alert.find(relatedQuery)
+      .sort({ occurredAt: -1, publishedAt: -1, createdAt: -1, _id: -1 })
+      .limit(limit)
+      .lean();
+
+    const hasAnchor = relatedAlerts.some((alert) => String(alert._id) === String(anchorAlert._id));
+    if (!hasAnchor) {
+      relatedAlerts = [anchorAlert, ...relatedAlerts].slice(0, limit);
+    }
+
+    return res.json({
+      anchorId: String(anchorAlert._id),
+      eventGroupId: eventGroupId || String(anchorAlert._id),
+      count: relatedAlerts.length,
+      alerts: relatedAlerts
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.get("/alerts/:id", async (req, res, next) => {
   try {
     const alert = await Alert.findById(req.params.id).lean();

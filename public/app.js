@@ -26,6 +26,9 @@ const state = {
     country: null,
     tension: null
   },
+  relatedOpenAlertId: null,
+  relatedLoadingAlertId: null,
+  relatedAlertsByAnchorId: new Map(),
   eventSource: null,
   smartDigestEnabled: true,
   browserNotifications: {
@@ -2429,8 +2432,19 @@ function renderAlertsList() {
       const confidence = confidenceScoreValue(alert);
       const sourceCount = sourceCountValue(alert);
       const sourceName = alert?.sourceName || "Source inconnue";
+      const hasRelatedSources = sourceCount > 1;
+      const isRelatedOpen = state.relatedOpenAlertId === alert._id;
+      const isRelatedLoading = state.relatedLoadingAlertId === alert._id;
+      const relatedAlerts = state.relatedAlertsByAnchorId.get(alert._id) || [];
       return `
         <article class="alert-item ${isSelected ? "border-warning" : ""}" data-alert-id="${alert._id}">
+          ${
+            hasRelatedSources
+              ? `<div class="alert-top-tools"><button class="btn btn-outline-info related-toggle-btn" data-action="toggle-related" data-id="${
+                  alert._id
+                }">${isRelatedOpen ? "Masquer" : "Sources liées"} (${sourceCount})</button></div>`
+              : ""
+          }
           <p class="alert-title">${escapeHtml(alert.title)}</p>
           <div class="alert-meta">
             <span class="meta-chip">${escapeHtml(typeLabel(alert.type))}</span>
@@ -2447,6 +2461,13 @@ function renderAlertsList() {
           <p class="small text-secondary mb-2">Acte: ${escapeHtml(formatAlertEventDateLong(alert))} | Pub: ${escapeHtml(
         formatDate(getAlertPublicationValue(alert))
       )} | Source: ${escapeHtml(sourceName)} | ${sourceCount} source(s)</p>
+          ${
+            isRelatedOpen
+              ? renderRelatedAlertsPanel(alert._id, relatedAlerts, {
+                  loading: isRelatedLoading
+                })
+              : ""
+          }
           <div class="alert-actions">
             <button class="btn btn-outline-danger" data-action="delete" data-id="${alert._id}">Supprimer</button>
           </div>
@@ -2454,6 +2475,90 @@ function renderAlertsList() {
       `;
     })
     .join("");
+}
+
+function normalizeRelatedAlerts(alerts) {
+  const deduped = [];
+  const seen = new Set();
+
+  (alerts || []).forEach((alert) => {
+    const id = String(alert?._id || "");
+    if (!id || seen.has(id)) {
+      return;
+    }
+    seen.add(id);
+    deduped.push(alert);
+  });
+
+  return sortAlertsByEventTimeDesc(deduped);
+}
+
+async function fetchRelatedAlerts(anchorAlertId) {
+  const payload = await api(`/api/alerts/${encodeURIComponent(anchorAlertId)}/related?limit=12`);
+  const relatedAlerts = normalizeRelatedAlerts(payload?.alerts || []);
+  state.relatedAlertsByAnchorId.set(anchorAlertId, relatedAlerts);
+  return relatedAlerts;
+}
+
+async function toggleRelatedAlerts(anchorAlertId) {
+  if (!anchorAlertId) return;
+
+  if (state.relatedOpenAlertId === anchorAlertId) {
+    state.relatedOpenAlertId = null;
+    state.relatedLoadingAlertId = null;
+    renderAlertsList();
+    return;
+  }
+
+  state.relatedOpenAlertId = anchorAlertId;
+
+  if (state.relatedAlertsByAnchorId.has(anchorAlertId)) {
+    renderAlertsList();
+    return;
+  }
+
+  state.relatedLoadingAlertId = anchorAlertId;
+  renderAlertsList();
+
+  try {
+    await fetchRelatedAlerts(anchorAlertId);
+  } catch (error) {
+    showToast("Sources liées", `Impossible de charger: ${error.message}`);
+    state.relatedOpenAlertId = null;
+  } finally {
+    state.relatedLoadingAlertId = null;
+    renderAlertsList();
+  }
+}
+
+function renderRelatedAlertsPanel(anchorAlertId, relatedAlerts, options = {}) {
+  if (options.loading) {
+    return `<div class="related-alerts-panel"><p class="related-empty">Chargement des alertes liées...</p></div>`;
+  }
+
+  if (!Array.isArray(relatedAlerts) || relatedAlerts.length === 0) {
+    return `<div class="related-alerts-panel"><p class="related-empty">Aucune source liée chargée.</p></div>`;
+  }
+
+  const rows = relatedAlerts
+    .map((alert) => {
+      const sourceName = alert?.sourceName || "Source inconnue";
+      const signalVisual = getSignalVisual(detectIncidentSignal(alert));
+      return `<button class="related-alert-row" data-action="open-related-detail" data-id="${escapeHtml(
+        anchorAlertId
+      )}" data-related-id="${escapeHtml(alert._id)}">
+        <span class="related-title">${escapeHtml(alert.title)}</span>
+        <span class="related-meta">
+          ${sourceBadgeHtml(alert, "source-chip-inline")}
+          <span>${escapeHtml(sourceName)}</span>
+          <span>${escapeHtml(signalVisual.label)}</span>
+          <span>${escapeHtml(formatAlertEventTime(alert, { allowPublicationFallback: true }))}</span>
+        </span>
+      </button>`;
+    })
+    .join("");
+
+  return `<div class="related-alerts-panel">${rows}</div>`;
 }
 
 function renderKeywordsWidget() {
@@ -3552,6 +3657,11 @@ async function loadAlerts() {
   // Always render newest events on top based on event time.
   state.alerts = sortAlertsByEventTimeDesc(payload.alerts);
 
+  if (state.relatedOpenAlertId && !state.alerts.some((alert) => alert._id === state.relatedOpenAlertId)) {
+    state.relatedOpenAlertId = null;
+    state.relatedLoadingAlertId = null;
+  }
+
   if (state.countryLayer) {
     state.countryLayer.setStyle(styleCountryFeature);
   }
@@ -4005,6 +4115,24 @@ function bindEvents() {
       event.stopPropagation();
       const id = actionButton.dataset.id;
       const action = actionButton.dataset.action;
+
+      if (action === "toggle-related") {
+        toggleRelatedAlerts(id).catch((error) => showToast("Erreur", error.message));
+        return;
+      }
+
+      if (action === "open-related-detail") {
+        const anchorId = actionButton.dataset.id;
+        const relatedId = actionButton.dataset.relatedId;
+        const relatedAlerts = state.relatedAlertsByAnchorId.get(anchorId) || [];
+        const relatedAlert = relatedAlerts.find((item) => item._id === relatedId);
+        if (relatedAlert) {
+          state.selectedAlertId = relatedAlert._id;
+          renderAlertDetails(relatedAlert);
+          renderAlertsList();
+        }
+        return;
+      }
 
       if (action === "delete") {
         deleteAlert(id).catch((error) => showToast("Erreur", error.message));
