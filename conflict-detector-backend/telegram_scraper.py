@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+from difflib import get_close_matches
 from pathlib import Path
 from datetime import timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -59,6 +60,24 @@ def _normalize_channel(value: str) -> Optional[str]:
     if not handle:
         return None
     return f"@{handle}"
+
+
+def _normalize_dialog_title(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+
+    raw = raw.replace("’", "'").replace("`", "'")
+    raw = re.sub(r"[\u2013\u2014]+", "-", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return raw
+
+
+def _compact_dialog_title_key(value: str) -> str:
+    normalized = _normalize_dialog_title(value)
+    if not normalized:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", normalized)
 
 
 def resolve_channels() -> List[str]:
@@ -166,31 +185,137 @@ class TelegramScraper:
             return normalized.lower()
         return normalized.lower()
 
+    async def _build_dialog_indexes(self) -> Dict[str, Any]:
+        if self.client is None:
+            return {
+                "username_index": {},
+                "title_index": {},
+            }
+
+        username_index: Dict[str, Dict[str, Any]] = {}
+        title_index: Dict[str, List[Dict[str, Any]]] = {}
+
+        async for dialog in self.client.iter_dialogs():
+            entity = getattr(dialog, "entity", None)
+            if entity is None:
+                continue
+
+            username = str(getattr(entity, "username", "") or "").strip()
+            title = str(getattr(entity, "title", "") or getattr(dialog, "name", "") or "").strip()
+            source_channel = f"@{username}" if username else f"@{title}" if title else "unknown_channel"
+
+            entry = {
+                "entity": entity,
+                "source_channel": source_channel,
+                "title": title,
+                "username": f"@{username}" if username else "",
+            }
+
+            if username:
+                username_index[f"@{username.lower()}"] = entry
+
+            for key in (_normalize_dialog_title(title), _compact_dialog_title_key(title)):
+                if not key:
+                    continue
+                title_index.setdefault(key, []).append(entry)
+
+        return {
+            "username_index": username_index,
+            "title_index": title_index,
+        }
+
     async def _resolve_watched_channels(self) -> List[Dict[str, Any]]:
         if self.client is None:
             return []
 
         resolved: List[Dict[str, Any]] = []
         seen_keys = set()
+        indexes = await self._build_dialog_indexes()
+        username_index: Dict[str, Dict[str, Any]] = indexes["username_index"]
+        title_index: Dict[str, List[Dict[str, Any]]] = indexes["title_index"]
 
         for requested in self.channels:
+            resolved_entry: Optional[Dict[str, Any]] = None
             try:
                 entity = await self.client.get_entity(requested)
                 username = getattr(entity, "username", None)
                 source_channel = f"@{username}" if username else str(requested)
-                key = self._channel_cache_key(source_channel)
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-                resolved.append(
-                    {
-                        "requested": requested,
-                        "entity": entity,
-                        "source_channel": source_channel,
-                    }
-                )
+                resolved_entry = {
+                    "requested": requested,
+                    "entity": entity,
+                    "source_channel": source_channel,
+                }
             except Exception:
-                logger.warning("telegram_channel_unresolved channel=%s", requested)
+                # Fallback 1: username lookup from dialogs already available in account.
+                requested_username_key = str(requested or "").strip().lower()
+                username_match = username_index.get(requested_username_key)
+
+                if username_match is not None:
+                    resolved_entry = {
+                        "requested": requested,
+                        "entity": username_match["entity"],
+                        "source_channel": username_match["source_channel"],
+                    }
+                    logger.info(
+                        "telegram_channel_resolved_by_dialog_username requested=%s resolved=%s",
+                        requested,
+                        username_match["source_channel"],
+                    )
+                else:
+                    # Fallback 2: dialog title lookup (exact normalized or compact key).
+                    requested_title_seed = str(requested or "").strip().lstrip("@")
+                    title_candidates: List[Dict[str, Any]] = []
+                    for key in (
+                        _normalize_dialog_title(requested_title_seed),
+                        _compact_dialog_title_key(requested_title_seed),
+                    ):
+                        if key and key in title_index:
+                            title_candidates.extend(title_index[key])
+                    if title_candidates:
+                        picked = title_candidates[0]
+                        resolved_entry = {
+                            "requested": requested,
+                            "entity": picked["entity"],
+                            "source_channel": picked["source_channel"],
+                        }
+                        logger.info(
+                            "telegram_channel_resolved_by_dialog_title requested=%s resolved=%s",
+                            requested,
+                            picked["source_channel"],
+                        )
+                    else:
+                        # Best-effort suggestion for logs.
+                        suggestion = None
+                        suggestion_seed = _normalize_dialog_title(requested_title_seed) or requested_title_seed.lower()
+                        if suggestion_seed:
+                            possible = list(title_index.keys()) + list(username_index.keys())
+                            matches = get_close_matches(suggestion_seed, possible, n=1, cutoff=0.86)
+                            if matches:
+                                suggestion_key = matches[0]
+                                if suggestion_key in username_index:
+                                    suggestion = username_index[suggestion_key]["source_channel"]
+                                else:
+                                    suggestion_entries = title_index.get(suggestion_key, [])
+                                    if suggestion_entries:
+                                        suggestion = suggestion_entries[0]["source_channel"]
+
+                        if suggestion:
+                            logger.warning(
+                                "telegram_channel_unresolved channel=%s suggestion=%s",
+                                requested,
+                                suggestion,
+                            )
+                        else:
+                            logger.warning("telegram_channel_unresolved channel=%s", requested)
+
+            if resolved_entry is None:
+                continue
+
+            key = self._channel_cache_key(resolved_entry["source_channel"])
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            resolved.append(resolved_entry)
 
         return resolved
 
