@@ -37,6 +37,8 @@ class TelegramScraper:
         self._stop = asyncio.Event()
         self.client: Optional[TelegramClient] = None
         self._unauthorized_sleep = int(os.getenv("TELEGRAM_UNAUTHORIZED_RETRY_SECONDS", "300"))
+        self._backfill_limit = max(0, int(os.getenv("TELEGRAM_BACKFILL_LIMIT", "25")))
+        self._backfill_done = False
 
     def has_local_session_file(self) -> bool:
         path = Path(f"{self.session_name}.session")
@@ -98,8 +100,67 @@ class TelegramScraper:
             await asyncio.sleep(max(30, self._unauthorized_sleep))
             return
 
+        if not self._backfill_done and self._backfill_limit > 0:
+            try:
+                await self._run_backfill()
+            finally:
+                # Avoid rerunning full bootstrap history on each reconnect loop.
+                self._backfill_done = True
+
         logger.info("telegram_listener_started channels=%s", ",".join(CHANNELS))
         await self.client.run_until_disconnected()
+
+    async def _run_backfill(self) -> None:
+        if self.client is None or self._backfill_limit <= 0:
+            return
+
+        logger.info("telegram_backfill_started per_channel_limit=%s", self._backfill_limit)
+        total_messages = 0
+
+        for channel in CHANNELS:
+            accepted = 0
+            skipped_empty = 0
+
+            try:
+                entity = await self.client.get_entity(channel)
+                channel_name = getattr(entity, "username", None)
+                source_channel = f"@{channel_name}" if channel_name else channel
+
+                async for msg in self.client.iter_messages(entity, limit=self._backfill_limit):
+                    text = (msg.raw_text or "").strip()
+                    if not text:
+                        skipped_empty += 1
+                        continue
+
+                    event_ts = msg.date
+                    if event_ts.tzinfo is None:
+                        event_ts = event_ts.replace(tzinfo=timezone.utc)
+                    event_ts = event_ts.astimezone(timezone.utc)
+
+                    payload = {
+                        "id": msg.id,
+                        "timestamp": event_ts.isoformat(),
+                        "source_channel": source_channel,
+                        "text": text,
+                    }
+                    await self.on_message(payload)
+                    accepted += 1
+                    total_messages += 1
+
+                logger.info(
+                    "telegram_backfill_channel_done channel=%s seen=%s skipped_empty=%s",
+                    source_channel,
+                    accepted,
+                    skipped_empty,
+                )
+            except FloodWaitError as exc:
+                wait_seconds = max(5, int(getattr(exc, "seconds", 5)))
+                logger.warning("telegram_backfill_flood_wait channel=%s wait_seconds=%s", channel, wait_seconds)
+                await asyncio.sleep(wait_seconds)
+            except Exception:
+                logger.warning("telegram_backfill_channel_failed channel=%s", channel)
+
+        logger.info("telegram_backfill_complete processed=%s", total_messages)
 
     async def run_forever(self) -> None:
         if self.api_id <= 0 or not self.api_hash:
