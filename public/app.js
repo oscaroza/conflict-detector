@@ -115,6 +115,8 @@ const refs = {
 let audioContext = null;
 let lastSseErrorAt = 0;
 let flashTimer = null;
+let flashSequence = 0;
+let activeFlashSequence = 0;
 let speechVoicesInitialized = false;
 let uiRefreshTimer = null;
 let uiRefreshInFlight = false;
@@ -1703,7 +1705,7 @@ function connectMilitaryVoiceFx(audioElement, severity = "medium") {
 
 function speakAlertMessageLocal(alert) {
   if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") {
-    return;
+    return Promise.resolve(false);
   }
 
   const synth = window.speechSynthesis;
@@ -1729,14 +1731,38 @@ function speakAlertMessageLocal(alert) {
     utterance.pitch = 0.8;
   }
 
-  synth.cancel();
-  setTimeout(() => {
-    try {
-      synth.speak(utterance);
-    } catch (error) {
-      console.warn("[speech] lecture impossible", error);
-    }
-  }, 220);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve(true);
+    };
+
+    utterance.onend = finish;
+    utterance.onerror = finish;
+
+    const fallbackTimeout = setTimeout(() => {
+      finish();
+    }, 20000);
+
+    const wrappedFinish = () => {
+      clearTimeout(fallbackTimeout);
+      finish();
+    };
+    utterance.onend = wrappedFinish;
+    utterance.onerror = wrappedFinish;
+
+    synth.cancel();
+    setTimeout(() => {
+      try {
+        synth.speak(utterance);
+      } catch (error) {
+        console.warn("[speech] lecture impossible", error);
+        wrappedFinish();
+      }
+    }, 220);
+  });
 }
 
 async function speakAlertMessageRemote(alert) {
@@ -1815,21 +1841,32 @@ async function speakAlertMessageRemote(alert) {
     }
   };
 
-  audio.addEventListener("ended", release, { once: true });
-  audio.addEventListener("error", release, { once: true });
-
   await audio.play();
+  await new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      release();
+      resolve();
+    };
+
+    audio.addEventListener("ended", done, { once: true });
+    audio.addEventListener("error", done, { once: true });
+    setTimeout(done, 22000);
+  });
+
   return true;
 }
 
 async function speakAlertMessage(alert) {
-  if (!isVoiceEnabled()) return;
+  if (!isVoiceEnabled()) return false;
 
   if (state.voice?.remoteAvailable) {
     try {
       const playedRemote = await speakAlertMessageRemote(alert);
       if (playedRemote) {
-        return;
+        return true;
       }
     } catch (error) {
       console.warn("[voice] fallback local:", error.message);
@@ -1841,15 +1878,32 @@ async function speakAlertMessage(alert) {
     }
   }
 
-  speakAlertMessageLocal(alert);
+  return speakAlertMessageLocal(alert);
 }
 
-function triggerAlertFlash(alert) {
+function releaseAlertFlash(sequence, delayMs = 180) {
   if (!refs.alertFlash) return;
+  if (flashTimer) {
+    clearTimeout(flashTimer);
+  }
+
+  flashTimer = setTimeout(() => {
+    if (sequence !== activeFlashSequence) {
+      return;
+    }
+    refs.alertFlash.classList.remove("show");
+  }, delayMs);
+}
+
+function triggerAlertFlash(alert, options = {}) {
+  if (!refs.alertFlash) return;
+  const { waitForVoice = false } = options;
 
   const severity = normalizeSeverity(alert?.severity);
   const theme = getSeverityTheme(severity);
   const eventTime = formatAlertEventTime(alert);
+  const sequence = ++flashSequence;
+  activeFlashSequence = sequence;
 
   refs.alertFlash.className = `alert-flash sev-${severity} show`;
   refs.alertFlash.innerHTML = `
@@ -1866,9 +1920,16 @@ function triggerAlertFlash(alert) {
     clearTimeout(flashTimer);
   }
 
-  flashTimer = setTimeout(() => {
-    refs.alertFlash.classList.remove("show");
-  }, severity === "critical" ? 6200 : 4800);
+  if (!waitForVoice) {
+    flashTimer = setTimeout(() => {
+      if (sequence !== activeFlashSequence) {
+        return;
+      }
+      refs.alertFlash.classList.remove("show");
+    }, severity === "critical" ? 6200 : 4800);
+  }
+
+  return sequence;
 }
 
 function updateFoldButton(button, isOpen) {
@@ -5082,11 +5143,20 @@ function connectEventStream() {
       if (isSoundEnabled()) {
         playNotificationSound(alert.severity);
       }
-      if (isVoiceEnabled()) {
-        speakAlertMessage(alert);
+      const waitForVoice = isVoiceEnabled();
+      const flashSequenceId = triggerAlertFlash(alert, { waitForVoice });
+      if (waitForVoice) {
+        speakAlertMessage(alert)
+          .catch((error) => {
+            console.warn("[voice] lecture alerte echouee:", error.message);
+          })
+          .finally(() => {
+            if (flashSequenceId) {
+              releaseAlertFlash(flashSequenceId, 220);
+            }
+          });
       }
       pushBrowserNotification(alert);
-      triggerAlertFlash(alert);
       showToast(
         "Nouvelle alerte détectée",
         `${alert.country?.name || "Localisation inconnue"} | ${typeLabel(alert.type)} | Acte: ${formatAlertEventTime(alert)}`,
