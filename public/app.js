@@ -22,7 +22,12 @@ const state = {
     country: null,
     tension: null
   },
-  eventSource: null
+  eventSource: null,
+  browserNotifications: {
+    supported: false,
+    enabled: false,
+    permission: "default"
+  }
 };
 
 const refs = {
@@ -49,6 +54,7 @@ const refs = {
   toggleCoverageBtn: document.getElementById("toggleCoverageBtn"),
   toggleSoundBtn: document.getElementById("toggleSoundBtn"),
   toggleVoiceBtn: document.getElementById("toggleVoiceBtn"),
+  toggleBrowserNotifBtn: document.getElementById("toggleBrowserNotifBtn"),
   refreshNowBtn: document.getElementById("refreshNowBtn"),
   searchInput: document.getElementById("searchInput"),
   typeFilter: document.getElementById("typeFilter"),
@@ -89,6 +95,7 @@ let bootRetryBound = false;
 let activeVoiceAudio = null;
 let activeVoiceBlobUrl = null;
 let lastVoiceFallbackNoticeAt = 0;
+const BROWSER_NOTIF_STORAGE_KEY = "cd_browser_notifications_enabled";
 
 const bootStageBlueprint = [
   { id: "ui", label: "Interface utilisateur" },
@@ -145,6 +152,192 @@ function updateCoverageToggleUI() {
   const enabled = isGlobalCoverageEnabled();
   refs.toggleCoverageBtn.textContent = enabled ? "Global ON" : "Global OFF";
   refs.toggleCoverageBtn.classList.toggle("is-off", !enabled);
+}
+
+function browserNotificationsSupported() {
+  return typeof window !== "undefined" && "Notification" in window && window.isSecureContext;
+}
+
+function readBrowserNotificationPreference() {
+  try {
+    return window.localStorage.getItem(BROWSER_NOTIF_STORAGE_KEY) === "1";
+  } catch (error) {
+    return false;
+  }
+}
+
+function writeBrowserNotificationPreference(enabled) {
+  try {
+    window.localStorage.setItem(BROWSER_NOTIF_STORAGE_KEY, enabled ? "1" : "0");
+  } catch (error) {
+    // Ignore localStorage failures (private mode or blocked storage).
+  }
+}
+
+function updateBrowserNotificationToggleUI() {
+  if (!refs.toggleBrowserNotifBtn) return;
+
+  const supported = Boolean(state.browserNotifications?.supported);
+  const permission = state.browserNotifications?.permission || "default";
+  const enabled = Boolean(state.browserNotifications?.enabled);
+
+  if (!supported) {
+    refs.toggleBrowserNotifBtn.textContent = "Notif N/A";
+    refs.toggleBrowserNotifBtn.disabled = true;
+    refs.toggleBrowserNotifBtn.classList.add("is-off");
+    refs.toggleBrowserNotifBtn.title = "Notifications indisponibles (HTTPS requis).";
+    return;
+  }
+
+  refs.toggleBrowserNotifBtn.disabled = false;
+
+  if (permission === "denied") {
+    refs.toggleBrowserNotifBtn.textContent = "Notif bloquees";
+    refs.toggleBrowserNotifBtn.classList.add("is-off");
+    refs.toggleBrowserNotifBtn.title = "Autorise les notifications dans les reglages Safari du site.";
+    return;
+  }
+
+  refs.toggleBrowserNotifBtn.textContent = enabled ? "Notif Safari ON" : "Notif Safari OFF";
+  refs.toggleBrowserNotifBtn.classList.toggle("is-off", !enabled);
+  refs.toggleBrowserNotifBtn.title = enabled
+    ? "Notifications systeme actives"
+    : "Clique pour autoriser les notifications systeme Safari";
+}
+
+function syncBrowserNotificationState() {
+  if (!browserNotificationsSupported()) {
+    state.browserNotifications = {
+      supported: false,
+      permission: "unsupported",
+      enabled: false
+    };
+    updateBrowserNotificationToggleUI();
+    return;
+  }
+
+  const permission = Notification.permission || "default";
+  const stored = readBrowserNotificationPreference();
+  const enabled = permission === "granted" && stored;
+
+  state.browserNotifications = {
+    supported: true,
+    permission,
+    enabled
+  };
+  updateBrowserNotificationToggleUI();
+}
+
+async function requestBrowserNotificationPermission() {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value || Notification.permission || "default");
+    };
+
+    try {
+      const maybePromise = Notification.requestPermission((value) => {
+        finish(value);
+      });
+
+      if (maybePromise && typeof maybePromise.then === "function") {
+        maybePromise.then(finish).catch((error) => {
+          if (settled) return;
+          settled = true;
+          reject(error);
+        });
+      } else if (typeof maybePromise === "string") {
+        finish(maybePromise);
+      }
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+async function toggleBrowserNotifications() {
+  if (!browserNotificationsSupported()) {
+    showToast("Notifications", "Ce navigateur ne supporte pas les notifications systeme.");
+    return;
+  }
+
+  const currentlyEnabled = Boolean(state.browserNotifications?.enabled);
+  if (currentlyEnabled) {
+    state.browserNotifications.enabled = false;
+    writeBrowserNotificationPreference(false);
+    updateBrowserNotificationToggleUI();
+    showToast("Notifications", "Notifications Safari desactivees.");
+    return;
+  }
+
+  let permission = Notification.permission || "default";
+  if (permission !== "granted") {
+    permission = await requestBrowserNotificationPermission();
+  }
+
+  state.browserNotifications.permission = permission;
+
+  if (permission === "granted") {
+    state.browserNotifications.enabled = true;
+    writeBrowserNotificationPreference(true);
+    updateBrowserNotificationToggleUI();
+    showToast("Notifications", "Notifications Safari activees.");
+    return;
+  }
+
+  state.browserNotifications.enabled = false;
+  writeBrowserNotificationPreference(false);
+  updateBrowserNotificationToggleUI();
+  if (permission === "denied") {
+    showToast("Notifications bloquees", "Autorise les notifications dans Safari pour ce site.");
+  } else {
+    showToast("Notifications", "Permission non accordee.");
+  }
+}
+
+function pushBrowserNotification(alert) {
+  if (!browserNotificationsSupported()) return;
+  if (!state.browserNotifications?.enabled) return;
+  if (Notification.permission !== "granted") return;
+
+  const severity = normalizeSeverity(alert?.severity);
+  const country = alert?.country?.name && alert.country.name !== "Inconnu" ? alert.country.name : "Zone inconnue";
+  const source = String(alert?.sourceName || "source inconnue").trim();
+  const title = `Alerte ${severityLabel(severity)} - ${country}`;
+  const eventTime = formatAlertEventTime(alert, { allowPublicationFallback: true });
+  const messageTitle = String(alert?.title || "Nouvel evenement detecte").replace(/\s+/g, " ").trim();
+  const body = `${messageTitle.slice(0, 110)} | ${eventTime} | ${source.slice(0, 50)}`;
+  const timestamp = getAlertEventTimestamp(alert) || Date.now();
+
+  try {
+    const notification = new Notification(title, {
+      body,
+      tag: `alert-${alert?._id || timestamp}`,
+      renotify: severity === "critical",
+      requireInteraction: severity === "critical",
+      silent: true,
+      timestamp
+    });
+
+    notification.onclick = () => {
+      window.focus();
+      notification.close();
+      if (alert?._id) {
+        const match = state.alerts.find((item) => item._id === alert._id);
+        if (match) {
+          state.selectedAlertId = match._id;
+          renderAlertDetails(match);
+          renderAlertsList();
+        }
+      }
+    };
+
+    setTimeout(() => notification.close(), severity === "critical" ? 20000 : 10000);
+  } catch (error) {
+    console.warn("[notifications] creation impossible:", error.message);
+  }
 }
 
 function refreshLayout() {
@@ -2663,6 +2856,12 @@ function bindEvents() {
     });
   }
 
+  if (refs.toggleBrowserNotifBtn) {
+    refs.toggleBrowserNotifBtn.addEventListener("click", () => {
+      toggleBrowserNotifications().catch((error) => showToast("Erreur", error.message));
+    });
+  }
+
   if (refs.toggleCoverageBtn) {
     refs.toggleCoverageBtn.addEventListener("click", () => {
       toggleCoverage().catch((error) => showToast("Erreur", error.message));
@@ -2735,6 +2934,10 @@ function bindEvents() {
 
   window.addEventListener("beforeunload", () => {
     stopVoicePlayback();
+  });
+
+  window.addEventListener("focus", () => {
+    syncBrowserNotificationState();
   });
 }
 
@@ -2865,6 +3068,7 @@ function connectEventStream() {
       if (isVoiceEnabled()) {
         speakAlertMessage(alert);
       }
+      pushBrowserNotification(alert);
       triggerAlertFlash(alert);
       showToast(
         "Nouvelle alerte détectée",
@@ -2949,6 +3153,7 @@ async function bootstrap() {
   await runBootStage("ui", "Préparation de l'interface...", async () => {
     bindEvents();
     initSpeechVoices();
+    syncBrowserNotificationState();
   });
 
   await runBootStage("map", "Initialisation de la carte...", async () => {
