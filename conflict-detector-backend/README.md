@@ -40,7 +40,8 @@ Renseigne ensuite dans `.env`:
 TELEGRAM_API_ID=123456
 TELEGRAM_API_HASH=abcdef123456...
 TELEGRAM_SESSION_STRING=
-TELEGRAM_BACKFILL_LIMIT=25
+TELEGRAM_BACKFILL_LIMIT=60
+TELEGRAM_CHANNELS=@intelslava,@OSINTdefender,@MiddleEastSpectator
 ```
 
 ## 2) Premier lancement (auth Telegram)
@@ -141,13 +142,16 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
    - `TELEGRAM_API_ID`
    - `TELEGRAM_API_HASH`
    - `TELEGRAM_SESSION_STRING` (obligatoire en pratique sur Render)
-   - `TELEGRAM_BACKFILL_LIMIT` (optionnel, ex. `25`)
+   - `TELEGRAM_BACKFILL_LIMIT` (optionnel, ex. `60`)
+   - `TELEGRAM_CHANNELS` (optionnel, liste CSV de canaux a ajouter)
 
 ## 5) Comportement du pipeline
 
 - Listener Telegram en continu sur:
   - `@intelslava`, `@OSINTdefender`, `@MiddleEastSpectator`, `@GazaWarNews`,
-    `@TpyxiAlert`, `@BNONews`, `@sentdefender`, `@WarMonitor3`, `@IntelCrab`
+    `@TpyxiAlert`, `@BNONews`, `@sentdefender`, `@WarMonitor3`, `@IntelCrab`,
+    `@Faytuks`, `@IntelTower`, `@nexta_live`, `@clashreport`
+  - et canaux custom via `TELEGRAM_CHANNELS`
 - Scoring mots-clés:
   - `score >= 10` => alert terrain acceptée
   - sinon rejet

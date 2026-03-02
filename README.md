@@ -101,7 +101,7 @@ PORT=3000
 MONGODB_URI=mongodb://127.0.0.1:27017/conflict_detector
 POLL_INTERVAL_SECONDS=300
 TELEGRAM_OSINT_API_URL=
-TELEGRAM_OSINT_FETCH_LIMIT=120
+TELEGRAM_OSINT_FETCH_LIMIT=250
 TTS_PROVIDER=none
 ELEVENLABS_API_KEY=
 ELEVENLABS_VOICE_ID=
@@ -116,7 +116,7 @@ Si vous avez aussi le backend Python Telegram (service Render separe), configure
 
 ```env
 TELEGRAM_OSINT_API_URL=https://votre-backend-python.onrender.com
-TELEGRAM_OSINT_FETCH_LIMIT=120
+TELEGRAM_OSINT_FETCH_LIMIT=250
 ```
 
 Le backend Node fusionnera automatiquement les alertes Telegram et RSS dans le meme flux UI.

@@ -190,7 +190,7 @@ async def root() -> Dict[str, Any]:
 async def api_alerts(
     severity: Optional[str] = Query(default=None),
     country: Optional[str] = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=200),
+    limit: int = Query(default=100, ge=1, le=500),
 ) -> Dict[str, Any]:
     alerts = await get_alerts(limit=limit, severity=severity, country=country)
     return {"count": len(alerts), "alerts": alerts}

@@ -18,7 +18,7 @@ const parser = new Parser({
 const FETCH_TIMEOUT_MS = 15000;
 const GDELT_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc";
 const TELEGRAM_SYNC_TIMEOUT_MS = 12000;
-const TELEGRAM_SYNC_DEFAULT_LIMIT = 120;
+const TELEGRAM_SYNC_DEFAULT_LIMIT = 250;
 
 const FEEDS = [
   {
@@ -539,15 +539,29 @@ function computeConfidenceScore(clusterAlerts, sourceFamilyCount) {
     hasDirectCombatSignal(`${alert?.title || ""} ${alert?.summary || ""}`)
   );
 
-  let score = 18;
-  score += Math.max(1, sourceFamilyCount) * 14;
+  let score = 16;
+  score += Math.max(1, sourceFamilyCount) * 12;
   score += maxSeverity * 5;
   if (hasDirectCombat) {
     score += 8;
   }
   score += Math.min(3, Math.max(0, clusterAlerts.length - 1)) * 4;
 
-  return Math.max(20, Math.min(99, Math.round(score)));
+  // Penalize single-source claims: severity can stay high, but certainty should remain lower
+  // until at least one independent source corroborates the event.
+  if (sourceFamilyCount <= 1) {
+    score -= 22;
+    if (maxSeverity >= 4 && hasDirectCombat) {
+      score += 6;
+    }
+  } else if (sourceFamilyCount >= 3) {
+    score += 6;
+    if (sourceFamilyCount >= 4) {
+      score += 4;
+    }
+  }
+
+  return Math.max(15, Math.min(99, Math.round(score)));
 }
 
 function areLikelySameEvent(baseEvent, candidateEvent) {

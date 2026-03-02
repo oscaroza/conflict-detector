@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
 from datetime import timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -11,7 +12,7 @@ from telethon.sessions import StringSession
 
 logger = logging.getLogger("telegram_scraper")
 
-CHANNELS: List[str] = [
+DEFAULT_CHANNELS: List[str] = [
     "@intelslava",
     "@OSINTdefender",
     "@MiddleEastSpectator",
@@ -21,7 +22,49 @@ CHANNELS: List[str] = [
     "@sentdefender",
     "@WarMonitor3",
     "@IntelCrab",
+    "@Faytuks",
+    "@IntelTower",
+    "@nexta_live",
+    "@clashreport",
 ]
+
+
+def _normalize_channel(value: str) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    if "t.me/" in raw:
+        raw = raw.split("t.me/", 1)[1]
+
+    raw = raw.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    raw = raw.strip().lstrip("@")
+    if not raw:
+        return None
+
+    return f"@{raw}"
+
+
+def resolve_channels() -> List[str]:
+    configured = str(os.getenv("TELEGRAM_CHANNELS", "")).strip()
+    parsed: List[str] = []
+    if configured:
+        for token in re.split(r"[,\n;]+", configured):
+            channel = _normalize_channel(token)
+            if channel:
+                parsed.append(channel)
+
+    # Merge defaults + env channels, preserve order and deduplicate.
+    merged = DEFAULT_CHANNELS + parsed
+    seen = set()
+    channels: List[str] = []
+    for channel in merged:
+        normalized = _normalize_channel(channel)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        channels.append(normalized)
+    return channels
 
 
 class TelegramScraper:
@@ -37,8 +80,9 @@ class TelegramScraper:
         self._stop = asyncio.Event()
         self.client: Optional[TelegramClient] = None
         self._unauthorized_sleep = int(os.getenv("TELEGRAM_UNAUTHORIZED_RETRY_SECONDS", "300"))
-        self._backfill_limit = max(0, int(os.getenv("TELEGRAM_BACKFILL_LIMIT", "25")))
+        self._backfill_limit = max(0, int(os.getenv("TELEGRAM_BACKFILL_LIMIT", "60")))
         self._backfill_done = False
+        self.channels = resolve_channels()
 
     def has_local_session_file(self) -> bool:
         path = Path(f"{self.session_name}.session")
@@ -86,7 +130,7 @@ class TelegramScraper:
     async def _run_once(self) -> None:
         self.client = self._build_client()
 
-        @self.client.on(events.NewMessage(chats=CHANNELS))
+        @self.client.on(events.NewMessage(chats=self.channels))
         async def _on_new_message(event: events.NewMessage.Event) -> None:
             await self._handle_event(event)
 
@@ -107,7 +151,7 @@ class TelegramScraper:
                 # Avoid rerunning full bootstrap history on each reconnect loop.
                 self._backfill_done = True
 
-        logger.info("telegram_listener_started channels=%s", ",".join(CHANNELS))
+        logger.info("telegram_listener_started channels=%s", ",".join(self.channels))
         await self.client.run_until_disconnected()
 
     async def _run_backfill(self) -> None:
@@ -117,7 +161,7 @@ class TelegramScraper:
         logger.info("telegram_backfill_started per_channel_limit=%s", self._backfill_limit)
         total_messages = 0
 
-        for channel in CHANNELS:
+        for channel in self.channels:
             accepted = 0
             skipped_empty = 0
 
