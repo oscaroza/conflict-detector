@@ -955,7 +955,7 @@ function ensureIntelOverlayVisible() {
 function updateColumnToggleButtons() {
   const hidden = refs.intelOverlay?.classList.contains("hidden");
   if (refs.toggleRightPanelBtn) {
-    refs.toggleRightPanelBtn.textContent = hidden ? "Afficher panel" : "Fermer panel";
+    refs.toggleRightPanelBtn.textContent = hidden ? "Afficher panel" : "Masquer panel";
   }
 }
 

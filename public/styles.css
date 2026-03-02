@@ -629,16 +629,18 @@ h1 {
 
 .workspace-grid {
   display: grid;
-  gap: 0.5rem;
-  grid-template-columns: clamp(320px, 24vw, 410px) minmax(0, 1fr);
+  gap: 0.56rem;
+  grid-template-columns: clamp(338px, 25vw, 430px) minmax(0, 1fr);
   min-height: 0;
   height: 100%;
   overflow: hidden;
+  align-items: stretch;
 }
 
 .left-column,
 .center-column {
   min-height: 0;
+  height: 100%;
   display: grid;
   gap: 0.5rem;
   overflow: hidden;
@@ -646,6 +648,7 @@ h1 {
 
 .left-column {
   grid-template-rows: minmax(0, 1fr);
+  max-width: 430px;
 }
 
 .center-column {
@@ -665,6 +668,7 @@ h1 {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  height: 100%;
   position: relative;
   padding-right: 0.74rem;
 }
@@ -860,8 +864,9 @@ h4 {
   overflow-y: auto;
   min-height: 0;
   max-height: none;
-  padding-right: 0.12rem;
+  padding: 0.2rem 0.16rem 0 0;
   flex: 1;
+  border-top: 1px solid var(--line-soft);
 }
 
 .alert-item {
@@ -963,26 +968,33 @@ h4 {
 
 .map-panel {
   position: relative;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   padding: 0;
 }
 
 .intel-overlay {
   position: absolute;
-  top: 0.5rem;
-  right: 0.5rem;
-  bottom: 0.5rem;
-  width: min(420px, 44vw);
+  top: 0.56rem;
+  right: 0.56rem;
+  bottom: 0.56rem;
+  width: min(420px, 42vw);
   z-index: 680;
   display: grid;
   align-content: start;
   gap: 0.46rem;
   overflow-y: auto;
   padding-right: 0.1rem;
+  opacity: 1;
+  transform: translateX(0);
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
 .intel-overlay.hidden {
-  display: none;
+  opacity: 0;
+  transform: translateX(20px);
+  pointer-events: none;
 }
 
 #map {
@@ -1557,7 +1569,12 @@ canvas {
   .left-column,
   .center-column {
     grid-template-rows: auto;
+    height: auto;
     overflow: visible;
+  }
+
+  .left-column {
+    max-width: none;
   }
 
   #map {
