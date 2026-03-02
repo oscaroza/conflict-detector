@@ -28,7 +28,7 @@ def _read_float_env(name: str, default: float, minimum: float, maximum: float) -
 
 
 MAX_ALERTS = _read_int_env("MAX_ALERTS", default=500, minimum=100, maximum=5000)
-DUPLICATE_WINDOW_SECONDS = _read_int_env("DUPLICATE_WINDOW_SECONDS", default=45, minimum=5, maximum=600)
+DUPLICATE_WINDOW_SECONDS = _read_int_env("DUPLICATE_WINDOW_SECONDS", default=600, minimum=5, maximum=600)
 SIMILARITY_THRESHOLD = _read_float_env("SIMILARITY_THRESHOLD", default=0.90, minimum=0.5, maximum=0.999)
 
 _write_lock = asyncio.Lock()
