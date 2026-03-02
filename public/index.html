@@ -102,6 +102,7 @@
 
         <div class="action-block">
           <button id="toggleCoverageBtn" class="btn btn-sm btn-outline-success tone-btn coverage-toggle-btn">Global ON</button>
+          <button id="toggleSmartDigestBtn" class="btn btn-sm btn-outline-light tone-btn sound-toggle-btn">Smart ON</button>
           <label class="tiny-label" for="alertModeSelect">Mode</label>
           <select id="alertModeSelect" class="form-select form-select-sm">
             <option value="insight">Veille (articles)</option>
@@ -227,7 +228,27 @@
             <div id="map" class="map-view"></div>
             <div id="globe" class="map-view hidden-view" aria-hidden="true"></div>
             <aside id="intelOverlay" class="intel-overlay">
-              <section class="panel-shell settings-panel fold-card is-open">
+              <section class="panel-shell details-panel fold-card is-open">
+                <div class="panel-head panel-head-toggle">
+                  <h2>EVENT DETAIL</h2>
+                  <button
+                    class="fold-toggle"
+                    data-target="detailFold"
+                    data-open-label="Masquer"
+                    data-close-label="Ouvrir"
+                    aria-expanded="true"
+                  >
+                    Masquer
+                  </button>
+                </div>
+                <div id="detailFold" class="fold-content open">
+                  <div id="alertDetails" class="alert-details empty-state">
+                    Cliquez sur une alerte pour afficher le détail complet.
+                  </div>
+                </div>
+              </section>
+
+              <section id="smartDigestCard" class="panel-shell settings-panel fold-card is-open">
                 <div class="panel-head panel-head-toggle">
                   <h2>SMART DIGEST</h2>
                   <button
@@ -264,26 +285,6 @@
                 </div>
                 <div id="tensionFold" class="fold-content open">
                   <canvas id="tensionChart" height="92"></canvas>
-                </div>
-              </section>
-
-              <section class="panel-shell details-panel fold-card is-open">
-                <div class="panel-head panel-head-toggle">
-                  <h2>EVENT DETAIL</h2>
-                  <button
-                    class="fold-toggle"
-                    data-target="detailFold"
-                    data-open-label="Masquer"
-                    data-close-label="Ouvrir"
-                    aria-expanded="true"
-                  >
-                    Masquer
-                  </button>
-                </div>
-                <div id="detailFold" class="fold-content open">
-                  <div id="alertDetails" class="alert-details empty-state">
-                    Cliquez sur une alerte pour afficher le détail complet.
-                  </div>
                 </div>
               </section>
 
