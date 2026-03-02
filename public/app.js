@@ -1600,9 +1600,26 @@ function initSpeechVoices() {
   }
 }
 
-function pickFallbackVoice() {
+function pickFallbackVoice(preferredLang = "") {
   if (!("speechSynthesis" in window)) return null;
   const voices = window.speechSynthesis.getVoices() || [];
+  const preferred = String(preferredLang || "")
+    .trim()
+    .toLowerCase();
+
+  if (preferred) {
+    const preferredBase = preferred.split("-")[0];
+    const exact = voices.find((voice) => voice.lang && voice.lang.toLowerCase() === preferred);
+    if (exact) return exact;
+
+    const prefStartsWith = voices.find(
+      (voice) => voice.lang && voice.lang.toLowerCase().startsWith(`${preferredBase}-`)
+    );
+    if (prefStartsWith) return prefStartsWith;
+
+    const prefIncludes = voices.find((voice) => voice.lang && voice.lang.toLowerCase().includes(preferredBase));
+    if (prefIncludes) return prefIncludes;
+  }
 
   return (
     voices.find((voice) => voice.lang && voice.lang.toLowerCase().startsWith("en")) ||
@@ -1709,11 +1726,12 @@ function speakAlertMessageLocal(alert) {
   }
 
   const synth = window.speechSynthesis;
+  const preferredLang = String(alert?.voiceOverrideLang || "").trim();
   const utterance = new SpeechSynthesisUtterance(buildAlertVoiceMessage(alert));
-  utterance.lang = "fr-FR";
+  utterance.lang = preferredLang || "fr-FR";
   utterance.volume = 1;
 
-  const voice = pickFallbackVoice();
+  const voice = pickFallbackVoice(preferredLang);
   if (voice) {
     utterance.voice = voice;
     utterance.lang = voice.lang || utterance.lang;
@@ -3180,7 +3198,7 @@ function buildVerificationVoiceMessage(alert) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 120);
-  return `Verification demandee sur ${title}. Croisement des sources Telegram et medias en cours.`;
+  return `Verification asked on ${title}. Cross-check in progress across Telegram and news sources.`;
 }
 
 function beginVerificationProgressAnimation() {
@@ -3268,7 +3286,8 @@ async function verifyAlert(alertId) {
     speakAlertMessage({
       severity: "medium",
       country: alert?.country || {},
-      voiceOverrideMessage: buildVerificationVoiceMessage(alert)
+      voiceOverrideMessage: buildVerificationVoiceMessage(alert),
+      voiceOverrideLang: "en-US"
     });
   }
 
