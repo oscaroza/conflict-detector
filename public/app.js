@@ -6,6 +6,7 @@ const state = {
   markersLayer: null,
   mapMode: "2d",
   globe: null,
+  countryGeoFeaturesByKey: new Map(),
   countryLayer: null,
   countryCentroids: new Map(),
   countryCentroidsByKey: new Map(),
@@ -96,6 +97,7 @@ let uiRefreshTimer = null;
 let uiRefreshInFlight = false;
 let uiRefreshTick = 0;
 let layoutResizeTimer = null;
+let globeResizeObserver = null;
 let bootRetryBound = false;
 let activeVoiceAudio = null;
 let activeVoiceBlobUrl = null;
@@ -175,6 +177,99 @@ function getSeverityColorHex(severity) {
   );
 }
 
+function getGlobeCountryVisual(status) {
+  if (status === "critical") {
+    return {
+      cap: "rgba(255,51,65,0.36)",
+      side: "rgba(255,51,65,0.16)",
+      stroke: "rgba(255,96,108,0.82)",
+      altitude: 0.022
+    };
+  }
+
+  if (status === "tension") {
+    return {
+      cap: "rgba(255,210,74,0.3)",
+      side: "rgba(255,210,74,0.14)",
+      stroke: "rgba(255,219,108,0.78)",
+      altitude: 0.016
+    };
+  }
+
+  return {
+    cap: "rgba(53,239,159,0.2)",
+    side: "rgba(53,239,159,0.1)",
+    stroke: "rgba(120,255,197,0.48)",
+    altitude: 0.01
+  };
+}
+
+function collectGlobeCountryPolygons(alerts) {
+  if (!state.countryGeoFeaturesByKey.size) {
+    return [];
+  }
+
+  const summaries = buildCountrySummaries(alerts).slice(0, 220);
+  const polygons = [];
+  const seen = new Set();
+
+  summaries.forEach((summary) => {
+    if (!summary?.key) return;
+
+    let features = state.countryGeoFeaturesByKey.get(summary.key) || [];
+    if (!features.length) {
+      const fallbackKey = `name:${normalizeCountryAlias(normalizeCountryKey(summary?.country?.name || ""))}`;
+      features = state.countryGeoFeaturesByKey.get(fallbackKey) || [];
+    }
+
+    features.forEach((feature, index) => {
+      const featureBaseId =
+        feature?.properties?.ISO_A3 ||
+        feature?.properties?.ADM0_A3 ||
+        feature?.properties?.ISO_A2 ||
+        feature?.properties?.id ||
+        summary.key;
+      const featureId = `${summary.key}::${featureBaseId}::${index}`;
+      if (seen.has(featureId)) {
+        return;
+      }
+      seen.add(featureId);
+
+      const nextProperties = {
+        ...(feature.properties || {}),
+        __countryStatus: summary.status,
+        __alertCount: summary.alerts.length,
+        __countryName: summary.country?.name || "Inconnu",
+        __latestAt: summary.latestAt || 0
+      };
+
+      polygons.push({
+        ...feature,
+        properties: nextProperties
+      });
+    });
+  });
+
+  return polygons;
+}
+
+function focusGlobeCamera(transitionMs = 0) {
+  if (!state.globe) return;
+
+  try {
+    state.globe.pointOfView(
+      {
+        lat: 27,
+        lng: 15,
+        alt: 1.62
+      },
+      transitionMs
+    );
+  } catch (error) {
+    // Ignore camera errors if globe is not fully initialized yet.
+  }
+}
+
 function updateMapModeUI() {
   const mode = getMapMode();
   const is3d = mode === "3d";
@@ -201,10 +296,23 @@ function updateMapModeUI() {
 
 function resizeGlobeViewport() {
   if (!state.globe || !refs.globeView) return;
-  const width = refs.globeView.clientWidth;
-  const height = refs.globeView.clientHeight;
-  if (width > 0 && height > 0) {
+  const rect = refs.globeView.getBoundingClientRect();
+  const width = Math.floor(rect.width);
+  const height = Math.floor(rect.height);
+
+  if (width > 8 && height > 8) {
     state.globe.width(width).height(height);
+
+    if (typeof state.globe.renderer === "function") {
+      const renderer = state.globe.renderer();
+      if (renderer && typeof renderer.setPixelRatio === "function") {
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      }
+    }
+
+    if (typeof state.globe.controls === "function") {
+      state.globe.controls()?.update?.();
+    }
   }
 }
 
@@ -218,17 +326,20 @@ function initializeGlobe() {
   }
 
   const globe = window.Globe()(refs.globeView)
-    .backgroundColor("rgba(0,0,0,0)")
+    .backgroundColor("rgba(3,5,9,0.0)")
+    .backgroundImageUrl("https://unpkg.com/three-globe/example/img/night-sky.png")
     .globeImageUrl("https://unpkg.com/three-globe/example/img/earth-night.jpg")
     .bumpImageUrl("https://unpkg.com/three-globe/example/img/earth-topology.png")
     .showAtmosphere(true)
-    .atmosphereColor("#39d0ff")
-    .atmosphereAltitude(0.16)
+    .atmosphereColor("#4ea9ff")
+    .atmosphereAltitude(0.22)
     .pointLat("lat")
     .pointLng("lng")
     .pointColor("color")
     .pointAltitude("altitude")
     .pointRadius("radius")
+    .pointResolution(12)
+    .pointsMerge(false)
     .pointLabel("label")
     .onPointClick((point) => {
       const alert = point?.alert;
@@ -236,20 +347,84 @@ function initializeGlobe() {
       state.selectedAlertId = alert._id;
       renderAlertDetails(alert);
       renderAlertsList();
+    })
+    .polygonCapColor((feature) => {
+      const status = feature?.properties?.__countryStatus || "normal";
+      return getGlobeCountryVisual(status).cap;
+    })
+    .polygonSideColor((feature) => {
+      const status = feature?.properties?.__countryStatus || "normal";
+      return getGlobeCountryVisual(status).side;
+    })
+    .polygonStrokeColor((feature) => {
+      const status = feature?.properties?.__countryStatus || "normal";
+      return getGlobeCountryVisual(status).stroke;
+    })
+    .polygonAltitude((feature) => {
+      const status = feature?.properties?.__countryStatus || "normal";
+      return getGlobeCountryVisual(status).altitude;
+    })
+    .polygonLabel((feature) => {
+      const countryName = escapeHtml(feature?.properties?.__countryName || getFeatureCountryName(feature));
+      const alertCount = Number(feature?.properties?.__alertCount || 0);
+      const status = feature?.properties?.__countryStatus || "normal";
+      const statusText = status === "critical" ? "Critique" : status === "tension" ? "Tension" : "Normal";
+      return `<div style="font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.35;">
+        <strong>${countryName}</strong><br>Statut: ${statusText} | ${alertCount} alerte(s)
+      </div>`;
     });
 
   if (typeof globe.controls === "function") {
     const controls = globe.controls();
     controls.enableDamping = true;
-    controls.dampingFactor = 0.09;
-    controls.rotateSpeed = 0.58;
-    controls.minDistance = 140;
-    controls.maxDistance = 420;
-    controls.autoRotate = false;
+    controls.dampingFactor = 0.08;
+    controls.rotateSpeed = 0.56;
+    controls.zoomSpeed = 0.82;
+    controls.enablePan = false;
+    controls.minDistance = 160;
+    controls.maxDistance = 430;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.22;
+  }
+
+  if (typeof globe.globeMaterial === "function" && window.THREE) {
+    const material = globe.globeMaterial();
+    if (material) {
+      material.color = new window.THREE.Color("#738299");
+      material.emissive = new window.THREE.Color("#0f1723");
+      material.emissiveIntensity = 0.5;
+      material.shininess = 0.9;
+    }
+  }
+
+  if (typeof globe.onGlobeReady === "function") {
+    globe.onGlobeReady(() => {
+      focusGlobeCamera(0);
+      resizeGlobeViewport();
+    });
   }
 
   state.globe = globe;
   resizeGlobeViewport();
+
+  if (globeResizeObserver) {
+    globeResizeObserver.disconnect();
+  }
+  if (typeof ResizeObserver !== "undefined" && refs.globeView) {
+    globeResizeObserver = new ResizeObserver(() => {
+      resizeGlobeViewport();
+    });
+    globeResizeObserver.observe(refs.globeView);
+  }
+
+  requestAnimationFrame(() => {
+    resizeGlobeViewport();
+    setTimeout(() => {
+      resizeGlobeViewport();
+      focusGlobeCamera(420);
+    }, 140);
+  });
+
   return true;
 }
 
@@ -257,7 +432,7 @@ function renderGlobeMarkers(alerts) {
   if (!state.globe) return;
 
   const points = sortAlertsByEventTimeDesc(alerts)
-    .slice(0, 420)
+    .slice(0, 520)
     .map((alert) => {
       const [lat, lng] = getAlertLatLng(alert);
       if (!isValidLatLng(lat, lng)) {
@@ -275,20 +450,51 @@ function renderGlobeMarkers(alerts) {
         lat,
         lng,
         color: pointColor,
-        altitude: severity === "critical" ? 0.03 : severity === "high" ? 0.022 : 0.015,
-        radius: severity === "critical" ? 0.26 : severity === "high" ? 0.2 : 0.15,
+        severity,
+        altitude: severity === "critical" ? 0.038 : severity === "high" ? 0.03 : severity === "medium" ? 0.022 : 0.017,
+        radius: severity === "critical" ? 0.34 : severity === "high" ? 0.27 : severity === "medium" ? 0.2 : 0.16,
         alert,
         label: `<div style="font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.35;">
-          <strong>${title}</strong><br>${country} | ${escapeHtml(signalVisual.label)} | ${eventTime}
+          <strong>${title}</strong><br>${country} | ${escapeHtml(signalVisual.glyph)} ${escapeHtml(
+          signalVisual.label
+        )} | ${eventTime}
         </div>`
       };
     })
     .filter(Boolean);
 
-  state.globe.pointsData(points);
+  const rings = points
+    .filter((point) => point.severity === "critical" || point.severity === "high")
+    .slice(0, 130)
+    .map((point) => ({
+      lat: point.lat,
+      lng: point.lng,
+      color:
+        point.severity === "critical"
+          ? "rgba(255,51,65,0.7)"
+          : point.severity === "high"
+            ? "rgba(255,131,82,0.65)"
+            : "rgba(255,210,74,0.6)",
+      maxRadius: point.severity === "critical" ? 3.4 : 2.5,
+      speed: point.severity === "critical" ? 1.12 : 0.92,
+      period: point.severity === "critical" ? 1080 : 1320
+    }));
+
+  const polygons = collectGlobeCountryPolygons(alerts);
+
+  state.globe
+    .pointsData(points)
+    .ringsData(rings)
+    .ringLat("lat")
+    .ringLng("lng")
+    .ringColor("color")
+    .ringMaxRadius("maxRadius")
+    .ringPropagationSpeed("speed")
+    .ringRepeatPeriod("period")
+    .polygonsData(polygons);
 
   if (refs.mapOverlayMetric) {
-    refs.mapOverlayMetric.textContent = `${points.length}/${alerts.length} alertes | globe 3D`;
+    refs.mapOverlayMetric.textContent = `${points.length}/${alerts.length} alertes | ${polygons.length} pays | globe 3D`;
   }
 }
 
@@ -310,7 +516,13 @@ function toggleMapMode() {
   if (nextMode === "2d") {
     state.map?.invalidateSize?.();
   } else {
-    resizeGlobeViewport();
+    requestAnimationFrame(() => {
+      resizeGlobeViewport();
+      setTimeout(() => {
+        resizeGlobeViewport();
+        focusGlobeCamera(420);
+      }, 130);
+    });
   }
 }
 
@@ -2123,6 +2335,18 @@ function getFeatureCountryCode(feature) {
   return normalized.length === 2 ? normalized : "";
 }
 
+function registerCountryFeature(key, feature) {
+  if (!key || !feature) return;
+
+  const bucket = state.countryGeoFeaturesByKey.get(key);
+  if (bucket) {
+    bucket.push(feature);
+    return;
+  }
+
+  state.countryGeoFeaturesByKey.set(key, [feature]);
+}
+
 function normalizeLongitude(value) {
   if (!Number.isFinite(value)) {
     return 0;
@@ -3317,6 +3541,7 @@ async function loadCountryGeoJson() {
   state.countryCentroids = new Map();
   state.countryCentroidsByKey = new Map();
   state.countryCentroidsByCode = new Map();
+  state.countryGeoFeaturesByKey = new Map();
 
   state.countryLayer = L.geoJSON(geojson, {
     style: styleCountryFeature,
@@ -3332,6 +3557,13 @@ async function loadCountryGeoJson() {
       }
       if (countryCode && !state.countryCentroidsByCode.has(countryCode)) {
         state.countryCentroidsByCode.set(countryCode, centerPoint);
+      }
+
+      if (countryCode) {
+        registerCountryFeature(`code:${countryCode}`, feature);
+      }
+      if (countryKey) {
+        registerCountryFeature(`name:${countryKey}`, feature);
       }
 
       layer.on("mouseover", () => {
