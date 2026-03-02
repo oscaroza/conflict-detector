@@ -80,7 +80,16 @@ class TelegramScraper:
         self._stop = asyncio.Event()
         self.client: Optional[TelegramClient] = None
         self._unauthorized_sleep = int(os.getenv("TELEGRAM_UNAUTHORIZED_RETRY_SECONDS", "300"))
-        self._backfill_limit = max(0, int(os.getenv("TELEGRAM_BACKFILL_LIMIT", "60")))
+        self._backfill_limit = max(0, int(os.getenv("TELEGRAM_BACKFILL_LIMIT", "180")))
+        self._poll_seconds = max(15, int(os.getenv("TELEGRAM_POLL_SECONDS", "30")))
+        self._poll_limit = max(1, min(30, int(os.getenv("TELEGRAM_POLL_LIMIT", "6"))))
+        self._enable_polling = str(os.getenv("TELEGRAM_ENABLE_POLLING", "1")).strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        self._last_seen_ids: Dict[str, int] = {}
         self._backfill_done = False
         self.channels = resolve_channels()
 
@@ -124,6 +133,11 @@ class TelegramScraper:
                 "text": text,
             }
             await self.on_message(payload)
+
+            source_key = _normalize_channel(source_channel) or source_channel
+            previous = int(self._last_seen_ids.get(source_key, 0))
+            if int(event.id or 0) > previous:
+                self._last_seen_ids[source_key] = int(event.id)
         except Exception:
             logger.warning("telegram_event_processing_skipped")
 
@@ -151,8 +165,26 @@ class TelegramScraper:
                 # Avoid rerunning full bootstrap history on each reconnect loop.
                 self._backfill_done = True
 
-        logger.info("telegram_listener_started channels=%s", ",".join(self.channels))
-        await self.client.run_until_disconnected()
+        poll_task: Optional[asyncio.Task] = None
+        if self._enable_polling and self._poll_seconds > 0:
+            poll_task = asyncio.create_task(self._run_poll_loop())
+
+        logger.info(
+            "telegram_listener_started channels=%s polling=%s poll_seconds=%s poll_limit=%s",
+            ",".join(self.channels),
+            "on" if self._enable_polling else "off",
+            self._poll_seconds,
+            self._poll_limit,
+        )
+        try:
+            await self.client.run_until_disconnected()
+        finally:
+            if poll_task is not None:
+                poll_task.cancel()
+                try:
+                    await poll_task
+                except asyncio.CancelledError:
+                    pass
 
     async def _run_backfill(self) -> None:
         if self.client is None or self._backfill_limit <= 0:
@@ -169,6 +201,8 @@ class TelegramScraper:
                 entity = await self.client.get_entity(channel)
                 channel_name = getattr(entity, "username", None)
                 source_channel = f"@{channel_name}" if channel_name else channel
+                source_key = _normalize_channel(source_channel) or source_channel
+                max_seen = int(self._last_seen_ids.get(source_key, 0))
 
                 async for msg in self.client.iter_messages(entity, limit=self._backfill_limit):
                     text = (msg.raw_text or "").strip()
@@ -190,6 +224,13 @@ class TelegramScraper:
                     await self.on_message(payload)
                     accepted += 1
                     total_messages += 1
+                    max_seen = max(max_seen, int(msg.id or 0))
+
+                if max_seen > 0:
+                    self._last_seen_ids[source_key] = max_seen
+                    normalized_channel = _normalize_channel(channel)
+                    if normalized_channel:
+                        self._last_seen_ids[normalized_channel] = max_seen
 
                 logger.info(
                     "telegram_backfill_channel_done channel=%s seen=%s skipped_empty=%s",
@@ -201,10 +242,80 @@ class TelegramScraper:
                 wait_seconds = max(5, int(getattr(exc, "seconds", 5)))
                 logger.warning("telegram_backfill_flood_wait channel=%s wait_seconds=%s", channel, wait_seconds)
                 await asyncio.sleep(wait_seconds)
-            except Exception:
-                logger.warning("telegram_backfill_channel_failed channel=%s", channel)
+            except Exception as exc:
+                logger.warning("telegram_backfill_channel_failed channel=%s error=%s", channel, exc)
 
         logger.info("telegram_backfill_complete processed=%s", total_messages)
+
+    async def _run_poll_loop(self) -> None:
+        if self.client is None or not self._enable_polling:
+            return
+
+        logger.info(
+            "telegram_polling_started per_channel_limit=%s interval_seconds=%s",
+            self._poll_limit,
+            self._poll_seconds,
+        )
+        while not self._stop.is_set() and self.client is not None and self.client.is_connected():
+            for channel in self.channels:
+                if self._stop.is_set() or self.client is None or not self.client.is_connected():
+                    break
+
+                normalized_channel = _normalize_channel(channel) or channel
+                try:
+                    entity = await self.client.get_entity(channel)
+                    channel_name = getattr(entity, "username", None)
+                    source_channel = f"@{channel_name}" if channel_name else channel
+                    source_key = _normalize_channel(source_channel) or source_channel
+
+                    last_seen = int(
+                        max(
+                            self._last_seen_ids.get(normalized_channel, 0),
+                            self._last_seen_ids.get(source_key, 0),
+                        )
+                    )
+
+                    batch = []
+                    async for msg in self.client.iter_messages(entity, limit=self._poll_limit):
+                        text = (msg.raw_text or "").strip()
+                        if not text:
+                            continue
+                        msg_id = int(msg.id or 0)
+                        if msg_id <= 0 or msg_id <= last_seen:
+                            continue
+                        batch.append(msg)
+
+                    if not batch:
+                        await asyncio.sleep(0.08)
+                        continue
+
+                    batch.sort(key=lambda item: int(item.id or 0))
+                    for msg in batch:
+                        event_ts = msg.date
+                        if event_ts.tzinfo is None:
+                            event_ts = event_ts.replace(tzinfo=timezone.utc)
+                        event_ts = event_ts.astimezone(timezone.utc)
+
+                        payload = {
+                            "id": msg.id,
+                            "timestamp": event_ts.isoformat(),
+                            "source_channel": source_channel,
+                            "text": (msg.raw_text or "").strip(),
+                        }
+                        await self.on_message(payload)
+                        last_seen = max(last_seen, int(msg.id or 0))
+
+                    self._last_seen_ids[normalized_channel] = last_seen
+                    self._last_seen_ids[source_key] = last_seen
+                    await asyncio.sleep(0.08)
+                except FloodWaitError as exc:
+                    wait_seconds = max(5, int(getattr(exc, "seconds", 5)))
+                    logger.warning("telegram_poll_flood_wait channel=%s wait_seconds=%s", channel, wait_seconds)
+                    await asyncio.sleep(wait_seconds)
+                except Exception as exc:
+                    logger.warning("telegram_poll_channel_failed channel=%s error=%s", channel, exc)
+
+            await asyncio.sleep(self._poll_seconds)
 
     async def run_forever(self) -> None:
         if self.api_id <= 0 or not self.api_hash:

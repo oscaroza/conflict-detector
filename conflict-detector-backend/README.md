@@ -40,7 +40,14 @@ Renseigne ensuite dans `.env`:
 TELEGRAM_API_ID=123456
 TELEGRAM_API_HASH=abcdef123456...
 TELEGRAM_SESSION_STRING=
-TELEGRAM_BACKFILL_LIMIT=60
+TELEGRAM_BACKFILL_LIMIT=180
+TELEGRAM_ENABLE_POLLING=1
+TELEGRAM_POLL_SECONDS=30
+TELEGRAM_POLL_LIMIT=6
+ALERT_SCORE_THRESHOLD=8
+DUPLICATE_WINDOW_SECONDS=45
+SIMILARITY_THRESHOLD=0.90
+MAX_ALERTS=500
 TELEGRAM_CHANNELS=@intelslava,@OSINTdefender,@MiddleEastSpectator
 ```
 
@@ -142,7 +149,14 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
    - `TELEGRAM_API_ID`
    - `TELEGRAM_API_HASH`
    - `TELEGRAM_SESSION_STRING` (obligatoire en pratique sur Render)
-   - `TELEGRAM_BACKFILL_LIMIT` (optionnel, ex. `60`)
+   - `TELEGRAM_BACKFILL_LIMIT` (optionnel, ex. `180`)
+   - `TELEGRAM_ENABLE_POLLING` (`1` par defaut)
+   - `TELEGRAM_POLL_SECONDS` (optionnel, ex. `30`)
+   - `TELEGRAM_POLL_LIMIT` (optionnel, ex. `6`)
+   - `ALERT_SCORE_THRESHOLD` (optionnel, ex. `8`)
+   - `DUPLICATE_WINDOW_SECONDS` (optionnel, ex. `45`)
+   - `SIMILARITY_THRESHOLD` (optionnel, ex. `0.90`)
+   - `MAX_ALERTS` (optionnel, ex. `500`)
    - `TELEGRAM_CHANNELS` (optionnel, liste CSV de canaux a ajouter)
 
 ## 5) Comportement du pipeline
@@ -152,11 +166,15 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
     `@TpyxiAlert`, `@BNONews`, `@sentdefender`, `@WarMonitor3`, `@IntelCrab`,
     `@Faytuks`, `@IntelTower`, `@nexta_live`, `@clashreport`
   - et canaux custom via `TELEGRAM_CHANNELS`
+- Polling complementaire:
+  - scan periodique des derniers messages par canal (configurable)
+  - utile si certains updates temps reel Telegram ne remontent pas
 - Scoring mots-clés:
-  - `score >= 10` => alert terrain acceptée
+  - `score >= ALERT_SCORE_THRESHOLD` (defaut `8`) => alerte acceptee
   - sinon rejet
 - Déduplication:
-  - similarité `> 80%` dans les 60 sec => ignoré
+  - similarite `>= SIMILARITY_THRESHOLD` (defaut `0.90`)
+  - fenetre `DUPLICATE_WINDOW_SECONDS` (defaut `45s`)
 - Stockage:
   - conservation des 500 dernières alertes
 - Logs structurés:

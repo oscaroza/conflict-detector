@@ -1,3 +1,4 @@
+import os
 import re
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List
@@ -7,42 +8,88 @@ KEYWORDS: Dict[str, Dict[str, Any]] = {
         "mots": [
             "strike",
             "airstrike",
+            "airstrikes",
             "bombed",
             "bombing",
             "frappe",
             "explosion",
+            "explosions",
             "blast",
             "hit",
             "attacked",
+            "attack",
+            "attacks",
             "shelling",
             "shelled",
             "artillery",
             "missile",
+            "missiles",
             "rocket",
+            "rockets",
             "launched",
             "intercepted",
+            "intercept",
             "drone",
+            "drones",
+            "drone strike",
+            "drone strikes",
             "uav",
             "destroyed",
+            "destroy",
             "killed",
             "dead",
             "casualties",
             "troops",
+            "troop",
             "forces",
             "military",
             "army",
             "navy",
             "warplane",
+            "warplanes",
             "fighter jet",
+            "fighter jets",
             "tank",
+            "tanks",
             "invasion",
             "offensive",
             "advance",
             "retreat",
             "captured",
             "fallen",
+            "shot down",
+            "downed",
+            "raid",
+            "raids",
+            "base hit",
+            "air base",
+            "airbase",
         ],
         "poids": 10,
+    },
+    "escalade_geopolitique": {
+        "mots": [
+            "military buildup",
+            "troop buildup",
+            "mobilization",
+            "war footing",
+            "retaliate",
+            "retaliation",
+            "vow to strike",
+            "ready to defend",
+            "preparing to strike",
+            "warning to",
+            "pay a price",
+            "state of emergency",
+            "air defense activated",
+            "closed airspace",
+            "internet blackout",
+            "internet access cut off",
+            "power station",
+            "oil refinery",
+            "ballistic",
+        ],
+        "poids": 8,
     },
     "terrain_confirme": {
         "mots": [
@@ -77,7 +124,7 @@ KEYWORDS: Dict[str, Dict[str, Any]] = {
             "podcast",
             "thread",
         ],
-        "poids": -20,
+        "poids": -12,
     },
 }
 
@@ -122,7 +169,25 @@ SEVERITY_KEYWORDS: Dict[str, List[str]] = {
     ],
 }
 
-TRUSTED_CHANNELS = {"bnonews", "osintdefender"}
+def _safe_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = str(os.getenv(name, str(default))).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+ALERT_SCORE_THRESHOLD = _safe_int_env("ALERT_SCORE_THRESHOLD", default=8, minimum=1, maximum=30)
+
+TRUSTED_CHANNELS = {
+    "bnonews",
+    "osintdefender",
+    "sentdefender",
+    "faytuks",
+    "clashreport",
+    "noelreports",
+}
 LESS_VERIFIED_CHANNELS = {
     "middleeastspectator",
     "gazawarnews",
@@ -162,7 +227,17 @@ def _contains_term(text: str, term: str) -> bool:
     term = term.strip().lower()
     if not term:
         return False
-    pattern = r"\b" + re.escape(term) + r"\b"
+
+    words = [token for token in term.split() if token]
+    if not words:
+        return False
+
+    escaped_words = [re.escape(token) for token in words]
+    last = escaped_words[-1]
+    if re.fullmatch(r"[a-z0-9]+", words[-1]):
+        escaped_words[-1] = f"{last}(?:s|es)?"
+
+    pattern = r"\b" + r"\s+".join(escaped_words) + r"\b"
     return re.search(pattern, text) is not None
 
 
@@ -257,7 +332,7 @@ def analyze_message(message_text: str, source_channel: str) -> FilterResult:
     severity = _compute_severity(text)
     confidence_data = _compute_confidence(text, source_channel)
 
-    accepted = score_data["score"] >= 10
+    accepted = score_data["score"] >= ALERT_SCORE_THRESHOLD
     reason = "accepted" if accepted else "score_below_threshold"
     if "exclusion" in score_data["details"] and not accepted:
         reason = "excluded_by_keywords"

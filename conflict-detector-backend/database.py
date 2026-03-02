@@ -7,9 +7,29 @@ from typing import Any, Dict, List, Optional
 import aiosqlite
 
 DB_PATH = os.getenv("SQLITE_PATH", "conflict_detector.db")
-MAX_ALERTS = 500
-DUPLICATE_WINDOW_SECONDS = 60
-SIMILARITY_THRESHOLD = 0.80
+
+
+def _read_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = str(os.getenv(name, str(default))).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _read_float_env(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = str(os.getenv(name, str(default))).strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+MAX_ALERTS = _read_int_env("MAX_ALERTS", default=500, minimum=100, maximum=5000)
+DUPLICATE_WINDOW_SECONDS = _read_int_env("DUPLICATE_WINDOW_SECONDS", default=45, minimum=5, maximum=600)
+SIMILARITY_THRESHOLD = _read_float_env("SIMILARITY_THRESHOLD", default=0.90, minimum=0.5, maximum=0.999)
 
 _write_lock = asyncio.Lock()
 

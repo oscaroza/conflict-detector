@@ -10,9 +10,16 @@ from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from database import get_alerts, get_alerts_since, init_db, insert_alert
+from database import (
+    DUPLICATE_WINDOW_SECONDS,
+    SIMILARITY_THRESHOLD,
+    get_alerts,
+    get_alerts_since,
+    init_db,
+    insert_alert,
+)
 from defcon import build_activity_snapshot, calculate_defcon
-from keyword_filter import analyze_message
+from keyword_filter import ALERT_SCORE_THRESHOLD, analyze_message
 from location_resolver import resolve_location
 from telegram_scraper import TelegramScraper
 
@@ -302,7 +309,17 @@ async def startup() -> None:
 
     app.state.scraper = TelegramScraper(on_message=process_telegram_message)
     app.state.scraper_task = asyncio.create_task(app.state.scraper.run_forever())
-    log_event("startup_complete")
+    log_event(
+        "startup_complete",
+        channels=len(app.state.scraper.channels),
+        alert_score_threshold=ALERT_SCORE_THRESHOLD,
+        duplicate_window_seconds=DUPLICATE_WINDOW_SECONDS,
+        similarity_threshold=SIMILARITY_THRESHOLD,
+        backfill_limit=app.state.scraper._backfill_limit,
+        polling_enabled=app.state.scraper._enable_polling,
+        poll_seconds=app.state.scraper._poll_seconds,
+        poll_limit=app.state.scraper._poll_limit,
+    )
 
 
 @app.on_event("shutdown")
