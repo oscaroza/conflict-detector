@@ -114,6 +114,7 @@ let lastVoiceFallbackNoticeAt = 0;
 let mapSignalExpiryTimer = null;
 const BROWSER_NOTIF_STORAGE_KEY = "cd_browser_notifications_enabled";
 const SMART_DIGEST_STORAGE_KEY = "cd_smart_digest_enabled";
+const INTEL_OVERLAY_HIDDEN_STORAGE_KEY = "cd_intel_overlay_hidden";
 const MAP_SIGNAL_TTL_MINUTES = 30;
 const MAP_SIGNAL_TTL_MS = MAP_SIGNAL_TTL_MINUTES * 60 * 1000;
 
@@ -583,6 +584,29 @@ function writeSmartDigestPreference(enabled) {
   }
 }
 
+function readIntelOverlayHiddenPreference() {
+  try {
+    return window.localStorage.getItem(INTEL_OVERLAY_HIDDEN_STORAGE_KEY) === "1";
+  } catch (error) {
+    return false;
+  }
+}
+
+function writeIntelOverlayHiddenPreference(hidden) {
+  try {
+    window.localStorage.setItem(INTEL_OVERLAY_HIDDEN_STORAGE_KEY, hidden ? "1" : "0");
+  } catch (error) {
+    // Ignore localStorage failures.
+  }
+}
+
+function applyIntelOverlayVisibilityPreference() {
+  if (!refs.intelOverlay) return;
+  const hiddenByPreference = readIntelOverlayHiddenPreference();
+  refs.intelOverlay.classList.toggle("hidden", hiddenByPreference);
+  updateColumnToggleButtons();
+}
+
 function updateSmartDigestToggleUI() {
   const enabled = state.smartDigestEnabled !== false;
 
@@ -608,11 +632,6 @@ function toggleSmartDigest() {
   state.smartDigestEnabled = nextEnabled;
   writeSmartDigestPreference(nextEnabled);
   updateSmartDigestToggleUI();
-
-  if (nextEnabled && refs.intelOverlay?.classList.contains("hidden")) {
-    refs.intelOverlay.classList.remove("hidden");
-    updateColumnToggleButtons();
-  }
 
   refreshLayout();
   showToast("Smart Digest", nextEnabled ? "Smart Digest active." : "Smart Digest desactive.");
@@ -1888,6 +1907,9 @@ function bindFoldToggles() {
 
 function ensureIntelOverlayVisible() {
   if (!refs.intelOverlay) return;
+  if (readIntelOverlayHiddenPreference()) {
+    return;
+  }
   if (refs.intelOverlay.classList.contains("hidden")) {
     refs.intelOverlay.classList.remove("hidden");
     updateColumnToggleButtons();
@@ -1906,6 +1928,7 @@ function bindColumnToggles() {
   if (refs.toggleRightPanelBtn && refs.intelOverlay) {
     refs.toggleRightPanelBtn.addEventListener("click", () => {
       refs.intelOverlay.classList.toggle("hidden");
+      writeIntelOverlayHiddenPreference(refs.intelOverlay.classList.contains("hidden"));
       updateColumnToggleButtons();
       refreshLayout();
     });
@@ -4413,6 +4436,7 @@ async function bootstrap() {
   await runBootStage("ui", "Préparation de l'interface...", async () => {
     state.smartDigestEnabled = readSmartDigestPreference();
     bindEvents();
+    applyIntelOverlayVisibilityPreference();
     updateSmartDigestToggleUI();
     applyPhoneLayoutDefaults();
     initSpeechVoices();
