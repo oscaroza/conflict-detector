@@ -423,6 +423,33 @@ function sourceCountValue(alert) {
   return 1;
 }
 
+function detectSourceKind(alert) {
+  const sourceName = String(alert?.sourceName || "").trim().toLowerCase();
+  const sourceUrl = String(alert?.sourceUrl || "").trim().toLowerCase();
+
+  if (
+    sourceName.startsWith("@") ||
+    sourceName.includes("telegram") ||
+    sourceUrl.includes("t.me/") ||
+    sourceUrl.includes("telegram.me/")
+  ) {
+    return "telegram";
+  }
+
+  return "media";
+}
+
+function sourceKindLabel(alert) {
+  return detectSourceKind(alert) === "telegram" ? "Telegram" : "Media";
+}
+
+function sourceBadgeHtml(alert, extraClass = "") {
+  const kind = detectSourceKind(alert);
+  const className = kind === "telegram" ? "source-chip-telegram" : "source-chip-media";
+  const label = sourceKindLabel(alert);
+  return `<span class="meta-chip source-chip ${className} ${extraClass}">${escapeHtml(label)}</span>`;
+}
+
 function capitalize(value) {
   if (!value) return "";
   return value.charAt(0).toUpperCase() + value.slice(1);
@@ -1322,6 +1349,7 @@ function renderAlertDetails(alert) {
   const confidence = confidenceScoreValue(alert);
   const sourceCount = sourceCountValue(alert);
   const sourcesList = Array.isArray(alert?.sourceNames) && alert.sourceNames.length > 0 ? alert.sourceNames : [alert.sourceName];
+  const sourceName = alert?.sourceName || "Inconnue";
 
   state.selectedCountryKey = null;
   toggleFold("detailFold", true);
@@ -1336,12 +1364,15 @@ function renderAlertDetails(alert) {
   )}</span>
       <span class="meta-chip confidence-chip">Confiance ${confidence}%</span>
       <span class="meta-chip severity-${escapeHtml(alert.severity)}">${escapeHtml(severityLabel(alert.severity))}</span>
+      ${sourceBadgeHtml(alert)}
       ${alert.city?.name ? `<span class="meta-chip">${escapeHtml(alert.city.name)}</span>` : ""}
       <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
       <span class="meta-chip">${escapeHtml(alert.country?.region || "Global")}</span>
     </div>
     <p class="mb-2"><strong>Résumé:</strong> ${escapeHtml(alert.summary || "Résumé non disponible")}</p>
-    <p class="mb-2"><strong>Source:</strong> ${escapeHtml(alert.sourceName || "Inconnue")}</p>
+    <p class="mb-2"><strong>Source:</strong> ${sourceBadgeHtml(alert, "source-chip-inline")} <span class="source-name-inline">${escapeHtml(
+    sourceName
+  )}</span></p>
     <p class="mb-2"><strong>Ville:</strong> ${escapeHtml(alert.city?.name || "Non précisée")}</p>
     <p class="mb-2"><strong>Validation:</strong> ${escapeHtml(confirmationLabel(alert))} | <strong>Confiance:</strong> ${confidence}% | <strong>Sources croisées:</strong> ${sourceCount}</p>
     <p class="mb-2"><strong>Sources cluster:</strong> ${escapeHtml(sourcesList.join(", "))}</p>
@@ -1403,6 +1434,7 @@ function renderAlertsList() {
       const signalVisual = getSignalVisual(detectIncidentSignal(alert));
       const confidence = confidenceScoreValue(alert);
       const sourceCount = sourceCountValue(alert);
+      const sourceName = alert?.sourceName || "Source inconnue";
       return `
         <article class="alert-item ${isSelected ? "border-warning" : ""}" data-alert-id="${alert._id}">
           <p class="alert-title">${escapeHtml(alert.title)}</p>
@@ -1414,12 +1446,13 @@ function renderAlertsList() {
       )}</span>
             <span class="meta-chip confidence-chip">${confidence}%</span>
             <span class="meta-chip severity-${escapeHtml(alert.severity)}">${escapeHtml(severityLabel(alert.severity))}</span>
+            ${sourceBadgeHtml(alert)}
             ${alert.city?.name ? `<span class="meta-chip">${escapeHtml(alert.city.name)}</span>` : ""}
             <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
           </div>
           <p class="small text-secondary mb-2">Acte: ${escapeHtml(formatAlertEventDateLong(alert))} | Pub: ${escapeHtml(
         formatDate(alert.publishedAt || alert.createdAt)
-      )} | ${escapeHtml(alert.sourceName)} | ${sourceCount} source(s)</p>
+      )} | Source: ${escapeHtml(sourceName)} | ${sourceCount} source(s)</p>
           <div class="alert-actions">
             <button class="btn btn-outline-danger" data-action="delete" data-id="${alert._id}">Supprimer</button>
           </div>
@@ -2179,7 +2212,7 @@ async function renderCountryDetails(summary) {
         <article class="country-event-item">
           <p class="country-event-title"><span class="severity-${escapeHtml(alert.severity)}">${escapeHtml(
             severityLabel(alert.severity)
-          )}</span> - ${escapeHtml(alert.title)}</p>
+          )}</span> - ${escapeHtml(alert.title)} ${sourceBadgeHtml(alert, "source-chip-inline")}</p>
           <p class="country-event-meta">Acte: ${escapeHtml(formatAlertEventDateLong(alert))} | Pub: ${escapeHtml(
             formatDate(alert.publishedAt || alert.createdAt)
           )} | ${escapeHtml(alert.sourceName || "Source inconnue")}</p>

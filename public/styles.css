@@ -923,6 +923,31 @@ h4 {
   background: rgba(57, 208, 255, 0.08);
 }
 
+.meta-chip.source-chip {
+  font-weight: 700;
+}
+
+.meta-chip.source-chip-telegram {
+  color: #ff7b8a;
+  border-color: rgba(255, 123, 138, 0.62);
+  background: rgba(255, 71, 94, 0.11);
+}
+
+.meta-chip.source-chip-media {
+  color: #77c6ff;
+  border-color: rgba(82, 178, 255, 0.58);
+  background: rgba(58, 138, 255, 0.1);
+}
+
+.meta-chip.source-chip-inline {
+  margin-left: 0.3rem;
+  vertical-align: baseline;
+}
+
+.source-name-inline {
+  margin-left: 0.26rem;
+}
+
 .alert-actions {
   display: flex;
   gap: 0.35rem;
