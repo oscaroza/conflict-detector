@@ -35,7 +35,8 @@ const state = {
     supported: false,
     enabled: false,
     permission: "default"
-  }
+  },
+  mobileTab: "map"
 };
 
 const refs = {
@@ -93,7 +94,8 @@ const refs = {
   bootRetryBtn: document.getElementById("bootRetryBtn"),
   typeChart: document.getElementById("typeChart"),
   countryChart: document.getElementById("countryChart"),
-  tensionChart: document.getElementById("tensionChart")
+  tensionChart: document.getElementById("tensionChart"),
+  mobileTabBar: document.getElementById("mobileTabBar")
 };
 
 let audioContext = null;
@@ -115,6 +117,7 @@ let mapSignalExpiryTimer = null;
 const BROWSER_NOTIF_STORAGE_KEY = "cd_browser_notifications_enabled";
 const SMART_DIGEST_STORAGE_KEY = "cd_smart_digest_enabled";
 const INTEL_OVERLAY_HIDDEN_STORAGE_KEY = "cd_intel_overlay_hidden";
+const MOBILE_TAB_STORAGE_KEY = "cd_mobile_tab";
 const MAP_SIGNAL_TTL_MINUTES = 30;
 const MAP_SIGNAL_TTL_MS = MAP_SIGNAL_TTL_MINUTES * 60 * 1000;
 
@@ -361,6 +364,9 @@ function initializeGlobe() {
       state.selectedAlertId = alert._id;
       renderAlertDetails(alert);
       renderAlertsList();
+      if (isMobileViewport()) {
+        applyMobileTab("panel", { persist: true, forcePanelOpen: true });
+      }
     })
     .polygonCapColor((feature) => {
       const status = feature?.properties?.__countryStatus || "normal";
@@ -1928,7 +1934,11 @@ function bindColumnToggles() {
   if (refs.toggleRightPanelBtn && refs.intelOverlay) {
     refs.toggleRightPanelBtn.addEventListener("click", () => {
       refs.intelOverlay.classList.toggle("hidden");
-      writeIntelOverlayHiddenPreference(refs.intelOverlay.classList.contains("hidden"));
+      const hidden = refs.intelOverlay.classList.contains("hidden");
+      writeIntelOverlayHiddenPreference(hidden);
+      if (isMobileViewport()) {
+        applyMobileTab(hidden ? "map" : "panel", { persist: true, forcePanelOpen: false });
+      }
       updateColumnToggleButtons();
       refreshLayout();
     });
@@ -1956,18 +1966,99 @@ function bindFiltersSidebarToggle() {
   updateFiltersSidebarToggleButton();
 }
 
-function applyPhoneLayoutDefaults() {
-  if (!window.matchMedia("(max-width: 760px)").matches) {
+function isMobileViewport() {
+  return window.matchMedia("(max-width: 760px)").matches;
+}
+
+function normalizeMobileTab(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "alerts" || normalized === "panel") {
+    return normalized;
+  }
+  return "map";
+}
+
+function readMobileTabPreference() {
+  try {
+    return normalizeMobileTab(window.localStorage.getItem(MOBILE_TAB_STORAGE_KEY));
+  } catch (error) {
+    return "map";
+  }
+}
+
+function writeMobileTabPreference(tab) {
+  try {
+    window.localStorage.setItem(MOBILE_TAB_STORAGE_KEY, normalizeMobileTab(tab));
+  } catch (error) {
+    // Ignore localStorage failures.
+  }
+}
+
+function updateMobileTabButtons() {
+  const tabButtons = Array.from(document.querySelectorAll(".mobile-tab-btn[data-mobile-tab]"));
+  const activeTab = normalizeMobileTab(state.mobileTab);
+  tabButtons.forEach((button) => {
+    const tab = normalizeMobileTab(button.dataset.mobileTab);
+    const active = tab === activeTab;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+}
+
+function applyMobileTab(tab, options = {}) {
+  const { persist = true, forcePanelOpen = true } = options;
+  const nextTab = normalizeMobileTab(tab);
+  state.mobileTab = nextTab;
+
+  const tabClasses = ["mobile-tab-alerts", "mobile-tab-map", "mobile-tab-panel"];
+  if (!isMobileViewport()) {
+    document.body.classList.remove(...tabClasses);
+    updateMobileTabButtons();
     return;
   }
 
-  if (refs.intelOverlay && !refs.intelOverlay.classList.contains("hidden")) {
-    refs.intelOverlay.classList.add("hidden");
+  document.body.classList.remove(...tabClasses);
+  document.body.classList.add(`mobile-tab-${nextTab}`);
+
+  if (nextTab === "panel" && forcePanelOpen && refs.intelOverlay?.classList.contains("hidden")) {
+    refs.intelOverlay.classList.remove("hidden");
+    writeIntelOverlayHiddenPreference(false);
+    updateColumnToggleButtons();
+  }
+
+  if (persist) {
+    writeMobileTabPreference(nextTab);
+  }
+
+  updateMobileTabButtons();
+  refreshLayout();
+}
+
+function bindMobileTabs() {
+  if (!refs.mobileTabBar) return;
+  const tabButtons = Array.from(refs.mobileTabBar.querySelectorAll(".mobile-tab-btn[data-mobile-tab]"));
+  tabButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      applyMobileTab(button.dataset.mobileTab, { persist: true, forcePanelOpen: true });
+    });
+  });
+  updateMobileTabButtons();
+}
+
+function applyPhoneLayoutDefaults() {
+  if (!isMobileViewport()) {
+    applyMobileTab(state.mobileTab, { persist: false, forcePanelOpen: false });
+    return;
   }
 
   if (refs.leftPanel && !refs.leftPanel.classList.contains("filters-collapsed")) {
     refs.leftPanel.classList.add("filters-collapsed");
   }
+
+  const preferredTab = readMobileTabPreference();
+  applyMobileTab(preferredTab, { persist: false, forcePanelOpen: false });
 
   updateColumnToggleButtons();
   updateFiltersSidebarToggleButton();
@@ -2066,6 +2157,30 @@ function detectIncidentSignal(alert) {
   }
 
   if (
+    includesAny(text, [
+      "killed",
+      "dead",
+      "deaths",
+      "death toll",
+      "fatality",
+      "fatalities",
+      "casualty",
+      "casualties",
+      "slain",
+      "morts",
+      "mort",
+      "deces",
+      "décès",
+      "tues",
+      "tués",
+      "tue",
+      "tué"
+    ])
+  ) {
+    return "casualty";
+  }
+
+  if (
     includesAny(text, ["missile", "rocket", "ballistic", "hypersonic"]) &&
     includesAny(text, ["hit", "strike", "impact", "touche", "frappe", "attack", "landed"])
   ) {
@@ -2131,6 +2246,11 @@ function getSignalVisual(signal) {
         label: "Explosion / bombe",
         glyph: "💣",
         className: "signal-bomb"
+      },
+      casualty: {
+        label: "Morts / pertes humaines",
+        glyph: "☠",
+        className: "signal-casualty"
       },
       conflict: {
         label: "Conflit geopolitique",
@@ -2282,6 +2402,9 @@ function createMarker(alert) {
   marker.on("click", () => {
     state.selectedAlertId = alert._id;
     renderAlertDetails(alert);
+    if (isMobileViewport()) {
+      applyMobileTab("panel", { persist: true, forcePanelOpen: true });
+    }
   });
 
   return marker;
@@ -4153,6 +4276,9 @@ function bindEvents() {
           state.selectedAlertId = relatedAlert._id;
           renderAlertDetails(relatedAlert);
           renderAlertsList();
+          if (isMobileViewport()) {
+            applyMobileTab("panel", { persist: true, forcePanelOpen: true });
+          }
         }
         return;
       }
@@ -4173,6 +4299,9 @@ function bindEvents() {
     state.selectedAlertId = alert._id;
     renderAlertDetails(alert);
     renderAlertsList();
+    if (isMobileViewport()) {
+      applyMobileTab("panel", { persist: true, forcePanelOpen: true });
+    }
   });
 
   document.body.addEventListener(
@@ -4191,8 +4320,15 @@ function bindEvents() {
   bindFoldToggles();
   bindColumnToggles();
   bindFiltersSidebarToggle();
+  bindMobileTabs();
 
   window.addEventListener("resize", () => {
+    if (isMobileViewport()) {
+      applyMobileTab(state.mobileTab || readMobileTabPreference(), { persist: false, forcePanelOpen: false });
+    } else {
+      applyMobileTab(state.mobileTab, { persist: false, forcePanelOpen: false });
+    }
+
     const isTabletViewport = window.matchMedia("(min-width: 761px) and (max-width: 1180px)").matches;
     if (isTabletViewport && refs.leftPanel?.classList.contains("filters-collapsed")) {
       refs.leftPanel.classList.remove("filters-collapsed");
