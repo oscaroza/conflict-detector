@@ -31,6 +31,12 @@ const state = {
   relatedAlertsByAnchorId: new Map(),
   eventSource: null,
   smartDigestEnabled: true,
+  verification: {
+    inProgress: false,
+    activeAlertId: null,
+    currentRequestToken: 0,
+    lastAlertId: null
+  },
   browserNotifications: {
     supported: false,
     enabled: false,
@@ -95,7 +101,15 @@ const refs = {
   typeChart: document.getElementById("typeChart"),
   countryChart: document.getElementById("countryChart"),
   tensionChart: document.getElementById("tensionChart"),
-  mobileTabBar: document.getElementById("mobileTabBar")
+  mobileTabBar: document.getElementById("mobileTabBar"),
+  verifyOverlay: document.getElementById("verifyOverlay"),
+  verifyModalTitle: document.getElementById("verifyModalTitle"),
+  verifyHeadline: document.getElementById("verifyHeadline"),
+  verifyProgressBar: document.getElementById("verifyProgressBar"),
+  verifyProgressText: document.getElementById("verifyProgressText"),
+  verifyResult: document.getElementById("verifyResult"),
+  verifyCloseBtn: document.getElementById("verifyCloseBtn"),
+  verifyRetryBtn: document.getElementById("verifyRetryBtn")
 };
 
 let audioContext = null;
@@ -114,6 +128,7 @@ let activeVoiceMediaSource = null;
 let activeVoiceFxNodes = [];
 let lastVoiceFallbackNoticeAt = 0;
 let mapSignalExpiryTimer = null;
+let verifyProgressTimer = null;
 const BROWSER_NOTIF_STORAGE_KEY = "cd_browser_notifications_enabled";
 const SMART_DIGEST_STORAGE_KEY = "cd_smart_digest_enabled";
 const INTEL_OVERLAY_HIDDEN_STORAGE_KEY = "cd_intel_overlay_hidden";
@@ -1516,6 +1531,11 @@ function getAlertVoiceSeverityLabel(severity) {
 }
 
 function buildAlertVoiceMessage(alert) {
+  const customMessage = String(alert?.voiceOverrideMessage || "").trim();
+  if (customMessage) {
+    return customMessage;
+  }
+
   const severityVoiceLabel = getAlertVoiceSeverityLabel(alert?.severity);
   const severity = normalizeSeverity(alert?.severity);
   const leadIn =
@@ -2877,15 +2897,29 @@ function renderAlertsList() {
       const isRelatedOpen = state.relatedOpenAlertId === alert._id;
       const isRelatedLoading = state.relatedLoadingAlertId === alert._id;
       const relatedAlerts = state.relatedAlertsByAnchorId.get(alert._id) || [];
+      const canVerify = !alert?.confirmed;
+      const verifyBusy = state.verification.inProgress && state.verification.activeAlertId === alert._id;
+      const topTools = [];
+
+      if (hasRelatedSources) {
+        topTools.push(
+          `<button class="btn btn-outline-info related-toggle-btn" data-action="toggle-related" data-id="${alert._id}">${
+            isRelatedOpen ? "Masquer" : "Sources liées"
+          } (${sourceCount})</button>`
+        );
+      }
+
+      if (canVerify) {
+        topTools.push(
+          `<button class="btn btn-outline-warning verify-btn ${verifyBusy ? "is-loading" : ""}" data-action="verify" data-id="${
+            alert._id
+          }" ${verifyBusy ? "disabled" : ""}>${verifyBusy ? "Verification..." : "Verification"}</button>`
+        );
+      }
+
       return `
         <article class="alert-item ${isSelected ? "border-warning" : ""}" data-alert-id="${alert._id}">
-          ${
-            hasRelatedSources
-              ? `<div class="alert-top-tools"><button class="btn btn-outline-info related-toggle-btn" data-action="toggle-related" data-id="${
-                  alert._id
-                }">${isRelatedOpen ? "Masquer" : "Sources liées"} (${sourceCount})</button></div>`
-              : ""
-          }
+          ${topTools.length ? `<div class="alert-top-tools">${topTools.join("")}</div>` : ""}
           <p class="alert-title">${escapeHtml(alert.title)}</p>
           <div class="alert-meta">
             <span class="meta-chip">${escapeHtml(typeLabel(alert.type))}</span>
@@ -3000,6 +3034,236 @@ function renderRelatedAlertsPanel(anchorAlertId, relatedAlerts, options = {}) {
     .join("");
 
   return `<div class="related-alerts-panel">${rows}</div>`;
+}
+
+function clearVerificationProgressTimer() {
+  if (verifyProgressTimer) {
+    clearInterval(verifyProgressTimer);
+    verifyProgressTimer = null;
+  }
+}
+
+function setVerificationProgress(value, message) {
+  if (refs.verifyProgressBar) {
+    const safe = Math.max(0, Math.min(100, Math.round(value)));
+    refs.verifyProgressBar.style.width = `${safe}%`;
+  }
+  if (refs.verifyProgressText && message) {
+    refs.verifyProgressText.textContent = message;
+  }
+}
+
+function openVerificationOverlay(alert) {
+  if (!refs.verifyOverlay) return;
+  refs.verifyOverlay.hidden = false;
+  refs.verifyOverlay.removeAttribute("aria-hidden");
+
+  if (refs.verifyModalTitle) {
+    refs.verifyModalTitle.textContent = "Vérification en cours";
+  }
+  if (refs.verifyHeadline) {
+    refs.verifyHeadline.textContent = String(alert?.title || "Analyse de l'alerte sélectionnée.");
+  }
+  if (refs.verifyResult) {
+    refs.verifyResult.innerHTML = '<p class="verify-result-empty">Croisement des sources en cours...</p>';
+  }
+}
+
+function closeVerificationOverlay() {
+  if (!refs.verifyOverlay) return;
+  refs.verifyOverlay.hidden = true;
+  refs.verifyOverlay.setAttribute("aria-hidden", "true");
+}
+
+function renderVerificationResult(payload, errorMessage = "") {
+  if (!refs.verifyResult) return;
+
+  if (errorMessage) {
+    refs.verifyResult.innerHTML = `
+      <p class="verify-line"><strong>Etat:</strong> <span class="verify-value verify-status-ko">Echec</span></p>
+      <p class="verify-line">${escapeHtml(errorMessage)}</p>
+    `;
+    return;
+  }
+
+  const alert = payload?.alert;
+  if (!alert) {
+    refs.verifyResult.innerHTML = `
+      <p class="verify-line"><strong>Etat:</strong> <span class="verify-value verify-status-ko">Aucune donnée</span></p>
+    `;
+    return;
+  }
+
+  const statusClass = alert.confirmed ? "verify-status-ok" : "verify-status-ko";
+  const statusLabel = confirmationLabel(alert);
+  const confidence = confidenceScoreValue(alert);
+  const sourceCount = sourceCountValue(alert);
+  const inserted = Number(payload?.inserted || 0);
+  const beforeConfidence = Number(payload?.before?.confidenceScore || 0);
+  const beforeSourceCount = Math.max(1, Number(payload?.before?.sourceCount || 1));
+  const beforeStatus = payload?.before?.confirmed ? "CONFIRMED" : "UNCONFIRMED";
+  const verifiedAt = formatDate(payload?.verifiedAt);
+
+  refs.verifyResult.innerHTML = `
+    <p class="verify-line"><strong>Etat:</strong> <span class="verify-value ${statusClass}">${escapeHtml(statusLabel)}</span></p>
+    <p class="verify-line"><strong>Confiance:</strong> <span class="verify-value">${beforeConfidence}% → ${confidence}%</span></p>
+    <p class="verify-line"><strong>Sources croisées:</strong> <span class="verify-value">${beforeSourceCount} → ${sourceCount}</span></p>
+    <p class="verify-line"><strong>Status précédent:</strong> <span class="verify-value">${escapeHtml(beforeStatus)}</span></p>
+    <p class="verify-line"><strong>Nouvelles alertes scannées:</strong> <span class="verify-value">${inserted}</span></p>
+    <p class="verify-line"><strong>Vérifié à:</strong> <span class="verify-value">${escapeHtml(verifiedAt)}</span></p>
+  `;
+}
+
+function buildVerificationVoiceMessage(alert) {
+  const title = String(alert?.title || "événement")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+  return `Verification demandee sur ${title}. Croisement des sources Telegram et medias en cours.`;
+}
+
+function beginVerificationProgressAnimation() {
+  clearVerificationProgressTimer();
+  let progress = 8;
+  setVerificationProgress(progress, "Initialisation de la verification...");
+
+  verifyProgressTimer = setInterval(() => {
+    if (progress >= 86) {
+      return;
+    }
+    progress += progress < 42 ? 6 : progress < 68 ? 3 : 1;
+    const message =
+      progress < 28
+        ? "Demande envoyee au moteur de verification..."
+        : progress < 52
+          ? "Synchronisation des flux Telegram et News..."
+          : progress < 76
+            ? "Recherche des evenements similaires..."
+            : "Recalcul du score de confiance...";
+    setVerificationProgress(progress, message);
+  }, 380);
+}
+
+function mergeUpdatedAlertIntoState(updatedAlert) {
+  if (!updatedAlert?._id) return;
+
+  let foundInAlerts = false;
+  state.alerts = sortAlertsByEventTimeDesc(
+    state.alerts.map((alert) => {
+      if (alert._id === updatedAlert._id) {
+        foundInAlerts = true;
+        return updatedAlert;
+      }
+      return alert;
+    })
+  );
+  if (!foundInAlerts && matchesCurrentFilters(updatedAlert)) {
+    state.alerts = sortAlertsByEventTimeDesc([updatedAlert, ...state.alerts]);
+  }
+
+  let foundInTicker = false;
+  state.tickerAlerts = sortAlertsByEventTimeDesc(
+    state.tickerAlerts.map((alert) => {
+      if (alert._id === updatedAlert._id) {
+        foundInTicker = true;
+        return updatedAlert;
+      }
+      return alert;
+    })
+  ).slice(0, 30);
+  if (!foundInTicker) {
+    state.tickerAlerts = sortAlertsByEventTimeDesc([updatedAlert, ...state.tickerAlerts]).slice(0, 30);
+  }
+
+  if (state.selectedAlertId === updatedAlert._id) {
+    renderAlertDetails(updatedAlert);
+  }
+}
+
+async function verifyAlert(alertId) {
+  if (!alertId) return;
+  const alert = state.alerts.find((item) => item._id === alertId);
+  if (!alert) {
+    showToast("Verification", "Alerte introuvable pour verification.");
+    return;
+  }
+
+  if (state.verification.inProgress) {
+    showToast("Verification", "Une verification est deja en cours.");
+    return;
+  }
+
+  state.verification.inProgress = true;
+  state.verification.activeAlertId = alertId;
+  state.verification.lastAlertId = alertId;
+  state.verification.currentRequestToken += 1;
+  const requestToken = state.verification.currentRequestToken;
+  renderAlertsList();
+
+  openVerificationOverlay(alert);
+  beginVerificationProgressAnimation();
+
+  if (isVoiceEnabled()) {
+    speakAlertMessage({
+      severity: "medium",
+      country: alert?.country || {},
+      voiceOverrideMessage: buildVerificationVoiceMessage(alert)
+    });
+  }
+
+  try {
+    const payload = await api(`/api/alerts/${encodeURIComponent(alertId)}/verify`, { method: "POST" });
+    if (requestToken !== state.verification.currentRequestToken) {
+      return;
+    }
+
+    clearVerificationProgressTimer();
+    setVerificationProgress(92, "Finalisation du rapport de verification...");
+
+    if (Array.isArray(payload?.relatedAlerts) && payload.relatedAlerts.length > 0) {
+      state.relatedAlertsByAnchorId.set(alertId, normalizeRelatedAlerts(payload.relatedAlerts));
+      if (state.relatedOpenAlertId === alertId) {
+        state.relatedLoadingAlertId = null;
+      }
+    }
+
+    if (payload?.alert) {
+      mergeUpdatedAlertIntoState(payload.alert);
+    }
+
+    renderAlertsList();
+    renderMapMarkers();
+    renderTicker();
+    renderKeywordsWidget();
+    renderTensionChart();
+    loadStats().catch(() => {});
+
+    setVerificationProgress(100, "Verification terminee.");
+    renderVerificationResult(payload);
+
+    showToast(
+      "Verification terminee",
+      payload?.alert?.confirmed
+        ? `Alerte confirmee (${sourceCountValue(payload.alert)} sources).`
+        : `Alerte non confirmee (${sourceCountValue(payload.alert)} source).`,
+      payload?.alert?.confirmed ? "high" : "medium",
+      5200
+    );
+  } catch (error) {
+    if (requestToken !== state.verification.currentRequestToken) {
+      return;
+    }
+    clearVerificationProgressTimer();
+    setVerificationProgress(100, "Echec de la verification.");
+    renderVerificationResult(null, error.message || "Erreur inconnue");
+    showToast("Verification", `Echec: ${error.message}`);
+  } finally {
+    if (requestToken === state.verification.currentRequestToken) {
+      state.verification.inProgress = false;
+      state.verification.activeAlertId = null;
+      renderAlertsList();
+    }
+  }
 }
 
 function renderKeywordsWidget() {
@@ -4554,6 +4818,36 @@ function bindEvents() {
     runManualDetection().catch((error) => showToast("Erreur", error.message));
   });
 
+  if (refs.verifyCloseBtn) {
+    refs.verifyCloseBtn.addEventListener("click", () => {
+      closeVerificationOverlay();
+    });
+  }
+
+  if (refs.verifyRetryBtn) {
+    refs.verifyRetryBtn.addEventListener("click", () => {
+      if (!state.verification.lastAlertId) {
+        showToast("Verification", "Aucune alerte precedente a relancer.");
+        return;
+      }
+      verifyAlert(state.verification.lastAlertId).catch((error) => showToast("Erreur", error.message));
+    });
+  }
+
+  if (refs.verifyOverlay) {
+    refs.verifyOverlay.addEventListener("click", (event) => {
+      if (event.target === refs.verifyOverlay) {
+        closeVerificationOverlay();
+      }
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && refs.verifyOverlay && !refs.verifyOverlay.hidden) {
+      closeVerificationOverlay();
+    }
+  });
+
   refs.alertsList.addEventListener("click", (event) => {
     const actionButton = event.target.closest("button[data-action]");
     if (actionButton) {
@@ -4579,6 +4873,11 @@ function bindEvents() {
             applyMobileTab("panel", { persist: true, forcePanelOpen: true });
           }
         }
+        return;
+      }
+
+      if (action === "verify") {
+        verifyAlert(id).catch((error) => showToast("Erreur", error.message));
         return;
       }
 
@@ -4827,6 +5126,31 @@ function connectEventStream() {
     loadAlerts().catch(() => {});
     loadStats().catch(() => {});
     loadTickerAlerts().catch(() => {});
+  });
+
+  state.eventSource.addEventListener("verification-complete", (event) => {
+    try {
+      const payload = JSON.parse(event.data || "{}");
+      const alertId = String(payload?.alertId || "");
+      if (!alertId) return;
+
+      const isLocalActiveVerification =
+        state.verification.inProgress && String(state.verification.activeAlertId || "") === alertId;
+      if (!isLocalActiveVerification) {
+        const sourceCount = Math.max(1, Number(payload?.sourceCount || 1));
+        const confirmed = payload?.confirmed === true;
+        showToast(
+          "Verification distante terminee",
+          confirmed
+            ? `Alerte confirmee (${sourceCount} sources).`
+            : `Alerte non confirmee (${sourceCount} source).`,
+          confirmed ? "high" : "medium",
+          4200
+        );
+      }
+    } catch (error) {
+      // Ignore malformed verification payloads.
+    }
   });
 
   state.eventSource.addEventListener("settings-updated", (event) => {

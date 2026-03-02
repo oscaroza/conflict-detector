@@ -392,6 +392,26 @@
     </div>
 
     <div id="alertFlash" class="alert-flash" aria-live="assertive" aria-atomic="true"></div>
+    <div id="verifyOverlay" class="verify-overlay" hidden>
+      <section class="verify-modal panel-shell" role="dialog" aria-modal="true" aria-labelledby="verifyModalTitle">
+        <div class="verify-modal-head">
+          <p class="verify-kicker">MANUAL CROSS-CHECK</p>
+          <h2 id="verifyModalTitle">Vérification en cours</h2>
+          <button id="verifyCloseBtn" class="btn btn-sm btn-outline-light" type="button">Fermer</button>
+        </div>
+        <p id="verifyHeadline" class="verify-headline">Analyse de l'alerte sélectionnée.</p>
+        <div class="verify-progress-track" aria-hidden="true">
+          <div id="verifyProgressBar" class="verify-progress-bar"></div>
+        </div>
+        <p id="verifyProgressText" class="verify-progress-text">Initialisation...</p>
+        <div id="verifyResult" class="verify-result-panel">
+          <p class="verify-result-empty">En attente de résultat de vérification.</p>
+        </div>
+        <div class="verify-modal-actions">
+          <button id="verifyRetryBtn" class="btn btn-sm btn-warning" type="button">Relancer la vérification</button>
+        </div>
+      </section>
+    </div>
     <div id="toastHost" class="toast-host"></div>
 
     <script

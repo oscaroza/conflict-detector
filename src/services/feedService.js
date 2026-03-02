@@ -1141,6 +1141,86 @@ async function runDetection(reason = "scheduled", options = {}) {
   }
 }
 
+async function verifyAlertById(alertId, options = {}) {
+  const normalizedId = String(alertId || "").trim();
+  if (!normalizedId) {
+    return null;
+  }
+
+  const existingAlert = await Alert.findById(normalizedId);
+  if (!existingAlert) {
+    return null;
+  }
+
+  const before = {
+    confirmed: Boolean(existingAlert.confirmed),
+    confidenceScore: Number.isFinite(Number(existingAlert.confidenceScore))
+      ? Number(existingAlert.confidenceScore)
+      : 0,
+    sourceCount: Math.max(1, Number(existingAlert.sourceCount) || 1),
+    sourceNames: Array.isArray(existingAlert.sourceNames) ? existingAlert.sourceNames.filter(Boolean) : [],
+    eventGroupId: String(existingAlert.eventGroupId || "")
+  };
+
+  let inserted = 0;
+  if (options.forceDetection !== false) {
+    const newlyDetected = await runDetection("verification-manual", { force: true });
+    inserted = Array.isArray(newlyDetected) ? newlyDetected.length : 0;
+  }
+
+  const latestAlert = await Alert.findById(normalizedId);
+  if (!latestAlert) {
+    return null;
+  }
+
+  const verifiedAlert = await enrichConfirmationForAlert(latestAlert);
+  const eventGroupId = String(verifiedAlert?.eventGroupId || "").trim();
+
+  const relatedQuery = {
+    type: "geopolitique"
+  };
+
+  if (eventGroupId) {
+    relatedQuery.eventGroupId = eventGroupId;
+  } else {
+    relatedQuery._id = latestAlert._id;
+  }
+
+  let relatedAlerts = await Alert.find(relatedQuery)
+    .sort({ occurredAt: -1, publishedAt: -1, createdAt: -1, _id: -1 })
+    .limit(20)
+    .lean();
+
+  const hasAnchor = relatedAlerts.some((alert) => String(alert?._id || "") === String(verifiedAlert?._id || ""));
+  if (!hasAnchor && verifiedAlert) {
+    relatedAlerts = [verifiedAlert, ...relatedAlerts].slice(0, 20);
+  }
+
+  const verifiedAt = new Date().toISOString();
+
+  if (verifiedAlert) {
+    streamService.sendEvent("alert-updated", { alert: verifiedAlert });
+  }
+  streamService.sendEvent("verification-complete", {
+    alertId: normalizedId,
+    confirmed: Boolean(verifiedAlert?.confirmed),
+    confidenceScore: Number(verifiedAlert?.confidenceScore || 0),
+    sourceCount: Math.max(1, Number(verifiedAlert?.sourceCount || 1)),
+    inserted,
+    eventGroupId: eventGroupId || normalizedId,
+    verifiedAt
+  });
+
+  return {
+    alert: verifiedAlert,
+    relatedAlerts,
+    before,
+    inserted,
+    eventGroupId: eventGroupId || normalizedId,
+    verifiedAt
+  };
+}
+
 async function scheduleNextCycle() {
   const settings = await Settings.getSingleton();
   const intervalSeconds = Math.max(30, settings.pollIntervalSeconds || 300);
@@ -1183,6 +1263,7 @@ function getRuntimeState() {
 
 module.exports = {
   runDetection,
+  verifyAlertById,
   startScheduler,
   reschedule,
   getRuntimeState

@@ -147,6 +147,19 @@ router.get("/alerts/:id", async (req, res, next) => {
   }
 });
 
+router.post("/alerts/:id/verify", async (req, res, next) => {
+  try {
+    const result = await feedService.verifyAlertById(req.params.id, { forceDetection: true });
+    if (!result || !result.alert) {
+      return res.status(404).json({ error: "Alerte introuvable" });
+    }
+
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.patch("/alerts/:id/read", async (req, res, next) => {
   try {
     const read = req.body.read === true || req.body.read === "true";
