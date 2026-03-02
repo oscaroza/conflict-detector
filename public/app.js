@@ -104,6 +104,8 @@ let globeResizeObserver = null;
 let bootRetryBound = false;
 let activeVoiceAudio = null;
 let activeVoiceBlobUrl = null;
+let activeVoiceMediaSource = null;
+let activeVoiceFxNodes = [];
 let lastVoiceFallbackNoticeAt = 0;
 const BROWSER_NOTIF_STORAGE_KEY = "cd_browser_notifications_enabled";
 const SMART_DIGEST_STORAGE_KEY = "cd_smart_digest_enabled";
@@ -1217,6 +1219,89 @@ function playRadioBurst(context, startTime, frequency, duration, gainLevel, nois
   noiseSource.stop(startTime + duration + 0.01);
 }
 
+function playMilitarySiren(context, startTime, options = {}) {
+  const {
+    duration = 0.9,
+    lowFreq = 520,
+    highFreq = 860,
+    cycles = 2,
+    gainLevel = 0.2
+  } = options;
+
+  const sirenOsc = context.createOscillator();
+  const subOsc = context.createOscillator();
+  const bandPass = context.createBiquadFilter();
+  const shaper = context.createWaveShaper();
+  const sirenGain = context.createGain();
+  const compressor = context.createDynamicsCompressor();
+
+  sirenOsc.type = "sawtooth";
+  subOsc.type = "triangle";
+  bandPass.type = "bandpass";
+  bandPass.frequency.value = 1080;
+  bandPass.Q.value = 1.15;
+  shaper.curve = makeDistortionCurve(74);
+  shaper.oversample = "4x";
+
+  compressor.threshold.value = -22;
+  compressor.knee.value = 8;
+  compressor.ratio.value = 3.5;
+  compressor.attack.value = 0.004;
+  compressor.release.value = 0.12;
+
+  sirenGain.gain.setValueAtTime(0.0001, startTime);
+  sirenGain.gain.exponentialRampToValueAtTime(gainLevel, startTime + 0.02);
+  sirenGain.gain.setValueAtTime(gainLevel, startTime + Math.max(0.04, duration - 0.11));
+  sirenGain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+
+  const safeCycles = Math.max(1, Math.round(cycles));
+  const cycleDuration = duration / safeCycles;
+
+  sirenOsc.frequency.setValueAtTime(lowFreq, startTime);
+  subOsc.frequency.setValueAtTime(lowFreq * 0.52, startTime);
+
+  for (let i = 0; i < safeCycles; i += 1) {
+    const cycleStart = startTime + i * cycleDuration;
+    const midPoint = cycleStart + cycleDuration / 2;
+    const cycleEnd = cycleStart + cycleDuration;
+
+    sirenOsc.frequency.linearRampToValueAtTime(highFreq, midPoint);
+    sirenOsc.frequency.linearRampToValueAtTime(lowFreq, cycleEnd);
+
+    subOsc.frequency.linearRampToValueAtTime(highFreq * 0.52, midPoint);
+    subOsc.frequency.linearRampToValueAtTime(lowFreq * 0.52, cycleEnd);
+  }
+
+  sirenOsc.connect(bandPass);
+  subOsc.connect(bandPass);
+  bandPass.connect(shaper);
+  shaper.connect(compressor);
+  compressor.connect(sirenGain);
+  sirenGain.connect(context.destination);
+
+  sirenOsc.start(startTime);
+  subOsc.start(startTime);
+  sirenOsc.stop(startTime + duration + 0.02);
+  subOsc.stop(startTime + duration + 0.02);
+
+  const crackle = context.createBufferSource();
+  crackle.buffer = createNoiseBuffer(context, duration);
+  const crackleFilter = context.createBiquadFilter();
+  const crackleGain = context.createGain();
+
+  crackleFilter.type = "highpass";
+  crackleFilter.frequency.value = 2200;
+  crackleGain.gain.setValueAtTime(0.0001, startTime);
+  crackleGain.gain.exponentialRampToValueAtTime(gainLevel * 0.18, startTime + 0.03);
+  crackleGain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+
+  crackle.connect(crackleFilter);
+  crackleFilter.connect(crackleGain);
+  crackleGain.connect(context.destination);
+  crackle.start(startTime);
+  crackle.stop(startTime + duration + 0.02);
+}
+
 function playNotificationSound(severity = "medium") {
   ensureAudio();
   if (!audioContext) return;
@@ -1227,40 +1312,77 @@ function playNotificationSound(severity = "medium") {
 
   const profile = {
     critical: {
-      tones: [780, 690, 780],
-      duration: 0.14,
+      preamble: [960, 820],
+      burstDuration: 0.13,
       gap: 0.06,
-      gain: 0.26,
-      noise: 0.08
+      gain: 0.28,
+      noise: 0.085,
+      sirenDuration: 1.08,
+      sirenCycles: 3,
+      sirenLow: 520,
+      sirenHigh: 920
     },
     high: {
-      tones: [730, 820],
-      duration: 0.13,
+      preamble: [900],
+      burstDuration: 0.12,
       gap: 0.06,
-      gain: 0.22,
-      noise: 0.06
+      gain: 0.24,
+      noise: 0.072,
+      sirenDuration: 0.86,
+      sirenCycles: 2,
+      sirenLow: 500,
+      sirenHigh: 830
     },
     medium: {
-      tones: [660, 660],
+      preamble: [860, 760],
+      burstDuration: 0.11,
       duration: 0.11,
       gap: 0.05,
-      gain: 0.17,
-      noise: 0.05
+      gain: 0.2,
+      noise: 0.06,
+      sirenDuration: 0.52,
+      sirenCycles: 1,
+      sirenLow: 460,
+      sirenHigh: 680
     },
     low: {
-      tones: [590],
-      duration: 0.1,
+      preamble: [760],
+      burstDuration: 0.1,
       gap: 0.05,
-      gain: 0.14,
-      noise: 0.04
+      gain: 0.16,
+      noise: 0.045,
+      sirenDuration: 0.32,
+      sirenCycles: 1,
+      sirenLow: 430,
+      sirenHigh: 570
     }
   }[normalizeSeverity(severity)];
 
   const now = audioContext.currentTime + 0.02;
-  profile.tones.forEach((frequency, index) => {
-    const start = now + index * (profile.duration + profile.gap);
-    playRadioBurst(audioContext, start, frequency, profile.duration, profile.gain, profile.noise);
+
+  profile.preamble.forEach((frequency, index) => {
+    const start = now + index * (profile.burstDuration + profile.gap);
+    playRadioBurst(audioContext, start, frequency, profile.burstDuration, profile.gain, profile.noise);
   });
+
+  const sirenStart = now + profile.preamble.length * (profile.burstDuration + profile.gap);
+  playMilitarySiren(audioContext, sirenStart, {
+    duration: profile.sirenDuration,
+    lowFreq: profile.sirenLow,
+    highFreq: profile.sirenHigh,
+    cycles: profile.sirenCycles,
+    gainLevel: profile.gain
+  });
+
+  const postBurstStart = sirenStart + profile.sirenDuration + 0.02;
+  playRadioBurst(
+    audioContext,
+    postBurstStart,
+    profile.sirenHigh + 40,
+    Math.max(0.085, profile.burstDuration - 0.01),
+    profile.gain * 0.88,
+    profile.noise * 0.75
+  );
 }
 
 function getAlertVoiceSeverityLabel(severity) {
@@ -1276,6 +1398,9 @@ function getAlertVoiceSeverityLabel(severity) {
 
 function buildAlertVoiceMessage(alert) {
   const severityVoiceLabel = getAlertVoiceSeverityLabel(alert?.severity);
+  const severity = normalizeSeverity(alert?.severity);
+  const leadIn =
+    severity === "critical" ? "Attention, attention. " : severity === "high" ? "Alerte prioritaire. " : "";
   const country = alert?.country?.name && alert.country.name !== "Inconnu" ? alert.country.name : "zone inconnue";
   const title = String(alert?.title || "")
     .replace(/\s+/g, " ")
@@ -1283,9 +1408,9 @@ function buildAlertVoiceMessage(alert) {
     .slice(0, 105);
 
   if (title) {
-    return `Nouvelle alerte ${severityVoiceLabel} concernant ${country}. ${title}.`;
+    return `${leadIn}Nouvelle alerte ${severityVoiceLabel} concernant ${country}. ${title}.`;
   }
-  return `Nouvelle alerte ${severityVoiceLabel} concernant ${country}.`;
+  return `${leadIn}Nouvelle alerte ${severityVoiceLabel} concernant ${country}.`;
 }
 
 function formatAlertEventTime(alert, options = {}) {
@@ -1366,10 +1491,75 @@ function stopVoicePlayback() {
     activeVoiceAudio = null;
   }
 
+  if (activeVoiceFxNodes.length > 0) {
+    activeVoiceFxNodes.forEach((node) => {
+      try {
+        node.disconnect();
+      } catch (error) {
+        // Ignore node disconnect errors.
+      }
+    });
+    activeVoiceFxNodes = [];
+  }
+
+  if (activeVoiceMediaSource) {
+    try {
+      activeVoiceMediaSource.disconnect();
+    } catch (error) {
+      // Ignore media source disconnect errors.
+    }
+    activeVoiceMediaSource = null;
+  }
+
   if (activeVoiceBlobUrl) {
     URL.revokeObjectURL(activeVoiceBlobUrl);
     activeVoiceBlobUrl = null;
   }
+}
+
+function connectMilitaryVoiceFx(audioElement, severity = "medium") {
+  ensureAudio();
+  if (!audioContext || !audioElement || typeof audioContext.createMediaElementSource !== "function") {
+    return null;
+  }
+
+  const source = audioContext.createMediaElementSource(audioElement);
+  const highPass = audioContext.createBiquadFilter();
+  const bandPass = audioContext.createBiquadFilter();
+  const shaper = audioContext.createWaveShaper();
+  const compressor = audioContext.createDynamicsCompressor();
+  const gain = audioContext.createGain();
+
+  highPass.type = "highpass";
+  highPass.frequency.value = 230;
+
+  bandPass.type = "bandpass";
+  bandPass.frequency.value = 1700;
+  bandPass.Q.value = 1.3;
+
+  shaper.curve = makeDistortionCurve(46);
+  shaper.oversample = "4x";
+
+  compressor.threshold.value = -22;
+  compressor.knee.value = 8;
+  compressor.ratio.value = 3.2;
+  compressor.attack.value = 0.003;
+  compressor.release.value = 0.1;
+
+  const severityKey = normalizeSeverity(severity);
+  gain.gain.value =
+    severityKey === "critical" ? 1.2 : severityKey === "high" ? 1.08 : severityKey === "medium" ? 0.98 : 0.9;
+
+  source.connect(highPass);
+  highPass.connect(bandPass);
+  bandPass.connect(shaper);
+  shaper.connect(compressor);
+  compressor.connect(gain);
+  gain.connect(audioContext.destination);
+
+  activeVoiceMediaSource = source;
+  activeVoiceFxNodes = [highPass, bandPass, shaper, compressor, gain];
+  return true;
 }
 
 function speakAlertMessageLocal(alert) {
@@ -1390,14 +1580,14 @@ function speakAlertMessageLocal(alert) {
 
   const severity = normalizeSeverity(alert?.severity);
   if (severity === "critical" || severity === "high") {
-    utterance.rate = 0.9;
-    utterance.pitch = 0.82;
+    utterance.rate = 0.84;
+    utterance.pitch = 0.64;
   } else if (severity === "medium") {
-    utterance.rate = 0.95;
-    utterance.pitch = 0.92;
+    utterance.rate = 0.9;
+    utterance.pitch = 0.72;
   } else {
-    utterance.rate = 1;
-    utterance.pitch = 1;
+    utterance.rate = 0.95;
+    utterance.pitch = 0.8;
   }
 
   synth.cancel();
@@ -1446,12 +1636,39 @@ async function speakAlertMessageRemote(alert) {
   const objectUrl = URL.createObjectURL(audioBlob);
   audio.src = objectUrl;
   audio.volume = 1;
+  audio.preload = "auto";
+  audio.playbackRate = 0.95;
+  audio.preservesPitch = false;
   activeVoiceAudio = audio;
   activeVoiceBlobUrl = objectUrl;
+
+  try {
+    connectMilitaryVoiceFx(audio, alert?.severity);
+  } catch (error) {
+    console.warn("[voice] effet radio indisponible:", error.message);
+  }
 
   const release = () => {
     if (activeVoiceAudio === audio) {
       activeVoiceAudio = null;
+    }
+    if (activeVoiceMediaSource) {
+      try {
+        activeVoiceMediaSource.disconnect();
+      } catch (error) {
+        // Ignore.
+      }
+      activeVoiceMediaSource = null;
+    }
+    if (activeVoiceFxNodes.length > 0) {
+      activeVoiceFxNodes.forEach((node) => {
+        try {
+          node.disconnect();
+        } catch (error) {
+          // Ignore.
+        }
+      });
+      activeVoiceFxNodes = [];
     }
     if (activeVoiceBlobUrl === objectUrl) {
       URL.revokeObjectURL(objectUrl);
