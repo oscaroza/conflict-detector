@@ -53,6 +53,7 @@ const AlertSchema = new mongoose.Schema(
     },
     actionable: { type: Boolean, default: false },
     read: { type: Boolean, default: false },
+    deletedAt: { type: Date, default: null },
     confirmed: { type: Boolean, default: false },
     confidenceScore: { type: Number, default: 35, min: 0, max: 100 },
     sourceCount: { type: Number, default: 1, min: 1 },
@@ -66,6 +67,7 @@ AlertSchema.index({ location: "2dsphere" });
 AlertSchema.index({ createdAt: -1 });
 AlertSchema.index({ publishedAt: -1, createdAt: -1 });
 AlertSchema.index({ occurredAt: -1, publishedAt: -1, createdAt: -1 });
+AlertSchema.index({ deletedAt: 1, occurredAt: -1, publishedAt: -1, createdAt: -1 });
 AlertSchema.index({ type: 1, severity: 1 });
 AlertSchema.index({ actionable: 1, createdAt: -1 });
 AlertSchema.index({ type: 1, publishedAt: -1, createdAt: -1 });

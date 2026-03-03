@@ -20,6 +20,7 @@ const ACTION_TYPES = CONFLICT_TYPES;
 function buildAlertQuery(queryParams) {
   // Always scope API results to geopolitical conflict alerts.
   const query = {
+    deletedAt: null,
     type: { $in: CONFLICT_TYPES }
   };
 
@@ -97,7 +98,7 @@ router.get("/alerts", async (req, res, next) => {
 router.get("/alerts/:id/related", async (req, res, next) => {
   try {
     const limit = Math.min(30, Math.max(2, Number(req.query.limit) || 12));
-    const anchorAlert = await Alert.findById(req.params.id).lean();
+    const anchorAlert = await Alert.findOne({ _id: req.params.id, deletedAt: null }).lean();
 
     if (!anchorAlert) {
       return res.status(404).json({ error: "Alerte introuvable" });
@@ -119,7 +120,7 @@ router.get("/alerts/:id/related", async (req, res, next) => {
 
 router.get("/alerts/:id", async (req, res, next) => {
   try {
-    const alert = await Alert.findById(req.params.id).lean();
+    const alert = await Alert.findOne({ _id: req.params.id, deletedAt: null }).lean();
     if (!alert) {
       return res.status(404).json({ error: "Alerte introuvable" });
     }
@@ -131,6 +132,11 @@ router.get("/alerts/:id", async (req, res, next) => {
 
 router.post("/alerts/:id/verify", async (req, res, next) => {
   try {
+    const alert = await Alert.findOne({ _id: req.params.id, deletedAt: null }).lean();
+    if (!alert) {
+      return res.status(404).json({ error: "Alerte introuvable" });
+    }
+
     const result = await feedService.verifyAlertById(req.params.id, { forceDetection: true });
     if (!result || !result.alert) {
       return res.status(404).json({ error: "Alerte introuvable" });
@@ -145,8 +151,8 @@ router.post("/alerts/:id/verify", async (req, res, next) => {
 router.patch("/alerts/:id/read", async (req, res, next) => {
   try {
     const read = req.body.read === true || req.body.read === "true";
-    const updated = await Alert.findByIdAndUpdate(
-      req.params.id,
+    const updated = await Alert.findOneAndUpdate(
+      { _id: req.params.id, deletedAt: null },
       { read },
       { new: true, runValidators: true }
     ).lean();
@@ -164,7 +170,11 @@ router.patch("/alerts/:id/read", async (req, res, next) => {
 
 router.delete("/alerts/:id", async (req, res, next) => {
   try {
-    const deleted = await Alert.findByIdAndDelete(req.params.id).lean();
+    const deleted = await Alert.findOneAndUpdate(
+      { _id: req.params.id, deletedAt: null },
+      { deletedAt: new Date() },
+      { new: true }
+    ).lean();
     if (!deleted) {
       return res.status(404).json({ error: "Alerte introuvable" });
     }
@@ -178,7 +188,7 @@ router.delete("/alerts/:id", async (req, res, next) => {
 
 router.get("/countries", async (req, res, next) => {
   try {
-    const countries = await Alert.distinct("country.name", { "country.name": { $ne: "Inconnu" } });
+    const countries = await Alert.distinct("country.name", { deletedAt: null, "country.name": { $ne: "Inconnu" } });
     countries.sort((a, b) => a.localeCompare(b));
     res.json(countries);
   } catch (error) {
@@ -188,7 +198,7 @@ router.get("/countries", async (req, res, next) => {
 
 router.get("/regions", async (req, res, next) => {
   try {
-    const regions = await Alert.distinct("country.region", { "country.region": { $ne: "Global" } });
+    const regions = await Alert.distinct("country.region", { deletedAt: null, "country.region": { $ne: "Global" } });
     regions.sort((a, b) => a.localeCompare(b));
     res.json(regions);
   } catch (error) {
