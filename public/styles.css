@@ -1989,6 +1989,10 @@ canvas {
   color: #6db7ff;
 }
 
+.threat-marker.signal-leader-communication .threat-marker__glyph {
+  color: #8cb4ff;
+}
+
 .threat-marker.signal-nuclear .threat-marker__glyph,
 .threat-marker.signal-nuclear-plant .threat-marker__glyph {
   color: #8eff52;

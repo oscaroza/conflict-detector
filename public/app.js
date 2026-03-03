@@ -2468,6 +2468,53 @@ function detectIncidentSignal(alert) {
     return "chemical";
   }
 
+  const hasLeaderCommunication = includesAny(text, [
+    "press conference",
+    "presidential address",
+    "address to the nation",
+    "national address",
+    "official statement",
+    "spokesperson briefing",
+    "briefing by",
+    "president addresses",
+    "prime minister addresses",
+    "conference de presse",
+    "conférence de presse",
+    "allocution",
+    "discours du president",
+    "discours du président",
+    "communique officiel",
+    "communiqué officiel",
+    "declaration du president",
+    "déclaration du président"
+  ]);
+  const hasDirectAttackSignal = includesAny(text, [
+    "missile",
+    "rocket",
+    "airstrike",
+    "air raid",
+    "drone strike",
+    "bombing",
+    "explosion",
+    "blast",
+    "strike",
+    "hit",
+    "shelling",
+    "artillery",
+    "offensive",
+    "raid",
+    "killed",
+    "dead",
+    "injured",
+    "wounded",
+    "casualt",
+    "death toll"
+  ]);
+
+  if (hasLeaderCommunication && !hasDirectAttackSignal) {
+    return "leader-communication";
+  }
+
   const hasMissileWord = includesAny(text, [
     "missile",
     "rocket",
@@ -2869,6 +2916,11 @@ function getSignalVisual(signal) {
         glyph: "💻",
         className: "signal-cyber"
       },
+      "leader-communication": {
+        label: "Communication presidentielle",
+        glyph: "🗣",
+        className: "signal-leader-communication"
+      },
       infrastructure: {
         label: "Infrastructure critique touchee",
         glyph: "🏭",
@@ -2941,6 +2993,7 @@ function signalColorHex(signal) {
       "air-raid": "#57d8ff",
       naval: "#5fe6d9",
       cyber: "#6db7ff",
+      "leader-communication": "#8cb4ff",
       infrastructure: "#ffc96e",
       fire: "#ff8748",
       "ground-combat": "#ffa0a0",
