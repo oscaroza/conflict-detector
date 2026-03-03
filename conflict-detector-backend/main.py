@@ -279,6 +279,8 @@ async def process_telegram_message(message: Dict[str, Any]) -> None:
             score=inserted["score"],
             ai_analyzed=bool(inserted.get("ai_analyzed")),
             ai_category=inserted.get("ai_category"),
+            ai_model=ai_result.get("ai_model"),
+            ai_error=str(ai_result.get("ai_error") or "")[:220],
         )
     except Exception:
         # Skip silently on malformed message, keep service alive.
@@ -357,6 +359,8 @@ async def process_rss_item(item: Dict[str, Any]) -> None:
             score=inserted["score"],
             ai_analyzed=bool(inserted.get("ai_analyzed")),
             ai_category=inserted.get("ai_category"),
+            ai_model=ai_result.get("ai_model"),
+            ai_error=str(ai_result.get("ai_error") or "")[:220],
         )
     except Exception:
         logger.warning("rss_pipeline_skipped_malformed")

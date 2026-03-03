@@ -24,6 +24,11 @@ def _safe_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
 AI_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192").strip() or "llama3-8b-8192"
 _CACHE_MAX_ITEMS = _safe_int_env("AI_CACHE_MAX_ITEMS", default=2000, minimum=100, maximum=10000)
 _GROQ_TIMEOUT_SECONDS = _safe_int_env("GROQ_TIMEOUT_SECONDS", default=16, minimum=3, maximum=60)
+_MODEL_FALLBACKS = [
+    item.strip()
+    for item in str(os.getenv("GROQ_MODEL_FALLBACKS", "llama-3.1-8b-instant,llama3-8b-8192")).split(",")
+    if item.strip()
+]
 
 _CLIENT_LOCK = threading.Lock()
 _CLIENT: Optional[Groq] = None
@@ -116,6 +121,40 @@ def _extract_json_object(raw: str) -> Dict[str, Any]:
         return {}
 
 
+def _error_text(exc: Exception) -> str:
+    message = str(exc or "").strip()
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
+        if status_code:
+            message = f"HTTP {status_code}: {message}"
+        try:
+            payload = response.json()
+            if payload:
+                message = f"{message} | {json.dumps(payload, ensure_ascii=False)}"
+        except Exception:
+            pass
+    return message
+
+
+def _model_candidates() -> list:
+    ordered = []
+    seen = set()
+    for name in [AI_MODEL, *_MODEL_FALLBACKS]:
+        candidate = str(name or "").strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        ordered.append(candidate)
+    return ordered or [AI_MODEL]
+
+
+def _set_model_in_result(payload: Dict[str, Any], model_name: str) -> Dict[str, Any]:
+    normalized = dict(payload or {})
+    normalized["ai_model"] = str(model_name or AI_MODEL)
+    return normalized
+
+
 def _normalize_result(payload: Dict[str, Any]) -> Dict[str, Any]:
     category = str(payload.get("category") or "autre").strip().lower()
     if category not in _ALLOWED_CATEGORIES:
@@ -205,26 +244,40 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
         "source": safe_source,
     }
 
-    try:
-        completion = client.chat.completions.create(
-            model=AI_MODEL,
-            temperature=0.1,
-            max_tokens=420,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-            ],
-        )
-        content = ""
-        if completion and completion.choices:
-            content = str(completion.choices[0].message.content or "")
-        raw = _extract_json_object(content)
-        if not raw:
-            return _neutral_result("invalid_groq_json")
-        return _normalize_result(raw)
-    except Exception as exc:
-        return _neutral_result(str(exc))
+    last_error = "unknown_error"
+    user_content = json.dumps(user_payload, ensure_ascii=False)
+
+    for model_name in _model_candidates():
+        for force_json_mode in (True, False):
+            request_payload = {
+                "model": model_name,
+                "temperature": 0.1,
+                "max_tokens": 420,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+            }
+            if force_json_mode:
+                request_payload["response_format"] = {"type": "json_object"}
+
+            try:
+                completion = client.chat.completions.create(**request_payload)
+                content = ""
+                if completion and completion.choices:
+                    content = str(completion.choices[0].message.content or "")
+                raw = _extract_json_object(content)
+                if not raw:
+                    last_error = f"invalid_groq_json model={model_name} json_mode={force_json_mode}"
+                    continue
+
+                normalized = _normalize_result(raw)
+                return _set_model_in_result(normalized, model_name)
+            except Exception as exc:
+                last_error = f"model={model_name} json_mode={force_json_mode} error={_error_text(exc)}"
+                continue
+
+    return _set_model_in_result(_neutral_result(last_error), AI_MODEL)
 
 
 async def analyze_event_async(title: str, description: str, source: str) -> Dict[str, Any]:
@@ -239,6 +292,7 @@ def ai_health() -> Dict[str, Any]:
     return {
         "provider": "groq",
         "model": AI_MODEL,
+        "model_fallbacks": _model_candidates(),
         "api_key_configured": key_configured,
         "dependency_available": dependency_available,
         "cache_items": cache_size,
