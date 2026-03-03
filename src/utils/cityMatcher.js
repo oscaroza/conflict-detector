@@ -64,6 +64,27 @@ const CITY_DATA = [
   { name: "Doha", countryName: "Qatar", countryCode: "QA", region: "Asia", lat: 25.2854, lng: 51.531, aliases: ["doha qatar"] },
   { name: "Dubai", countryName: "United Arab Emirates", countryCode: "AE", region: "Asia", lat: 25.2048, lng: 55.2708, aliases: ["dubai uae", "dubaï"] },
   { name: "Abu Dhabi", countryName: "United Arab Emirates", countryCode: "AE", region: "Asia", lat: 24.4539, lng: 54.3773, aliases: ["abou dhabi", "abu dabi", "abou dabi"] },
+  {
+    name: "Duqm",
+    countryName: "Oman",
+    countryCode: "OM",
+    region: "Asia",
+    lat: 19.6711,
+    lng: 57.7058,
+    aliases: ["duqm port", "port of duqm", "commercial port of duqm", "omani commercial port of duqm"]
+  },
+  { name: "Muscat", countryName: "Oman", countryCode: "OM", region: "Asia", lat: 23.588, lng: 58.3829, aliases: ["masqat"] },
+  { name: "Sohar", countryName: "Oman", countryCode: "OM", region: "Asia", lat: 24.3419, lng: 56.7294 },
+  { name: "Salalah", countryName: "Oman", countryCode: "OM", region: "Asia", lat: 17.0194, lng: 54.0897 },
+  {
+    name: "Bandar Abbas",
+    countryName: "Iran",
+    countryCode: "IR",
+    region: "Asia",
+    lat: 27.1832,
+    lng: 56.2666,
+    aliases: ["bandar-e abbas", "bandar abbas port"]
+  },
   { name: "Riyadh", countryName: "Saudi Arabia", countryCode: "SA", region: "Asia", lat: 24.7136, lng: 46.6753 },
   { name: "Jeddah", countryName: "Saudi Arabia", countryCode: "SA", region: "Asia", lat: 21.4858, lng: 39.1925 },
   { name: "Amman", countryName: "Jordan", countryCode: "JO", region: "Asia", lat: 31.9539, lng: 35.9106 },
