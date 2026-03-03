@@ -2468,7 +2468,7 @@ function detectIncidentSignal(alert) {
     return "chemical";
   }
 
-  const hasLeaderCommunication = includesAny(text, [
+  const leaderCommunicationStrictKeywords = [
     "press conference",
     "presidential address",
     "address to the nation",
@@ -2479,15 +2479,54 @@ function detectIncidentSignal(alert) {
     "president addresses",
     "prime minister addresses",
     "conference de presse",
-    "conférence de presse",
     "allocution",
     "discours du president",
-    "discours du président",
     "communique officiel",
-    "communiqué officiel",
     "declaration du president",
-    "déclaration du président"
-  ]);
+    "prise de parole",
+    "point presse",
+    "media briefing"
+  ];
+  const leaderCommunicationSoftKeywords = [
+    "conference",
+    "speak",
+    "speaks",
+    "spoken",
+    "talks",
+    "express",
+    "expresses",
+    "expressed",
+    "speech",
+    "remarks",
+    "statement",
+    "address",
+    "addresses",
+    "announced",
+    "declared",
+    "stated",
+    "parle",
+    "parler",
+    "discours",
+    "intervention"
+  ];
+  const leaderActorKeywords = [
+    "president",
+    "prime minister",
+    "foreign minister",
+    "defense minister",
+    "minister",
+    "leader",
+    "spokesperson",
+    "white house",
+    "kremlin",
+    "elysee",
+    "downing street",
+    "pentagon",
+    "government"
+  ];
+  const hasLeaderCommunication =
+    includesAny(text, leaderCommunicationStrictKeywords) ||
+    (includesAny(text, leaderCommunicationSoftKeywords) && includesAny(text, leaderActorKeywords));
   const hasDirectAttackSignal = includesAny(text, [
     "missile",
     "rocket",
