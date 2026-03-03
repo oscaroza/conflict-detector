@@ -2093,7 +2093,7 @@ canvas {
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 1180px) {
   .app-shell {
     padding: 0.28rem;
     padding-bottom: 4rem;
@@ -2394,6 +2394,104 @@ canvas {
     right: 0.45rem;
     top: 0.45rem;
     width: calc(100vw - 0.9rem);
+  }
+}
+
+@media (min-width: 761px) and (max-width: 1180px) {
+  .app-shell {
+    padding: 0.4rem;
+    padding-bottom: 4.6rem;
+    gap: 0.42rem;
+  }
+
+  .workspace-grid {
+    min-height: calc(100dvh - 292px);
+  }
+
+  .left-column,
+  .center-column {
+    height: calc(100dvh - 292px);
+  }
+
+  body.mobile-tab-alerts .left-panel {
+    height: calc(100dvh - 292px);
+    max-height: calc(100dvh - 292px);
+  }
+
+  body.mobile-tab-map .map-panel,
+  body.mobile-tab-panel .map-panel {
+    height: calc(100dvh - 292px);
+  }
+
+  body.mobile-tab-map #map,
+  body.mobile-tab-map #globe {
+    min-height: calc(100dvh - 292px);
+  }
+
+  .command-bar > div {
+    padding: 0.54rem 0.62rem;
+  }
+
+  .brand-mini {
+    display: block;
+  }
+
+  h1 {
+    font-size: 1.08rem;
+  }
+
+  .headline-stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .headline-card {
+    min-height: 78px;
+  }
+
+  .headline-card strong {
+    font-size: 1.18rem;
+  }
+
+  .headline-card.defcon strong,
+  .headline-card.pizza strong {
+    font-size: 0.92rem;
+  }
+
+  .defcon-label {
+    font-size: 0.54rem;
+  }
+
+  .action-block .btn {
+    min-width: 112px;
+  }
+
+  .site-settings-popover {
+    width: min(420px, calc(100vw - 1.2rem));
+  }
+
+  .mobile-tab-btn {
+    font-size: 0.74rem;
+    padding: 0.8rem 0.4rem;
+  }
+
+  .ticker-track {
+    font-size: 0.8rem;
+  }
+
+  .quick-row {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .filters-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .alert-item {
+    padding: 0.5rem;
+  }
+
+  .meta-chip {
+    font-size: 0.62rem;
   }
 }
 

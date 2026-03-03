@@ -2068,7 +2068,7 @@ function bindFiltersSidebarToggle() {
 }
 
 function isMobileViewport() {
-  return window.matchMedia("(max-width: 760px)").matches;
+  return window.matchMedia("(max-width: 1180px)").matches;
 }
 
 function normalizeMobileTab(value) {
@@ -5005,12 +5005,6 @@ function bindEvents() {
       applyMobileTab(state.mobileTab || readMobileTabPreference(), { persist: false, forcePanelOpen: false });
     } else {
       applyMobileTab(state.mobileTab, { persist: false, forcePanelOpen: false });
-    }
-
-    const isTabletViewport = window.matchMedia("(min-width: 761px) and (max-width: 1180px)").matches;
-    if (isTabletViewport && refs.leftPanel?.classList.contains("filters-collapsed")) {
-      refs.leftPanel.classList.remove("filters-collapsed");
-      updateFiltersSidebarToggleButton();
     }
 
     if (layoutResizeTimer) {
