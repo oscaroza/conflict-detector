@@ -312,6 +312,13 @@ const CONFIRM_WINDOW_HOURS = 18;
 const MAX_CONFIRM_SCAN = 140;
 const MIN_EVENT_SIMILARITY = 0.32;
 const MIN_EVENT_SIMILARITY_WITH_CASUALTY = 0.22;
+const MIN_TITLE_SIMILARITY = 0.58;
+const MIN_TITLE_SIMILARITY_WITH_CASUALTY = 0.48;
+const MIN_TITLE_SHARED_TOKENS = 3;
+const DUPLICATE_SCAN_HOURS = 8;
+const MAX_DUPLICATE_SCAN = 120;
+const DUPLICATE_TITLE_SIMILARITY = 0.82;
+const DUPLICATE_TOKEN_SIMILARITY = 0.72;
 const DEFAULT_MAX_EVENT_AGE_MINUTES_INSIGHT = 180;
 const DEFAULT_MAX_EVENT_AGE_MINUTES_ACTION = 30;
 
@@ -478,6 +485,42 @@ function toTokenSet(text) {
   return new Set(tokens);
 }
 
+function normalizeComparableTitle(title) {
+  const raw = String(title || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+  if (!raw) {
+    return "";
+  }
+
+  const parts = raw
+    .split(" - ")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  // Remove short publisher-like tail segment ("... - Reuters", "... - CNN").
+  if (parts.length >= 2) {
+    const tail = lower(parts[parts.length - 1]);
+    const tailWords = tail.split(/\s+/).filter(Boolean);
+    const looksLikePublisherTail =
+      tail.length <= 44 &&
+      tailWords.length <= 6 &&
+      !/(missile|strike|attack|war|drone|troop|killed|dead|wounded|explosion|raid|base|iran|israel|ukraine|russia)/.test(
+        tail
+      );
+
+    if (looksLikePublisherTail) {
+      parts.pop();
+    }
+  }
+
+  return lower(parts.join(" - "))
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function jaccardSimilarity(setA, setB) {
   if (!setA || !setB || setA.size === 0 || setB.size === 0) {
     return 0;
@@ -495,6 +538,34 @@ function jaccardSimilarity(setA, setB) {
     return 0;
   }
   return intersection / union;
+}
+
+function tokenIntersectionCount(setA, setB) {
+  if (!setA || !setB || setA.size === 0 || setB.size === 0) {
+    return 0;
+  }
+  let intersection = 0;
+  for (const token of setA) {
+    if (setB.has(token)) {
+      intersection += 1;
+    }
+  }
+  return intersection;
+}
+
+function buildEventSignature(alertLike) {
+  const title = String(alertLike?.title || "");
+  const summary = String(alertLike?.summary || "");
+  const normalizedTitle = normalizeComparableTitle(title);
+  const fullText = `${title} ${summary}`.trim();
+
+  return {
+    incidentClass: classifyIncidentClass(fullText),
+    tokens: toTokenSet(`${normalizedTitle} ${summary}`.trim()),
+    titleTokens: toTokenSet(normalizedTitle),
+    normalizedTitle,
+    casualtyCount: extractCasualtyCount(fullText)
+  };
 }
 
 function extractCasualtyCount(text) {
@@ -597,6 +668,22 @@ function computeConfidenceScore(clusterAlerts, sourceFamilyCount) {
 }
 
 function areLikelySameEvent(baseEvent, candidateEvent) {
+  const hasExactTitleMatch =
+    Boolean(baseEvent?.normalizedTitle) &&
+    Boolean(candidateEvent?.normalizedTitle) &&
+    baseEvent.normalizedTitle === candidateEvent.normalizedTitle;
+  if (hasExactTitleMatch) {
+    return true;
+  }
+
+  const titleSimilarity = jaccardSimilarity(baseEvent.titleTokens, candidateEvent.titleTokens);
+  const titleSharedTokens = tokenIntersectionCount(baseEvent.titleTokens, candidateEvent.titleTokens);
+  const hasStrongTitleMatch = titleSimilarity >= MIN_TITLE_SIMILARITY && titleSharedTokens >= MIN_TITLE_SHARED_TOKENS;
+
+  if (hasStrongTitleMatch && isIncidentClassCompatible(baseEvent.incidentClass, candidateEvent.incidentClass)) {
+    return true;
+  }
+
   if (!isIncidentClassCompatible(baseEvent.incidentClass, candidateEvent.incidentClass)) {
     return false;
   }
@@ -611,18 +698,74 @@ function areLikelySameEvent(baseEvent, candidateEvent) {
     Number.isFinite(candidateEvent.casualtyCount) &&
     baseEvent.casualtyCount === candidateEvent.casualtyCount;
 
-  return hasSameCasualtyCount && similarity >= MIN_EVENT_SIMILARITY_WITH_CASUALTY;
+  return (
+    hasSameCasualtyCount &&
+    (similarity >= MIN_EVENT_SIMILARITY_WITH_CASUALTY ||
+      (titleSimilarity >= MIN_TITLE_SIMILARITY_WITH_CASUALTY && titleSharedTokens >= 2))
+  );
+}
+
+function isLikelyDuplicateFromSameSource(incomingPayload, existingAlert) {
+  const incomingFamily = normalizeSourceFamily(incomingPayload?.sourceName || "");
+  const existingFamily = normalizeSourceFamily(existingAlert?.sourceName || "");
+  if (
+    !incomingFamily ||
+    !existingFamily ||
+    incomingFamily === "unknown" ||
+    existingFamily === "unknown" ||
+    incomingFamily !== existingFamily
+  ) {
+    return false;
+  }
+
+  const incomingEvent = buildEventSignature(incomingPayload);
+  const existingEvent = buildEventSignature(existingAlert);
+
+  if (incomingEvent.normalizedTitle && incomingEvent.normalizedTitle === existingEvent.normalizedTitle) {
+    return true;
+  }
+
+  const titleSimilarity = jaccardSimilarity(incomingEvent.titleTokens, existingEvent.titleTokens);
+  const titleSharedTokens = tokenIntersectionCount(incomingEvent.titleTokens, existingEvent.titleTokens);
+  if (titleSimilarity >= DUPLICATE_TITLE_SIMILARITY && titleSharedTokens >= MIN_TITLE_SHARED_TOKENS) {
+    return true;
+  }
+
+  const bodySimilarity = jaccardSimilarity(incomingEvent.tokens, existingEvent.tokens);
+  return titleSimilarity >= 0.68 && bodySimilarity >= DUPLICATE_TOKEN_SIMILARITY;
+}
+
+async function findRecentDuplicateAlert(payload) {
+  const referenceDate =
+    payload?.publishedAt instanceof Date && !Number.isNaN(payload.publishedAt.getTime()) ? payload.publishedAt : new Date();
+  const sinceDate = new Date(referenceDate.getTime() - DUPLICATE_SCAN_HOURS * 60 * 60 * 1000);
+
+  const countryQuery =
+    payload?.country?.code && payload.country.code !== "XX"
+      ? { "country.code": payload.country.code }
+      : { "country.name": payload?.country?.name || "Inconnu" };
+
+  const candidates = await Alert.find({
+    type: "geopolitique",
+    ...countryQuery,
+    $or: [{ publishedAt: { $gte: sinceDate } }, { createdAt: { $gte: sinceDate } }]
+  })
+    .sort({ publishedAt: -1, createdAt: -1, _id: -1 })
+    .limit(MAX_DUPLICATE_SCAN)
+    .lean();
+
+  for (const candidate of candidates) {
+    if (isLikelyDuplicateFromSameSource(payload, candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 async function enrichConfirmationForAlert(alertDoc) {
   const baseAlert = alertDoc.toObject ? alertDoc.toObject() : alertDoc;
-  const baseText = `${baseAlert?.title || ""} ${baseAlert?.summary || ""}`;
-
-  const baseEvent = {
-    incidentClass: classifyIncidentClass(baseText),
-    tokens: toTokenSet(baseText),
-    casualtyCount: extractCasualtyCount(baseText)
-  };
+  const baseEvent = buildEventSignature(baseAlert);
 
   const referenceDate = new Date(baseAlert?.publishedAt || baseAlert?.createdAt || new Date());
   const sinceDate = new Date(referenceDate.getTime() - CONFIRM_WINDOW_HOURS * 60 * 60 * 1000);
@@ -645,12 +788,7 @@ async function enrichConfirmationForAlert(alertDoc) {
   const cluster = [baseAlert];
 
   for (const candidate of candidates) {
-    const candidateText = `${candidate?.title || ""} ${candidate?.summary || ""}`;
-    const candidateEvent = {
-      incidentClass: classifyIncidentClass(candidateText),
-      tokens: toTokenSet(candidateText),
-      casualtyCount: extractCasualtyCount(candidateText)
-    };
+    const candidateEvent = buildEventSignature(candidate);
 
     if (areLikelySameEvent(baseEvent, candidateEvent)) {
       cluster.push(candidate);
@@ -688,6 +826,72 @@ async function enrichConfirmationForAlert(alertDoc) {
 
   const updatedBase = updatedAlerts.find((alert) => String(alert._id) === String(baseAlert._id));
   return updatedBase || { ...baseAlert, ...updatePayload };
+}
+
+async function findRelatedAlertsForAnchor(anchorAlert, options = {}) {
+  if (!anchorAlert?._id) {
+    return [];
+  }
+
+  const limit = Math.min(30, Math.max(2, Number(options?.limit) || 12));
+  const anchorId = String(anchorAlert._id);
+  const eventGroupId = String(anchorAlert.eventGroupId || "").trim();
+  const anchorEvent = buildEventSignature(anchorAlert);
+
+  const related = [];
+  const seen = new Set();
+
+  const pushUnique = (alert) => {
+    const id = String(alert?._id || "");
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    related.push(alert);
+  };
+
+  if (eventGroupId) {
+    const grouped = await Alert.find({
+      type: "geopolitique",
+      eventGroupId
+    })
+      .sort({ occurredAt: -1, publishedAt: -1, createdAt: -1, _id: -1 })
+      .limit(limit)
+      .lean();
+    grouped.forEach(pushUnique);
+  }
+
+  if (related.length < limit) {
+    const referenceDate = new Date(anchorAlert?.publishedAt || anchorAlert?.createdAt || new Date());
+    const sinceDate = new Date(referenceDate.getTime() - CONFIRM_WINDOW_HOURS * 60 * 60 * 1000);
+    const countryQuery =
+      anchorAlert?.country?.code && anchorAlert.country.code !== "XX"
+        ? { "country.code": anchorAlert.country.code }
+        : { "country.name": anchorAlert?.country?.name || "Inconnu" };
+
+    const candidates = await Alert.find({
+      _id: { $ne: anchorAlert._id },
+      type: "geopolitique",
+      ...countryQuery,
+      publishedAt: { $gte: sinceDate }
+    })
+      .sort({ occurredAt: -1, publishedAt: -1, createdAt: -1, _id: -1 })
+      .limit(MAX_CONFIRM_SCAN)
+      .lean();
+
+    for (const candidate of candidates) {
+      if (related.length >= limit) break;
+      if (seen.has(String(candidate?._id || ""))) continue;
+      if (areLikelySameEvent(anchorEvent, buildEventSignature(candidate))) {
+        pushUnique(candidate);
+      }
+    }
+  }
+
+  const hasAnchor = seen.has(anchorId);
+  if (!hasAnchor) {
+    related.unshift(anchorAlert);
+  }
+
+  return related.slice(0, limit);
 }
 
 function classifyType(text, fallbackType) {
@@ -996,6 +1200,11 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
 
 async function persistAlertPayload(payload, reason, newAlerts) {
   try {
+    const duplicate = await findRecentDuplicateAlert(payload);
+    if (duplicate) {
+      return;
+    }
+
     const created = await Alert.create(payload);
     const enrichedAlert = await enrichConfirmationForAlert(created);
     newAlerts.push(enrichedAlert);
@@ -1187,26 +1396,7 @@ async function verifyAlertById(alertId, options = {}) {
 
   const verifiedAlert = await enrichConfirmationForAlert(latestAlert);
   const eventGroupId = String(verifiedAlert?.eventGroupId || "").trim();
-
-  const relatedQuery = {
-    type: "geopolitique"
-  };
-
-  if (eventGroupId) {
-    relatedQuery.eventGroupId = eventGroupId;
-  } else {
-    relatedQuery._id = latestAlert._id;
-  }
-
-  let relatedAlerts = await Alert.find(relatedQuery)
-    .sort({ occurredAt: -1, publishedAt: -1, createdAt: -1, _id: -1 })
-    .limit(20)
-    .lean();
-
-  const hasAnchor = relatedAlerts.some((alert) => String(alert?._id || "") === String(verifiedAlert?._id || ""));
-  if (!hasAnchor && verifiedAlert) {
-    relatedAlerts = [verifiedAlert, ...relatedAlerts].slice(0, 20);
-  }
+  const relatedAlerts = await findRelatedAlertsForAnchor(verifiedAlert || latestAlert, { limit: 20 });
 
   const verifiedAt = new Date().toISOString();
 
@@ -1276,6 +1466,7 @@ function getRuntimeState() {
 module.exports = {
   runDetection,
   verifyAlertById,
+  findRelatedAlertsForAnchor,
   startScheduler,
   reschedule,
   getRuntimeState

@@ -104,25 +104,7 @@ router.get("/alerts/:id/related", async (req, res, next) => {
     }
 
     const eventGroupId = String(anchorAlert.eventGroupId || "").trim();
-    const relatedQuery = {
-      type: { $in: CONFLICT_TYPES }
-    };
-
-    if (eventGroupId) {
-      relatedQuery.eventGroupId = eventGroupId;
-    } else {
-      relatedQuery._id = anchorAlert._id;
-    }
-
-    let relatedAlerts = await Alert.find(relatedQuery)
-      .sort({ occurredAt: -1, publishedAt: -1, createdAt: -1, _id: -1 })
-      .limit(limit)
-      .lean();
-
-    const hasAnchor = relatedAlerts.some((alert) => String(alert._id) === String(anchorAlert._id));
-    if (!hasAnchor) {
-      relatedAlerts = [anchorAlert, ...relatedAlerts].slice(0, limit);
-    }
+    const relatedAlerts = await feedService.findRelatedAlertsForAnchor(anchorAlert, { limit });
 
     return res.json({
       anchorId: String(anchorAlert._id),
