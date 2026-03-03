@@ -1,11 +1,13 @@
 # Conflict Detector Backend (Python + Telegram OSINT)
 
-Backend 100% gratuit/open source pour ingestion terrain en temps réel depuis Telegram, filtrage par mots-clés, stockage SQLite, API REST + WebSocket.
+Backend 100% gratuit/open source pour ingestion terrain en temps réel depuis Telegram + RSS, filtrage par mots-clés, enrichissement IA (Groq), stockage SQLite, API REST + WebSocket.
 
 ## Stack
 
 - Python 3.11+
 - Telethon (listener Telegram)
+- RSS (feedparser)
+- Groq (Llama3 8B) pour l'analyse IA structurée
 - FastAPI + Uvicorn (API + WebSocket)
 - SQLite + aiosqlite
 
@@ -14,6 +16,8 @@ Backend 100% gratuit/open source pour ingestion terrain en temps réel depuis Te
 ```
 conflict-detector-backend/
 ├── main.py
+├── ai_analyzer.py
+├── rss_scraper.py
 ├── telegram_scraper.py
 ├── keyword_filter.py
 ├── location_resolver.py
@@ -44,11 +48,20 @@ TELEGRAM_BACKFILL_LIMIT=180
 TELEGRAM_ENABLE_POLLING=1
 TELEGRAM_POLL_SECONDS=30
 TELEGRAM_POLL_LIMIT=6
+RSS_ENABLE=1
+RSS_POLL_SECONDS=120
+RSS_ITEMS_PER_FEED=20
+RSS_MAX_AGE_HOURS=48
+RSS_FEED_URLS=
 ALERT_SCORE_THRESHOLD=8
 DUPLICATE_WINDOW_SECONDS=45
 SIMILARITY_THRESHOLD=0.90
 MAX_ALERTS=500
 TELEGRAM_CHANNELS=@intelslava,@OSINTdefender,@MiddleEastSpectator
+GROQ_API_KEY=
+GROQ_MODEL=llama3-8b-8192
+GROQ_TIMEOUT_SECONDS=16
+AI_CACHE_MAX_ITEMS=2000
 ```
 
 ## 2) Premier lancement (auth Telegram)
@@ -84,6 +97,7 @@ PY
 - filtres combinables:
   - `severity=critique|haute|moyen|faible`
   - `country=Iran`
+  - `source_type=telegram|rss`
 
 Exemple:
 
@@ -99,6 +113,14 @@ Retourne:
 - compteurs par sévérité
 - top pays actifs
 - top canaux
+
+### GET `/api/ai/health`
+
+Vérifie l'état du module IA:
+
+- clé API configurée ou non
+- modèle actif
+- taille du cache IA mémoire
 
 ### GET `/api/countries`
 
@@ -158,6 +180,15 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
    - `SIMILARITY_THRESHOLD` (optionnel, ex. `0.90`)
    - `MAX_ALERTS` (optionnel, ex. `500`)
    - `TELEGRAM_CHANNELS` (optionnel, liste CSV de canaux a ajouter)
+   - `RSS_ENABLE` (`1` par defaut)
+   - `RSS_POLL_SECONDS` (optionnel, ex. `120`)
+   - `RSS_ITEMS_PER_FEED` (optionnel, ex. `20`)
+   - `RSS_MAX_AGE_HOURS` (optionnel, ex. `48`)
+   - `RSS_FEED_URLS` (optionnel, CSV URL ou `Nom|URL`)
+   - `GROQ_API_KEY` (requis pour IA)
+   - `GROQ_MODEL` (defaut `llama3-8b-8192`)
+   - `GROQ_TIMEOUT_SECONDS` (optionnel, ex. `16`)
+   - `AI_CACHE_MAX_ITEMS` (optionnel, ex. `2000`)
 
 ## 5) Comportement du pipeline
 
@@ -177,6 +208,10 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
   - fenetre `DUPLICATE_WINDOW_SECONDS` (defaut `45s`)
 - Stockage:
   - conservation des 500 dernières alertes
+- Enrichissement IA (si `GROQ_API_KEY` configuré):
+  - catégorie, sous-catégories, sévérité affinée, score de sévérité, acteurs, pays, résumé factuel, fiabilité, flag conflit
+  - fallback neutre si quota/timeouts/erreurs (`ai_analyzed=false`)
+  - cache par source (`source_ref`) + cache mémoire pour éviter les ré-analyses
 - Logs structurés:
   - `alert_accepted`, `alert_rejected`, `alert_skipped_duplicate`
 

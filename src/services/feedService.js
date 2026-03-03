@@ -1072,7 +1072,7 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
     return telegramSyncCache;
   }
 
-  const endpoint = `${backendBaseUrl}/api/alerts?limit=${resolveTelegramFetchLimit()}`;
+  const endpoint = `${backendBaseUrl}/api/alerts?source_type=telegram&limit=${resolveTelegramFetchLimit()}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TELEGRAM_SYNC_TIMEOUT_MS);
 
@@ -1100,6 +1100,27 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
     const telegramAlerts = Array.isArray(payload?.alerts) ? payload.alerts : [];
 
     const mapped = [];
+    const normalizeAiList = (value) => {
+      if (Array.isArray(value)) {
+        return value.map((item) => String(item || "").trim()).filter(Boolean);
+      }
+      const raw = String(value || "").trim();
+      if (!raw) {
+        return [];
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return parsed.map((item) => String(item || "").trim()).filter(Boolean);
+        }
+      } catch (_) {
+        // Ignore JSON parse errors and fallback to CSV split.
+      }
+      return raw
+        .split(/[,\n;]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    };
 
     for (const rawAlert of telegramAlerts) {
       const title = String(rawAlert?.title || "").trim();
@@ -1172,6 +1193,22 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
         confidenceScore: clampConfidence(rawAlert?.confidence),
         sourceCount: 1,
         sourceNames: [sourceName],
+        aiAnalyzed: Boolean(rawAlert?.ai_analyzed ?? rawAlert?.aiAnalyzed),
+        aiCategory: String(rawAlert?.ai_category || rawAlert?.aiCategory || "").trim().toLowerCase(),
+        aiSubcategories: normalizeAiList(rawAlert?.ai_subcategories ?? rawAlert?.aiSubcategories),
+        aiSeverity: String(rawAlert?.ai_severity || rawAlert?.aiSeverity || "").trim().toLowerCase(),
+        aiSeverityScore: Math.max(
+          0,
+          Math.min(1, Number.parseFloat(rawAlert?.ai_severity_score ?? rawAlert?.aiSeverityScore) || 0)
+        ),
+        aiCountries: normalizeAiList(rawAlert?.ai_countries ?? rawAlert?.aiCountries),
+        aiActors: normalizeAiList(rawAlert?.ai_actors ?? rawAlert?.aiActors),
+        aiSummary: String(rawAlert?.ai_summary || rawAlert?.aiSummary || "").trim(),
+        aiReliabilityScore: Math.max(
+          0,
+          Math.min(1, Number.parseFloat(rawAlert?.ai_reliability_score ?? rawAlert?.aiReliabilityScore) || 0)
+        ),
+        aiIsConflictRelated: Boolean(rawAlert?.ai_is_conflict_related ?? rawAlert?.aiIsConflictRelated),
         country: {
           name: countryInfo.name,
           code: countryInfo.code,

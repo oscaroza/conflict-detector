@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, List, Optional, Set
@@ -10,9 +11,16 @@ from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from ai_analyzer import (
+    ai_health as get_ai_health,
+    analyze_event_async,
+    get_cached_analysis,
+    set_cached_analysis,
+)
 from database import (
     DUPLICATE_WINDOW_SECONDS,
     SIMILARITY_THRESHOLD,
+    get_alert_by_source_ref,
     get_alerts,
     get_alerts_since,
     init_db,
@@ -21,6 +29,7 @@ from database import (
 from defcon import build_activity_snapshot, calculate_defcon
 from keyword_filter import ALERT_SCORE_THRESHOLD, analyze_message
 from location_resolver import resolve_location
+from rss_scraper import RSSScraper
 from telegram_scraper import TelegramScraper
 
 logger = logging.getLogger("conflict_detector")
@@ -118,12 +127,96 @@ def _build_title(text: str) -> str:
     return title or "Alerte terrain"
 
 
+def _normalize_channel_handle(source_channel: str) -> str:
+    raw = str(source_channel or "").strip().lstrip("@")
+    return re.sub(r"[^a-zA-Z0-9_]", "", raw)
+
+
+def _build_telegram_source_url(source_channel: str, message_id: Any) -> str:
+    channel_handle = _normalize_channel_handle(source_channel)
+    msg = str(message_id or "").strip()
+    if channel_handle and msg.isdigit():
+        return f"https://t.me/{channel_handle}/{msg}"
+    if channel_handle:
+        return f"https://t.me/{channel_handle}"
+    return ""
+
+
+def _build_source_ref(prefix: str, source: str, item_id: Any) -> str:
+    source_part = str(source or "").strip().lower()
+    id_part = str(item_id or "").strip().lower()
+    if source_part and id_part:
+        return f"{prefix}:{source_part}:{id_part}"
+    if id_part:
+        return f"{prefix}:{id_part}"
+    if source_part:
+        return f"{prefix}:{source_part}"
+    return ""
+
+
+def _map_ai_severity_to_pipeline(value: str, fallback: str) -> str:
+    normalized = str(value or "").strip().lower()
+    return {
+        "critique": "critique",
+        "critical": "critique",
+        "haute": "haute",
+        "high": "haute",
+        "moyenne": "moyen",
+        "moyen": "moyen",
+        "medium": "moyen",
+        "faible": "faible",
+        "low": "faible",
+    }.get(normalized, fallback)
+
+
+async def _analyze_with_cache(cache_key: str, title: str, description: str, source: str) -> Dict[str, Any]:
+    cached = get_cached_analysis(cache_key)
+    if cached is not None:
+        return cached
+
+    analyzed = await analyze_event_async(title=title, description=description, source=source)
+    set_cached_analysis(cache_key, analyzed)
+    return analyzed
+
+
+def _apply_ai_enrichment(payload: Dict[str, Any], ai_result: Dict[str, Any]) -> Dict[str, Any]:
+    enriched = dict(payload)
+    ai = dict(ai_result or {})
+
+    enriched["ai_analyzed"] = bool(ai.get("ai_analyzed"))
+    enriched["ai_category"] = str(ai.get("category") or "autre")
+    enriched["ai_subcategories"] = list(ai.get("subcategories") or [])
+    enriched["ai_severity"] = str(ai.get("severity") or "moyenne")
+    enriched["ai_severity_score"] = float(ai.get("severity_score") or 0.0)
+    enriched["ai_countries"] = list(ai.get("countries") or [])
+    enriched["ai_actors"] = list(ai.get("actors") or [])
+    enriched["ai_summary"] = str(ai.get("summary") or "").strip()
+    enriched["ai_reliability_score"] = float(ai.get("reliability_score") or 0.0)
+    enriched["ai_is_conflict_related"] = bool(ai.get("is_conflict_related"))
+
+    if enriched["ai_analyzed"]:
+        refined_severity = _map_ai_severity_to_pipeline(enriched["ai_severity"], enriched.get("severity", "moyen"))
+        enriched["severity"] = refined_severity
+        if enriched["ai_summary"] and len(enriched["ai_summary"]) >= 16:
+            enriched["summary"] = enriched["ai_summary"]
+        confidence = int(enriched.get("confidence") or 0)
+        reliability = int(round(max(0.0, min(1.0, enriched["ai_reliability_score"])) * 100))
+        enriched["confidence"] = max(0, min(100, int(round(confidence * 0.65 + reliability * 0.35))))
+
+    return enriched
+
+
 async def process_telegram_message(message: Dict[str, Any]) -> None:
     try:
         text = str(message.get("text") or "").strip()
         source_channel = str(message.get("source_channel") or "unknown")
+        source_ref = _build_source_ref("telegram", source_channel, message.get("id"))
         if not text:
             return
+        if source_ref:
+            existing = await get_alert_by_source_ref(source_ref)
+            if existing is not None:
+                return
 
         analysis = analyze_message(text, source_channel)
         if not analysis.accepted:
@@ -136,9 +229,17 @@ async def process_telegram_message(message: Dict[str, Any]) -> None:
             return
 
         location = resolve_location(text)
+        title = _build_title(text)
+        ai_result = await _analyze_with_cache(
+            cache_key=source_ref or f"telegram:{source_channel}:{message.get('timestamp')}",
+            title=title,
+            description=text,
+            source=source_channel,
+        )
         alert_payload = {
             "timestamp": message.get("timestamp"),
-            "title": _build_title(text),
+            "title": title,
+            "summary": text,
             "type": "geopolitique",
             "country": location["country"],
             "region": location["region"],
@@ -147,9 +248,13 @@ async def process_telegram_message(message: Dict[str, Any]) -> None:
             "severity": analysis.severity,
             "confidence": analysis.confidence,
             "source_channel": source_channel,
+            "source_type": "telegram",
+            "source_ref": source_ref,
+            "source_url": _build_telegram_source_url(source_channel, message.get("id")),
             "original_text": text,
             "score": analysis.score,
         }
+        alert_payload = _apply_ai_enrichment(alert_payload, ai_result)
 
         inserted = await insert_alert(alert_payload)
         if inserted is None:
@@ -172,15 +277,99 @@ async def process_telegram_message(message: Dict[str, Any]) -> None:
             confidence=inserted["confidence"],
             country=inserted["country"],
             score=inserted["score"],
+            ai_analyzed=bool(inserted.get("ai_analyzed")),
+            ai_category=inserted.get("ai_category"),
         )
     except Exception:
         # Skip silently on malformed message, keep service alive.
         logger.warning("message_pipeline_skipped_malformed")
 
 
+async def process_rss_item(item: Dict[str, Any]) -> None:
+    try:
+        title = str(item.get("title") or "").strip()[:220]
+        description = str(item.get("description") or "").strip()
+        source_name = str(item.get("source_name") or "RSS").strip() or "RSS"
+        source_ref = str(item.get("source_ref") or "").strip()
+        source_url = str(item.get("source_url") or "").strip()
+        combined_text = " ".join(part for part in [title, description] if part).strip()
+        if not combined_text:
+            return
+
+        if source_ref:
+            existing = await get_alert_by_source_ref(source_ref)
+            if existing is not None:
+                return
+
+        analysis = analyze_message(combined_text, source_name)
+        if not analysis.accepted:
+            log_event(
+                "rss_alert_rejected",
+                source=source_name,
+                score=analysis.score,
+                reason=analysis.reason,
+            )
+            return
+
+        location = resolve_location(combined_text)
+        ai_result = await _analyze_with_cache(
+            cache_key=source_ref or f"rss:{source_url or title}",
+            title=title or _build_title(combined_text),
+            description=description or combined_text,
+            source=source_name,
+        )
+
+        alert_payload = {
+            "timestamp": item.get("timestamp"),
+            "title": title or _build_title(combined_text),
+            "summary": description[:1200],
+            "type": "geopolitique",
+            "country": location["country"],
+            "region": location["region"],
+            "lat": location["lat"],
+            "lng": location["lng"],
+            "severity": analysis.severity,
+            "confidence": analysis.confidence,
+            "source_channel": source_name,
+            "source_type": "rss",
+            "source_ref": source_ref,
+            "source_url": source_url,
+            "original_text": combined_text,
+            "score": analysis.score,
+        }
+        alert_payload = _apply_ai_enrichment(alert_payload, ai_result)
+
+        inserted = await insert_alert(alert_payload)
+        if inserted is None:
+            return
+
+        ws_manager: WebSocketManager = app.state.ws_manager
+        await ws_manager.broadcast({"type": "new_alert", "alert": inserted})
+        sse_manager: SSEManager = app.state.sse_manager
+        await sse_manager.broadcast("new-alert", {"alert": inserted})
+        log_event(
+            "rss_alert_accepted",
+            alert_id=inserted["id"],
+            source=source_name,
+            severity=inserted["severity"],
+            confidence=inserted["confidence"],
+            country=inserted["country"],
+            score=inserted["score"],
+            ai_analyzed=bool(inserted.get("ai_analyzed")),
+            ai_category=inserted.get("ai_category"),
+        )
+    except Exception:
+        logger.warning("rss_pipeline_skipped_malformed")
+
+
 @app.get("/health")
 async def health() -> Dict[str, Any]:
     return {"status": "ok", "at": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/ai/health")
+async def ai_health() -> Dict[str, Any]:
+    return get_ai_health()
 
 
 @app.get("/")
@@ -197,9 +386,10 @@ async def root() -> Dict[str, Any]:
 async def api_alerts(
     severity: Optional[str] = Query(default=None),
     country: Optional[str] = Query(default=None),
+    source_type: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> Dict[str, Any]:
-    alerts = await get_alerts(limit=limit, severity=severity, country=country)
+    alerts = await get_alerts(limit=limit, severity=severity, country=country, source_type=source_type)
     return {"count": len(alerts), "alerts": alerts}
 
 
@@ -293,32 +483,60 @@ async def startup() -> None:
 
     app.state.ws_manager = WebSocketManager()
     app.state.sse_manager = SSEManager()
-    if not os.getenv("TELEGRAM_API_ID") or not os.getenv("TELEGRAM_API_HASH"):
-        app.state.scraper = None
-        app.state.scraper_task = None
-        log_event("startup_complete", telegram_listener="disabled_missing_credentials")
-        return
+    app.state.scraper = None
+    app.state.scraper_task = None
+    app.state.rss_scraper = RSSScraper(on_item=process_rss_item)
+    app.state.rss_task = None
 
-    if not os.getenv("TELEGRAM_SESSION_STRING"):
-        scraper_preview = TelegramScraper(on_message=process_telegram_message)
-        if not scraper_preview.has_local_session_file():
-            app.state.scraper = None
-            app.state.scraper_task = None
-            log_event("startup_complete", telegram_listener="disabled_missing_session")
-            return
+    telegram_status = "disabled"
+    telegram_channels = 0
+    polling_enabled = False
+    poll_seconds = 0
+    poll_limit = 0
+    backfill_limit = 0
 
-    app.state.scraper = TelegramScraper(on_message=process_telegram_message)
-    app.state.scraper_task = asyncio.create_task(app.state.scraper.run_forever())
+    if os.getenv("TELEGRAM_API_ID") and os.getenv("TELEGRAM_API_HASH"):
+        telegram_enabled = True
+        if not os.getenv("TELEGRAM_SESSION_STRING"):
+            scraper_preview = TelegramScraper(on_message=process_telegram_message)
+            if not scraper_preview.has_local_session_file():
+                telegram_enabled = False
+                telegram_status = "disabled_missing_session"
+        if telegram_enabled:
+            app.state.scraper = TelegramScraper(on_message=process_telegram_message)
+            app.state.scraper_task = asyncio.create_task(app.state.scraper.run_forever())
+            telegram_status = "enabled"
+            telegram_channels = len(app.state.scraper.channels)
+            polling_enabled = app.state.scraper._enable_polling
+            poll_seconds = app.state.scraper._poll_seconds
+            poll_limit = app.state.scraper._poll_limit
+            backfill_limit = app.state.scraper._backfill_limit
+    else:
+        telegram_status = "disabled_missing_credentials"
+
+    rss_status = "disabled"
+    rss_feeds = len(app.state.rss_scraper.feeds)
+    if app.state.rss_scraper.enabled:
+        app.state.rss_task = asyncio.create_task(app.state.rss_scraper.run_forever())
+        rss_status = "enabled"
+
     log_event(
         "startup_complete",
-        channels=len(app.state.scraper.channels),
+        telegram_listener=telegram_status,
+        telegram_channels=telegram_channels,
+        rss_listener=rss_status,
+        rss_feeds=rss_feeds,
+        rss_poll_seconds=app.state.rss_scraper.poll_seconds,
         alert_score_threshold=ALERT_SCORE_THRESHOLD,
         duplicate_window_seconds=DUPLICATE_WINDOW_SECONDS,
         similarity_threshold=SIMILARITY_THRESHOLD,
-        backfill_limit=app.state.scraper._backfill_limit,
-        polling_enabled=app.state.scraper._enable_polling,
-        poll_seconds=app.state.scraper._poll_seconds,
-        poll_limit=app.state.scraper._poll_limit,
+        backfill_limit=backfill_limit,
+        polling_enabled=polling_enabled,
+        poll_seconds=poll_seconds,
+        poll_limit=poll_limit,
+        ai_provider="groq",
+        ai_model=get_ai_health().get("model"),
+        ai_ready=bool(get_ai_health().get("ready")),
     )
 
 
@@ -326,6 +544,8 @@ async def startup() -> None:
 async def shutdown() -> None:
     scraper: Optional[TelegramScraper] = getattr(app.state, "scraper", None)
     scraper_task: Optional[asyncio.Task] = getattr(app.state, "scraper_task", None)
+    rss_scraper: Optional[RSSScraper] = getattr(app.state, "rss_scraper", None)
+    rss_task: Optional[asyncio.Task] = getattr(app.state, "rss_task", None)
 
     if scraper is not None:
         await scraper.stop()
@@ -333,6 +553,15 @@ async def shutdown() -> None:
         scraper_task.cancel()
         try:
             await scraper_task
+        except asyncio.CancelledError:
+            pass
+
+    if rss_scraper is not None:
+        await rss_scraper.stop()
+    if rss_task is not None:
+        rss_task.cancel()
+        try:
+            await rss_task
         except asyncio.CancelledError:
             pass
     log_event("shutdown_complete")

@@ -1347,6 +1347,66 @@ function severityLabel(value) {
   }[value] || value;
 }
 
+function aiValue(alert, snakeKey, camelKey) {
+  if (!alert || typeof alert !== "object") return undefined;
+  if (Object.prototype.hasOwnProperty.call(alert, camelKey)) {
+    return alert[camelKey];
+  }
+  if (Object.prototype.hasOwnProperty.call(alert, snakeKey)) {
+    return alert[snakeKey];
+  }
+  return undefined;
+}
+
+function aiAnalyzedValue(alert) {
+  return Boolean(aiValue(alert, "ai_analyzed", "aiAnalyzed"));
+}
+
+function aiCategoryValue(alert) {
+  return String(aiValue(alert, "ai_category", "aiCategory") || "")
+    .trim()
+    .toLowerCase();
+}
+
+function aiSummaryValue(alert) {
+  return String(aiValue(alert, "ai_summary", "aiSummary") || "").trim();
+}
+
+function aiSeverityValue(alert) {
+  return String(aiValue(alert, "ai_severity", "aiSeverity") || "")
+    .trim()
+    .toLowerCase();
+}
+
+function aiCategoryVisual(category) {
+  return (
+    {
+      missile: { icon: "🚀", label: "IA Missile" },
+      drone: { icon: "🛸", label: "IA Drone" },
+      frappe_aerienne: { icon: "✈", label: "IA Frappe aérienne" },
+      artillerie: { icon: "🧨", label: "IA Artillerie" },
+      conflit_terrestre: { icon: "⚔", label: "IA Conflit terrestre" },
+      cyberattaque: { icon: "💻", label: "IA Cyberattaque" },
+      diplomatie: { icon: "🕊", label: "IA Diplomatie" },
+      terrorisme: { icon: "☠", label: "IA Terrorisme" },
+      nucleaire: { icon: "☢", label: "IA Nucléaire" },
+      autre: { icon: "⚠", label: "IA Autre" }
+    }[category] || { icon: "⚠", label: "IA Autre" }
+  );
+}
+
+function aiSeverityLabel(value) {
+  return (
+    {
+      critique: "Critique",
+      haute: "Haute",
+      moyenne: "Moyenne",
+      moyen: "Moyenne",
+      faible: "Faible"
+    }[String(value || "").trim().toLowerCase()] || ""
+  );
+}
+
 function normalizeSeverity(value) {
   const normalized = String(value || "").toLowerCase();
   if (normalized === "critical" || normalized === "high" || normalized === "medium" || normalized === "low") {
@@ -3536,6 +3596,12 @@ function renderAlertDetails(alert) {
   const sourceCount = sourceCountValue(alert);
   const sourcesList = Array.isArray(alert?.sourceNames) && alert.sourceNames.length > 0 ? alert.sourceNames : [alert.sourceName];
   const sourceName = alert?.sourceName || "Inconnue";
+  const aiAnalyzed = aiAnalyzedValue(alert);
+  const aiCategory = aiCategoryValue(alert);
+  const aiVisual = aiCategoryVisual(aiCategory);
+  const aiSummary = aiSummaryValue(alert);
+  const aiSeverity = aiSeverityValue(alert);
+  const aiSeverityText = aiSeverityLabel(aiSeverity);
 
   state.selectedCountryKey = null;
   state.selectedTrackedAssetKey = null;
@@ -3551,12 +3617,20 @@ function renderAlertDetails(alert) {
   )}</span>
       <span class="meta-chip confidence-chip">Confiance ${confidence}%</span>
       <span class="meta-chip severity-${escapeHtml(alert.severity)}">${escapeHtml(severityLabel(alert.severity))}</span>
+      ${
+        aiAnalyzed
+          ? `<span class="meta-chip">${escapeHtml(`${aiVisual.icon} ${aiVisual.label}`)}</span>${
+              aiSeverityText ? `<span class="meta-chip">IA Sévérité ${escapeHtml(aiSeverityText)}</span>` : ""
+            }`
+          : ""
+      }
       ${sourceBadgeHtml(alert)}
       ${alert.city?.name ? `<span class="meta-chip">${escapeHtml(alert.city.name)}</span>` : ""}
       <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
       <span class="meta-chip">${escapeHtml(alert.country?.region || "Global")}</span>
     </div>
-    <p class="mb-2"><strong>Résumé:</strong> ${escapeHtml(alert.summary || "Résumé non disponible")}</p>
+    <p class="mb-2"><strong>Résumé:</strong> ${escapeHtml(aiSummary || alert.summary || "Résumé non disponible")}</p>
+    ${aiAnalyzed ? `<p class="mb-2"><strong>IA Catégorie:</strong> ${escapeHtml(aiVisual.label)}</p>` : ""}
     <p class="mb-2"><strong>Source:</strong> ${sourceBadgeHtml(alert, "source-chip-inline")} <span class="source-name-inline">${escapeHtml(
     sourceName
   )}</span></p>
@@ -3649,6 +3723,12 @@ function renderAlertsList() {
       const isRelatedOpen = state.relatedOpenAlertId === alert._id;
       const isRelatedLoading = state.relatedLoadingAlertId === alert._id;
       const relatedAlerts = state.relatedAlertsByAnchorId.get(alert._id) || [];
+      const aiAnalyzed = aiAnalyzedValue(alert);
+      const aiCategory = aiCategoryValue(alert);
+      const aiVisual = aiCategoryVisual(aiCategory);
+      const aiSummary = aiSummaryValue(alert);
+      const aiSeverity = aiSeverityValue(alert);
+      const aiSeverityText = aiSeverityLabel(aiSeverity);
       const canVerify = !alert?.confirmed;
       const verifyBusy = state.verification.inProgress && state.verification.activeAlertId === alert._id;
       const topTools = [];
@@ -3681,10 +3761,18 @@ function renderAlertsList() {
       )}</span>
             <span class="meta-chip confidence-chip">${confidence}%</span>
             <span class="meta-chip severity-${escapeHtml(alert.severity)}">${escapeHtml(severityLabel(alert.severity))}</span>
+            ${
+              aiAnalyzed
+                ? `<span class="meta-chip">${escapeHtml(`${aiVisual.icon} ${aiVisual.label}`)}</span>${
+                    aiSeverityText ? `<span class="meta-chip">IA ${escapeHtml(aiSeverityText)}</span>` : ""
+                  }`
+                : ""
+            }
             ${sourceBadgeHtml(alert)}
             ${alert.city?.name ? `<span class="meta-chip">${escapeHtml(alert.city.name)}</span>` : ""}
             <span class="meta-chip">${escapeHtml(alert.country?.name || "Inconnu")}</span>
           </div>
+          ${aiAnalyzed && aiSummary ? `<p class="small text-secondary mb-2">Résumé IA: ${escapeHtml(aiSummary)}</p>` : ""}
           <p class="small text-secondary mb-2">Acte: ${escapeHtml(formatAlertEventDateLong(alert))} | Pub: ${escapeHtml(
         formatDate(getAlertPublicationValue(alert))
       )} | Source: ${escapeHtml(sourceName)} | ${sourceCount} source(s)</p>

@@ -58,7 +58,17 @@ const AlertSchema = new mongoose.Schema(
     confidenceScore: { type: Number, default: 35, min: 0, max: 100 },
     sourceCount: { type: Number, default: 1, min: 1 },
     sourceNames: { type: [String], default: [] },
-    eventGroupId: { type: String, default: "" }
+    eventGroupId: { type: String, default: "" },
+    aiAnalyzed: { type: Boolean, default: false },
+    aiCategory: { type: String, default: "" },
+    aiSubcategories: { type: [String], default: [] },
+    aiSeverity: { type: String, default: "" },
+    aiSeverityScore: { type: Number, default: 0, min: 0, max: 1 },
+    aiCountries: { type: [String], default: [] },
+    aiActors: { type: [String], default: [] },
+    aiSummary: { type: String, default: "" },
+    aiReliabilityScore: { type: Number, default: 0, min: 0, max: 1 },
+    aiIsConflictRelated: { type: Boolean, default: false }
   },
   { timestamps: true }
 );
