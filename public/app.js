@@ -2921,6 +2921,75 @@ function getSignalVisual(signal) {
   );
 }
 
+function signalColorHex(signal) {
+  return (
+    {
+      "nuclear-plant": "#8eff52",
+      nuclear: "#8eff52",
+      chemical: "#b2ff66",
+      "missile-launch": "#7ecbff",
+      "missile-impact": "#ff6f6f",
+      missile: "#ff6f6f",
+      interception: "#7ec5ff",
+      drone: "#9ec3ff",
+      "air-raid": "#57d8ff",
+      naval: "#5fe6d9",
+      cyber: "#6db7ff",
+      infrastructure: "#ffc96e",
+      fire: "#ff8748",
+      "ground-combat": "#ffa0a0",
+      hostage: "#c9cde1",
+      "civil-unrest": "#ffe37a",
+      ceasefire: "#8fffd8",
+      sanctions: "#ffae88",
+      bomb: "#ff8f48",
+      casualty: "#ff4d62",
+      conflict: "#ffd24a"
+    }[signal] || "#ffd24a"
+  );
+}
+
+function hasCityName(alert) {
+  return Boolean(String(alert?.city?.name || "").trim());
+}
+
+function buildNoCitySignalItems(alerts = []) {
+  const grouped = new Map();
+
+  (alerts || []).forEach((alert) => {
+    if (hasCityName(alert)) {
+      return;
+    }
+
+    const signal = detectIncidentSignal(alert);
+    const signalVisual = getSignalVisual(signal);
+    const key = String(signalVisual?.className || signal || "signal-conflict");
+    const eventTs = getAlertEventTimestamp(alert);
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        signal,
+        signalVisual,
+        count: 0,
+        latestAlert: null,
+        latestAt: 0
+      });
+    }
+
+    const entry = grouped.get(key);
+    entry.count += 1;
+    if (!entry.latestAlert || eventTs >= entry.latestAt) {
+      entry.latestAlert = alert;
+      entry.latestAt = eventTs;
+    }
+  });
+
+  return Array.from(grouped.values())
+    .sort((a, b) => Number(b.latestAt || 0) - Number(a.latestAt || 0))
+    .slice(0, 12);
+}
+
 function detectTrackedAssets(alert) {
   const text = normalizeText(`${alert?.title || ""} ${alert?.summary || ""}`);
   if (!text) return [];
@@ -3295,6 +3364,8 @@ function renderTrackedAssetDetails(track) {
 function renderMapMarkers() {
   const visibleAlerts = getVisibleAlerts();
   const activeMapSignals = filterActiveMapSignals(visibleAlerts);
+  const citySignals = activeMapSignals.filter((alert) => hasCityName(alert));
+  const noCitySignalsCount = Math.max(0, activeMapSignals.length - citySignals.length);
   const trackedAssets = buildTrackedAssetTracks(activeMapSignals);
   recomputeCountryStatusLevels();
   updateCountryHeadlineCounters();
@@ -3326,12 +3397,17 @@ function renderMapMarkers() {
   state.assetMarkersLayer?.clearLayers();
   state.countryLegendLayer?.clearLayers();
 
-  const renderedAlerts = selectAlertsForCurrentZoom(activeMapSignals);
+  const renderedAlerts = selectAlertsForCurrentZoom(citySignals);
   const renderedAssets = selectTrackedAssetsForCurrentZoom(trackedAssets);
-  const priorityCountrySummaries = sortCountrySummariesForLegend(countrySummaries).filter(
-    (summary) => summary?.status === "critical" || summary?.status === "tension"
-  );
+  const priorityCountrySummaries = sortCountrySummariesForLegend(countrySummaries).filter((summary) => {
+    const hasNoCitySignals = Array.isArray(summary?.noCitySignalItems) && summary.noCitySignalItems.length > 0;
+    return summary?.status === "critical" || summary?.status === "tension" || hasNoCitySignals;
+  });
   const countryLegends = priorityCountrySummaries.length ? priorityCountrySummaries.slice(0, 280) : [];
+  const noCitySignalGroups = countryLegends.reduce(
+    (total, summary) => total + Math.max(0, Number(summary?.noCitySignalItems?.length || 0)),
+    0
+  );
 
   renderedAlerts.forEach((alert) => {
     const marker = createMarker(alert);
@@ -3349,7 +3425,7 @@ function renderMapMarkers() {
   });
 
   if (refs.mapOverlayMetric) {
-    refs.mapOverlayMetric.textContent = `${renderedAlerts.length}/${activeMapSignals.length} points actifs | ${renderedAssets.length} assets suivis | ${countryLegends.length} pays tension/actifs`;
+    refs.mapOverlayMetric.textContent = `${renderedAlerts.length}/${citySignals.length} points villes | ${noCitySignalsCount} sans ville (${noCitySignalGroups} logos pays) | ${renderedAssets.length} assets suivis | ${countryLegends.length} pays tension/actifs`;
   }
 
   scheduleMapSignalExpiryRefresh(activeMapSignals);
@@ -4697,13 +4773,15 @@ function buildCountrySummaries(alerts) {
       const sortedAlerts = sortAlertsByEventTimeDesc(group.alerts);
       const latest = sortedAlerts[0];
       const status = getCountryStatus(group.country.name);
+      const noCitySignalItems = buildNoCitySignalItems(sortedAlerts);
 
       return {
         ...group,
         alerts: sortedAlerts,
         latestAt: getAlertEventTimestamp(latest),
         status,
-        center: getCountryCenter({ ...group, alerts: sortedAlerts })
+        center: getCountryCenter({ ...group, alerts: sortedAlerts }),
+        noCitySignalItems
       };
     })
     .sort((a, b) => b.latestAt - a.latestAt);
@@ -4794,12 +4872,39 @@ function createCountryLegendMarker(summary) {
   const countryName = summary?.country?.name || "Inconnu";
   const compactName = compactCountryName(countryName, 28);
   const flag = countryCodeToFlagEmoji(summary?.country?.code);
+  const noCitySignalItems = Array.isArray(summary?.noCitySignalItems)
+    ? summary.noCitySignalItems
+    : buildNoCitySignalItems(summary?.alerts || []);
+  const signalsRows = noCitySignalItems.length ? Math.ceil(noCitySignalItems.length / 6) : 0;
+  const markerHeight = 30 + (signalsRows > 0 ? 6 + signalsRows * 22 : 0);
+  const markerWidth = 232;
+  const noCitySignalsHtml = noCitySignalItems.length
+    ? `<div class="country-callout-signals">${noCitySignalItems
+        .map((item) => {
+          const signalLabel = item?.signalVisual?.label || "Signal";
+          const signalGlyph = item?.signalVisual?.glyph || "⚠";
+          const count = Math.max(1, Number(item?.count || 1));
+          const latestAt = item?.latestAlert ? formatAlertEventTime(item.latestAlert, { allowPublicationFallback: true }) : "Heure inconnue";
+          const color = signalColorHex(item?.signal);
+
+          return `<span class="country-signal-chip ${escapeHtml(item?.signalVisual?.className || "signal-conflict")}" title="${escapeHtml(
+            `${signalLabel} (${count}) - ${latestAt}`
+          )}">
+              <span class="country-signal-chip__glyph" style="color:${escapeHtml(color)}">${escapeHtml(signalGlyph)}</span>
+              ${count > 1 ? `<span class="country-signal-chip__count">${count}</span>` : ""}
+            </span>`;
+        })
+        .join("")}</div>`
+    : "";
 
   const marker = L.marker([lat, lng], {
     icon: L.divIcon({
       className: "",
-      html: `<div class="country-callout ${statusClass}" title="${escapeHtml(countryName)}"><span class="country-callout__arrow">➤</span><span class="country-callout__flag">${escapeHtml(flag)}</span><span class="country-callout__name">${escapeHtml(compactName)}</span></div>`,
-      iconSize: [226, 30],
+      html: `<div class="country-callout-wrap">
+        <div class="country-callout ${statusClass}" title="${escapeHtml(countryName)}"><span class="country-callout__arrow">➤</span><span class="country-callout__flag">${escapeHtml(flag)}</span><span class="country-callout__name">${escapeHtml(compactName)}</span></div>
+        ${noCitySignalsHtml}
+      </div>`,
+      iconSize: [markerWidth, markerHeight],
       iconAnchor: [8, 15]
     }),
     zIndexOffset: 460
@@ -4807,7 +4912,7 @@ function createCountryLegendMarker(summary) {
 
   marker.bindPopup(`
     <strong>${escapeHtml(summary.country.name || "Inconnu")}</strong><br>
-    Statut: ${escapeHtml(countryStatusLabel(summary.status))} | ${summary.alerts.length} alertes
+    Statut: ${escapeHtml(countryStatusLabel(summary.status))} | ${summary.alerts.length} alertes | ${noCitySignalItems.length} signal(s) sans ville
   `);
 
   marker.on("click", () => {
