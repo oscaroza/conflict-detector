@@ -59,9 +59,10 @@ SIMILARITY_THRESHOLD=0.90
 MAX_ALERTS=500
 TELEGRAM_CHANNELS=@intelslava,@OSINTdefender,@MiddleEastSpectator
 GROQ_API_KEY=
-GROQ_MODEL=llama3-8b-8192
-GROQ_MODEL_FALLBACKS=llama-3.1-8b-instant,llama3-8b-8192
+GROQ_MODEL=llama-3.1-8b-instant
+GROQ_MODEL_FALLBACKS=llama-3.1-8b-instant
 GROQ_TIMEOUT_SECONDS=16
+GROQ_RATE_LIMIT_COOLDOWN_SECONDS=25
 AI_CACHE_MAX_ITEMS=2000
 ```
 
@@ -187,9 +188,10 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
    - `RSS_MAX_AGE_HOURS` (optionnel, ex. `48`)
    - `RSS_FEED_URLS` (optionnel, CSV URL ou `Nom|URL`)
    - `GROQ_API_KEY` (requis pour IA)
-   - `GROQ_MODEL` (defaut `llama3-8b-8192`)
+   - `GROQ_MODEL` (defaut `llama-3.1-8b-instant`)
    - `GROQ_MODEL_FALLBACKS` (optionnel, liste CSV de modèles fallback)
    - `GROQ_TIMEOUT_SECONDS` (optionnel, ex. `16`)
+   - `GROQ_RATE_LIMIT_COOLDOWN_SECONDS` (optionnel, ex. `25`)
    - `AI_CACHE_MAX_ITEMS` (optionnel, ex. `2000`)
 
 ## 5) Comportement du pipeline

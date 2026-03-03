@@ -3,6 +3,7 @@ import json
 import os
 import re
 import threading
+import time
 from collections import OrderedDict
 from typing import Any, Dict, Optional
 
@@ -21,12 +22,13 @@ def _safe_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
-AI_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192").strip() or "llama3-8b-8192"
+AI_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip() or "llama-3.1-8b-instant"
 _CACHE_MAX_ITEMS = _safe_int_env("AI_CACHE_MAX_ITEMS", default=2000, minimum=100, maximum=10000)
 _GROQ_TIMEOUT_SECONDS = _safe_int_env("GROQ_TIMEOUT_SECONDS", default=16, minimum=3, maximum=60)
+_RATE_LIMIT_COOLDOWN_SECONDS = _safe_int_env("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", default=25, minimum=3, maximum=300)
 _MODEL_FALLBACKS = [
     item.strip()
-    for item in str(os.getenv("GROQ_MODEL_FALLBACKS", "llama-3.1-8b-instant,llama3-8b-8192")).split(",")
+    for item in str(os.getenv("GROQ_MODEL_FALLBACKS", "llama-3.1-8b-instant")).split(",")
     if item.strip()
 ]
 
@@ -34,6 +36,9 @@ _CLIENT_LOCK = threading.Lock()
 _CLIENT: Optional[Groq] = None
 _CACHE_LOCK = threading.Lock()
 _CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+_MODEL_STATE_LOCK = threading.Lock()
+_DISABLED_MODELS = set()
+_RATE_LIMITED_UNTIL_MONOTONIC = 0.0
 
 _ALLOWED_CATEGORIES = {
     "missile",
@@ -137,16 +142,53 @@ def _error_text(exc: Exception) -> str:
     return message
 
 
+def _is_rate_limit_error(message: str) -> bool:
+    text = str(message or "").lower()
+    return "429" in text or "rate limit" in text or "too many requests" in text
+
+
+def _is_decommissioned_error(message: str) -> bool:
+    text = str(message or "").lower()
+    return "decommissioned" in text or "no longer supported" in text or "model_not_found" in text
+
+
+def _mark_model_disabled(model_name: str) -> None:
+    normalized = str(model_name or "").strip()
+    if not normalized:
+        return
+    with _MODEL_STATE_LOCK:
+        _DISABLED_MODELS.add(normalized)
+
+
+def _set_rate_limit_cooldown() -> None:
+    global _RATE_LIMITED_UNTIL_MONOTONIC
+    with _MODEL_STATE_LOCK:
+        _RATE_LIMITED_UNTIL_MONOTONIC = max(
+            _RATE_LIMITED_UNTIL_MONOTONIC,
+            time.monotonic() + float(_RATE_LIMIT_COOLDOWN_SECONDS),
+        )
+
+
+def _cooldown_remaining_seconds() -> int:
+    with _MODEL_STATE_LOCK:
+        remaining = _RATE_LIMITED_UNTIL_MONOTONIC - time.monotonic()
+    return max(0, int(round(remaining)))
+
+
 def _model_candidates() -> list:
+    disabled = set()
+    with _MODEL_STATE_LOCK:
+        disabled = set(_DISABLED_MODELS)
+
     ordered = []
     seen = set()
     for name in [AI_MODEL, *_MODEL_FALLBACKS]:
         candidate = str(name or "").strip()
-        if not candidate or candidate in seen:
+        if not candidate or candidate in seen or candidate in disabled:
             continue
         seen.add(candidate)
         ordered.append(candidate)
-    return ordered or [AI_MODEL]
+    return ordered
 
 
 def _set_model_in_result(payload: Dict[str, Any], model_name: str) -> Dict[str, Any]:
@@ -224,6 +266,9 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
     client = _get_client()
     if client is None:
         return _neutral_result("missing_groq_api_key")
+    cooldown_left = _cooldown_remaining_seconds()
+    if cooldown_left > 0:
+        return _neutral_result(f"groq_rate_limit_cooldown_active:{cooldown_left}s")
 
     safe_title = str(title or "").strip()[:280]
     safe_description = str(description or "").strip()[:5000]
@@ -246,8 +291,11 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
 
     last_error = "unknown_error"
     user_content = json.dumps(user_payload, ensure_ascii=False)
+    model_candidates = _model_candidates()
+    if not model_candidates:
+        return _neutral_result("no_available_groq_models")
 
-    for model_name in _model_candidates():
+    for model_name in model_candidates:
         for force_json_mode in (True, False):
             request_payload = {
                 "model": model_name,
@@ -274,7 +322,12 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
                 normalized = _normalize_result(raw)
                 return _set_model_in_result(normalized, model_name)
             except Exception as exc:
-                last_error = f"model={model_name} json_mode={force_json_mode} error={_error_text(exc)}"
+                error_message = _error_text(exc)
+                if _is_decommissioned_error(error_message):
+                    _mark_model_disabled(model_name)
+                if _is_rate_limit_error(error_message):
+                    _set_rate_limit_cooldown()
+                last_error = f"model={model_name} json_mode={force_json_mode} error={error_message}"
                 continue
 
     return _set_model_in_result(_neutral_result(last_error), AI_MODEL)
@@ -289,10 +342,15 @@ def ai_health() -> Dict[str, Any]:
     dependency_available = Groq is not None
     with _CACHE_LOCK:
         cache_size = len(_CACHE)
+    with _MODEL_STATE_LOCK:
+        disabled_models = sorted(_DISABLED_MODELS)
     return {
         "provider": "groq",
         "model": AI_MODEL,
         "model_fallbacks": _model_candidates(),
+        "configured_fallbacks": list(_MODEL_FALLBACKS),
+        "disabled_models": disabled_models,
+        "cooldown_remaining_seconds": _cooldown_remaining_seconds(),
         "api_key_configured": key_configured,
         "dependency_available": dependency_available,
         "cache_items": cache_size,
