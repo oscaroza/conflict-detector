@@ -906,6 +906,15 @@ function classifyType(text, fallbackType) {
   return fallbackType || "geopolitique";
 }
 
+function isFallbackGeoCoordinates(coords) {
+  if (!Array.isArray(coords) || coords.length < 2) {
+    return true;
+  }
+  const lng = Number(coords[0]);
+  const lat = Number(coords[1]);
+  return Math.abs(lat - 20) < 0.0001 && Math.abs(lng) < 0.0001;
+}
+
 function classifySeverity(text) {
   const content = lower(text);
 
@@ -1336,6 +1345,101 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
   return newAlerts;
 }
 
+async function repairRecentGeolocation(limit = 800) {
+  const scopedLimit = Math.min(2000, Math.max(100, Number(limit) || 800));
+  const candidates = await Alert.find({
+    type: "geopolitique",
+    $or: [
+      { "country.code": "XX" },
+      { "country.name": { $in: ["Inconnu", ""] } },
+      { "location.coordinates": [0, 20] },
+      { "location.coordinates.0": { $exists: false } },
+      { "location.coordinates.1": { $exists: false } }
+    ]
+  })
+    .sort({ createdAt: -1 })
+    .limit(scopedLimit)
+    .lean();
+
+  if (!candidates.length) {
+    return { scanned: 0, updated: 0 };
+  }
+
+  let updated = 0;
+
+  for (const alert of candidates) {
+    const articleText = `${alert?.title || ""} ${alert?.summary || ""} ${alert?.country?.name || ""}`.trim();
+    if (!articleText) {
+      continue;
+    }
+
+    let countryInfo = extractCountry(articleText);
+    const cityInfo = extractCity(articleText, countryInfo);
+
+    if (cityInfo && (!countryInfo || countryInfo.code === "XX" || countryInfo.name === "Inconnu")) {
+      countryInfo = {
+        name: cityInfo.countryName,
+        code: cityInfo.countryCode,
+        region: cityInfo.region || "Global",
+        lat: cityInfo.lat,
+        lng: cityInfo.lng
+      };
+    }
+
+    if (!countryInfo || countryInfo.code === "XX") {
+      continue;
+    }
+
+    const markerLat = Number.isFinite(cityInfo?.lat) ? cityInfo.lat : countryInfo.lat || 20;
+    const markerLng = Number.isFinite(cityInfo?.lng) ? cityInfo.lng : countryInfo.lng || 0;
+
+    const nextCountry = {
+      name: countryInfo.name,
+      code: countryInfo.code,
+      region: countryInfo.region
+    };
+    const nextCity = {
+      name: cityInfo?.name || "",
+      lat: Number.isFinite(cityInfo?.lat) ? cityInfo.lat : null,
+      lng: Number.isFinite(cityInfo?.lng) ? cityInfo.lng : null
+    };
+    const nextCoords = [markerLng, markerLat];
+
+    const currentCountryName = String(alert?.country?.name || "");
+    const currentCountryCode = String(alert?.country?.code || "XX").toUpperCase();
+    const currentRegion = String(alert?.country?.region || "Global");
+    const currentCoords = Array.isArray(alert?.location?.coordinates) ? alert.location.coordinates : [];
+    const currentCityName = String(alert?.city?.name || "");
+
+    const shouldUpdate =
+      currentCountryCode !== nextCountry.code ||
+      currentCountryName !== nextCountry.name ||
+      currentRegion !== nextCountry.region ||
+      currentCityName !== nextCity.name ||
+      isFallbackGeoCoordinates(currentCoords) ||
+      Number(currentCoords?.[0]) !== nextCoords[0] ||
+      Number(currentCoords?.[1]) !== nextCoords[1];
+
+    if (!shouldUpdate) {
+      continue;
+    }
+
+    await Alert.updateOne(
+      { _id: alert._id },
+      {
+        $set: {
+          country: nextCountry,
+          city: nextCity,
+          location: { type: "Point", coordinates: nextCoords }
+        }
+      }
+    );
+    updated += 1;
+  }
+
+  return { scanned: candidates.length, updated };
+}
+
 let timer = null;
 let running = false;
 let telegramSyncLastFetchAtMs = 0;
@@ -1449,6 +1553,14 @@ async function startScheduler() {
   }
 
   await runDetection("startup");
+  try {
+    const repaired = await repairRecentGeolocation(Number(process.env.GEO_REPAIR_LIMIT) || 800);
+    if (repaired.updated > 0) {
+      console.log(`[geo-repair] scanned=${repaired.scanned} updated=${repaired.updated}`);
+    }
+  } catch (error) {
+    console.warn(`[geo-repair] Echec ${error.message}`);
+  }
   await scheduleNextCycle();
 }
 
