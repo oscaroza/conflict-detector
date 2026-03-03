@@ -4,6 +4,7 @@ const state = {
   settings: null,
   map: null,
   markersLayer: null,
+  assetMarkersLayer: null,
   countryLegendLayer: null,
   mapMode: "2d",
   globe: null,
@@ -16,6 +17,7 @@ const state = {
   countryProfileCache: new Map(),
   selectedCountryKey: null,
   selectedAlertId: null,
+  selectedTrackedAssetKey: null,
   voice: {
     provider: "none",
     remoteAvailable: false,
@@ -137,6 +139,133 @@ const INTEL_OVERLAY_HIDDEN_STORAGE_KEY = "cd_intel_overlay_hidden";
 const MOBILE_TAB_STORAGE_KEY = "cd_mobile_tab";
 const MAP_SIGNAL_TTL_MINUTES = 30;
 const MAP_SIGNAL_TTL_MS = MAP_SIGNAL_TTL_MINUTES * 60 * 1000;
+const TRACKED_ASSET_DEFINITIONS = [
+  {
+    key: "fs-charles-de-gaulle",
+    name: "FS Charles de Gaulle",
+    type: "Porte-avions",
+    operator: "Marine nationale (France)",
+    category: "carrier",
+    icon: "⚓",
+    priority: 120,
+    aliases: ["charles de gaulle", "fs charles de gaulle", "r91", "porte-avions charles de gaulle"]
+  },
+  {
+    key: "uss-gerald-r-ford",
+    name: "USS Gerald R. Ford",
+    type: "Porte-avions",
+    operator: "US Navy",
+    category: "carrier",
+    icon: "⚓",
+    priority: 120,
+    aliases: ["uss gerald r ford", "gerald r ford", "cvn-78", "uss ford", "carrier strike group 12"]
+  },
+  {
+    key: "uss-dwight-eisenhower",
+    name: "USS Dwight D. Eisenhower",
+    type: "Porte-avions",
+    operator: "US Navy",
+    category: "carrier",
+    icon: "⚓",
+    priority: 110,
+    aliases: ["uss dwight d eisenhower", "dwight d eisenhower", "cvn-69", "ike carrier"]
+  },
+  {
+    key: "air-force-one",
+    name: "Air Force One",
+    type: "Avion gouvernemental",
+    operator: "United States",
+    category: "aircraft",
+    icon: "🛩",
+    priority: 115,
+    aliases: ["air force one", "vc-25", "presidential aircraft", "us president aircraft"]
+  },
+  {
+    key: "generic-aircraft-carrier",
+    name: "Porte-avions localise",
+    type: "Porte-avions",
+    operator: "Inconnu",
+    category: "carrier",
+    icon: "⚓",
+    generic: true,
+    priority: 34,
+    aliases: ["aircraft carrier", "carrier strike group", "porte-avions", "porte avions"]
+  },
+  {
+    key: "generic-submarine",
+    name: "Sous-marin localise",
+    type: "Sous-marin",
+    operator: "Inconnu",
+    category: "submarine",
+    icon: "🛥",
+    generic: true,
+    priority: 33,
+    aliases: ["submarine", "sous-marin", "sous marin", "ssn", "ssbn", "nuclear submarine"]
+  },
+  {
+    key: "generic-warship",
+    name: "Navire militaire localise",
+    type: "Navire de guerre",
+    operator: "Inconnu",
+    category: "warship",
+    icon: "🚢",
+    generic: true,
+    priority: 30,
+    aliases: ["warship", "destroyer", "frigate", "corvette", "cruiser", "fleet movement", "task force"]
+  },
+  {
+    key: "generic-military-aircraft",
+    name: "Avion militaire localise",
+    type: "Aviation militaire",
+    operator: "Inconnu",
+    category: "aircraft",
+    icon: "✈",
+    generic: true,
+    priority: 28,
+    aliases: ["fighter jet", "military aircraft", "strategic bomber", "b-52", "f-15", "f-16", "rafale"]
+  }
+];
+const TRACKED_ASSET_RULES = TRACKED_ASSET_DEFINITIONS.map((definition) => ({
+  ...definition,
+  aliasTokens: (definition.aliases || []).map((alias) => normalizeText(alias)).filter(Boolean)
+}));
+const TRACKED_ASSET_VISUALS = {
+  carrier: {
+    className: "asset-carrier",
+    pointColor: "#4ef0da",
+    ringColor: "rgba(78,240,218,0.8)",
+    pointRadius: 0.38,
+    pointAltitude: 0.048
+  },
+  submarine: {
+    className: "asset-submarine",
+    pointColor: "#6ec5ff",
+    ringColor: "rgba(110,197,255,0.76)",
+    pointRadius: 0.36,
+    pointAltitude: 0.046
+  },
+  aircraft: {
+    className: "asset-aircraft",
+    pointColor: "#ffd46a",
+    ringColor: "rgba(255,212,106,0.78)",
+    pointRadius: 0.35,
+    pointAltitude: 0.045
+  },
+  warship: {
+    className: "asset-warship",
+    pointColor: "#8dffcf",
+    ringColor: "rgba(141,255,207,0.76)",
+    pointRadius: 0.35,
+    pointAltitude: 0.044
+  },
+  default: {
+    className: "asset-default",
+    pointColor: "#9fd8ff",
+    ringColor: "rgba(159,216,255,0.74)",
+    pointRadius: 0.34,
+    pointAltitude: 0.043
+  }
+};
 
 const bootStageBlueprint = [
   { id: "ui", label: "Interface utilisateur" },
@@ -208,6 +337,21 @@ function getSeverityColorHex(severity) {
       medium: "#ffd24a",
       low: "#35ef9f"
     }[normalized] || "#39d0ff"
+  );
+}
+
+function getTrackedAssetVisual(category) {
+  return TRACKED_ASSET_VISUALS[category] || TRACKED_ASSET_VISUALS.default;
+}
+
+function trackedAssetCategoryLabel(category) {
+  return (
+    {
+      carrier: "Porte-avions",
+      submarine: "Sous-marin",
+      aircraft: "Aviation",
+      warship: "Navire militaire"
+    }[category] || "Asset strategique"
   );
 }
 
@@ -378,6 +522,15 @@ function initializeGlobe() {
     .pointsMerge(false)
     .pointLabel("label")
     .onPointClick((point) => {
+      if (point?.assetTrack) {
+        renderTrackedAssetDetails(point.assetTrack);
+        renderAlertsList();
+        if (isMobileViewport()) {
+          applyMobileTab("panel", { persist: true, forcePanelOpen: true });
+        }
+        return;
+      }
+
       const alert = point?.alert;
       if (!alert) return;
       state.selectedAlertId = alert._id;
@@ -467,12 +620,12 @@ function initializeGlobe() {
   return true;
 }
 
-function renderGlobeMarkers(alerts, statusAlerts = alerts) {
+function renderGlobeMarkers(alerts, statusAlerts = alerts, trackedAssets = buildTrackedAssetTracks(alerts)) {
   if (!state.globe) return;
   const countrySummaries = buildCountrySummaries(statusAlerts);
   const globeLegendItems = buildGlobeCountryLegendItems(countrySummaries);
 
-  const points = sortAlertsByEventTimeDesc(alerts)
+  const alertPoints = sortAlertsByEventTimeDesc(alerts)
     .slice(0, 520)
     .map((alert) => {
       const [lat, lng] = getAlertLatLng(alert);
@@ -504,7 +657,33 @@ function renderGlobeMarkers(alerts, statusAlerts = alerts) {
     })
     .filter(Boolean);
 
-  const rings = points
+  const assetPoints = (trackedAssets || [])
+    .slice(0, 120)
+    .map((track) => {
+      const visual = getTrackedAssetVisual(track?.category);
+      const eventTime = escapeHtml(formatAlertEventTime(track?.latestAlert, { allowPublicationFallback: true }));
+      const country = escapeHtml(track?.latestAlert?.country?.name || "Inconnu");
+      const title = escapeHtml(track?.name || "Asset suivi");
+      const type = escapeHtml(track?.type || "Asset strategique");
+
+      return {
+        lat: track.lat,
+        lng: track.lng,
+        color: visual.pointColor,
+        severity: "asset",
+        altitude: visual.pointAltitude,
+        radius: visual.pointRadius,
+        assetTrack: track,
+        label: `<div style="font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.35;">
+          <strong>${title}</strong><br>${type} | ${country} | ${eventTime}
+        </div>`
+      };
+    })
+    .filter(Boolean);
+
+  const points = alertPoints.concat(assetPoints);
+
+  const rings = alertPoints
     .filter((point) => point.severity === "critical" || point.severity === "high")
     .slice(0, 130)
     .map((point) => ({
@@ -519,7 +698,20 @@ function renderGlobeMarkers(alerts, statusAlerts = alerts) {
       maxRadius: point.severity === "critical" ? 3.4 : 2.5,
       speed: point.severity === "critical" ? 1.12 : 0.92,
       period: point.severity === "critical" ? 1080 : 1320
-    }));
+    }))
+    .concat(
+      (trackedAssets || []).slice(0, 80).map((track) => {
+        const visual = getTrackedAssetVisual(track?.category);
+        return {
+          lat: track.lat,
+          lng: track.lng,
+          color: visual.ringColor,
+          maxRadius: 3.1,
+          speed: 1.08,
+          period: 1240
+        };
+      })
+    );
 
   const polygons = collectGlobeCountryPolygons(statusAlerts);
 
@@ -557,7 +749,7 @@ function renderGlobeMarkers(alerts, statusAlerts = alerts) {
   }
 
   if (refs.mapOverlayMetric) {
-    refs.mapOverlayMetric.textContent = `${points.length}/${alerts.length} points actifs | ${globeLegendItems.length} pays tension/actifs | globe 3D`;
+    refs.mapOverlayMetric.textContent = `${alertPoints.length}/${alerts.length} points actifs | ${trackedAssets.length} assets suivis | ${globeLegendItems.length} pays tension/actifs | globe 3D`;
   }
 }
 
@@ -2276,11 +2468,70 @@ function detectIncidentSignal(alert) {
     return "chemical";
   }
 
-  if (
-    includesAny(text, ["missile", "rocket", "ballistic", "hypersonic"]) &&
-    includesAny(text, ["hit", "strike", "impact", "touche", "frappe", "attack", "landed"])
-  ) {
-    return "missile";
+  const hasMissileWord = includesAny(text, [
+    "missile",
+    "rocket",
+    "ballistic",
+    "hypersonic",
+    "cruise missile",
+    "roquette"
+  ]);
+  const hasMissileLaunchWord = includesAny(text, [
+    "launch",
+    "launched",
+    "launches",
+    "fired",
+    "firing",
+    "tir",
+    "tire",
+    "tiré",
+    "lance",
+    "lancé",
+    "lancer",
+    "lancement",
+    "salvo",
+    "volley"
+  ]);
+  const hasMissileImpactWord = includesAny(text, [
+    "hit",
+    "strike",
+    "struck",
+    "impact",
+    "landed",
+    "exploded",
+    "explosion",
+    "blast",
+    "detonation",
+    "touche",
+    "touché",
+    "frappe",
+    "detruit",
+    "détruit",
+    "destroyed",
+    "crash"
+  ]);
+  const hasLaunchOriginPattern = includesAny(text, [
+    "launched from",
+    "launch from",
+    "fired from",
+    "tiré depuis",
+    "tire depuis",
+    "lance depuis",
+    "lancé depuis",
+    "depuis"
+  ]);
+
+  if (hasMissileWord) {
+    if (hasLaunchOriginPattern || (hasMissileLaunchWord && !hasMissileImpactWord)) {
+      return "missile-launch";
+    }
+    if (hasMissileImpactWord) {
+      return "missile-impact";
+    }
+    if (hasMissileLaunchWord) {
+      return "missile-launch";
+    }
+    return "missile-impact";
   }
 
   if (
@@ -2572,8 +2823,18 @@ function getSignalVisual(signal) {
         glyph: "☣",
         className: "signal-chemical"
       },
+      "missile-launch": {
+        label: "Missile lance (depart)",
+        glyph: "🚀⬆️",
+        className: "signal-missile-launch"
+      },
+      "missile-impact": {
+        label: "Missile impact (arrivee)",
+        glyph: "🚀⬇️",
+        className: "signal-missile-impact"
+      },
       missile: {
-        label: "Frappe missile",
+        label: "Signal missile",
         glyph: "🚀",
         className: "signal-missile"
       },
@@ -2658,6 +2919,105 @@ function getSignalVisual(signal) {
       className: "signal-conflict"
     }
   );
+}
+
+function detectTrackedAssets(alert) {
+  const text = normalizeText(`${alert?.title || ""} ${alert?.summary || ""}`);
+  if (!text) return [];
+
+  const matches = TRACKED_ASSET_RULES.filter((rule) =>
+    rule.aliasTokens.some((token) => token && text.includes(token))
+  );
+  if (!matches.length) return [];
+
+  const hasSpecificCategory = new Set(matches.filter((rule) => !rule.generic).map((rule) => rule.category));
+  const filtered = matches.filter((rule) => !(rule.generic && hasSpecificCategory.has(rule.category)));
+  const unique = [];
+  const seen = new Set();
+
+  filtered
+    .sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0))
+    .forEach((rule) => {
+      if (seen.has(rule.key)) {
+        return;
+      }
+      seen.add(rule.key);
+      unique.push(rule);
+    });
+
+  return unique.slice(0, 3);
+}
+
+function buildTrackedAssetTracks(alerts) {
+  const tracksByKey = new Map();
+
+  sortAlertsByEventTimeDesc(alerts).forEach((alert) => {
+    const matches = detectTrackedAssets(alert);
+    if (!matches.length) {
+      return;
+    }
+
+    const [lat, lng] = getAlertLatLng(alert);
+    if (!isValidLatLng(lat, lng)) {
+      return;
+    }
+
+    const eventTs = getAlertEventTimestamp(alert);
+    const sourceName = String(alert?.sourceName || "").trim();
+
+    matches.forEach((rule) => {
+      const existing = tracksByKey.get(rule.key);
+
+      if (!existing) {
+        tracksByKey.set(rule.key, {
+          key: rule.key,
+          name: rule.name,
+          type: rule.type,
+          operator: rule.operator || "Inconnu",
+          category: rule.category || "default",
+          icon: rule.icon || "◎",
+          generic: Boolean(rule.generic),
+          lat,
+          lng,
+          latestAlert: alert,
+          mentions: 1,
+          sourceNames: sourceName ? [sourceName] : [],
+          firstSeenTs: eventTs,
+          lastSeenTs: eventTs
+        });
+        return;
+      }
+
+      existing.mentions += 1;
+      if (sourceName && !existing.sourceNames.includes(sourceName)) {
+        existing.sourceNames.push(sourceName);
+      }
+
+      if (Number.isFinite(eventTs) && eventTs > 0) {
+        if (!Number.isFinite(existing.firstSeenTs) || existing.firstSeenTs <= 0 || eventTs < existing.firstSeenTs) {
+          existing.firstSeenTs = eventTs;
+        }
+
+        if (!Number.isFinite(existing.lastSeenTs) || eventTs >= existing.lastSeenTs) {
+          existing.lastSeenTs = eventTs;
+          existing.latestAlert = alert;
+          existing.lat = lat;
+          existing.lng = lng;
+        }
+      }
+    });
+  });
+
+  return Array.from(tracksByKey.values()).sort((a, b) => Number(b.lastSeenTs || 0) - Number(a.lastSeenTs || 0));
+}
+
+function formatTrackedAssetLocation(track) {
+  const city = track?.latestAlert?.city?.name;
+  const country = track?.latestAlert?.country?.name || "Inconnu";
+  if (city) {
+    return `${city}, ${country}`;
+  }
+  return country;
 }
 
 function getAlertLatLng(alert) {
@@ -2767,6 +3127,45 @@ function selectAlertsForCurrentZoom(alerts) {
   return insideView.concat(outsideView).slice(0, maxMarkers);
 }
 
+function getTrackedAssetLimitForZoom(zoom) {
+  if (!Number.isFinite(zoom)) return 120;
+  if (zoom < 3) return 70;
+  if (zoom < 4) return 100;
+  if (zoom < 5) return 150;
+  return 220;
+}
+
+function selectTrackedAssetsForCurrentZoom(tracks) {
+  const zoom = Number(state.map?.getZoom?.() || 2);
+  const maxMarkers = getTrackedAssetLimitForZoom(zoom);
+
+  if (!state.map || zoom < 3.3) {
+    return tracks.slice(0, maxMarkers);
+  }
+
+  const bounds = state.map.getBounds?.();
+  if (!bounds) {
+    return tracks.slice(0, maxMarkers);
+  }
+
+  const insideView = [];
+  const outsideView = [];
+
+  tracks.forEach((track) => {
+    if (!isValidLatLng(track?.lat, track?.lng)) {
+      return;
+    }
+    const point = L.latLng(track.lat, track.lng);
+    if (bounds.contains(point)) {
+      insideView.push(track);
+    } else {
+      outsideView.push(track);
+    }
+  });
+
+  return insideView.concat(outsideView).slice(0, maxMarkers);
+}
+
 function createMarker(alert) {
   const latLng = getAlertLatLng(alert);
   const signal = detectIncidentSignal(alert);
@@ -2805,9 +3204,98 @@ function createMarker(alert) {
   return marker;
 }
 
+function createTrackedAssetMarker(track) {
+  const visual = getTrackedAssetVisual(track?.category);
+  const className = visual.className || TRACKED_ASSET_VISUALS.default.className;
+  const eventTime = formatAlertEventTime(track?.latestAlert, { allowPublicationFallback: true });
+  const location = formatTrackedAssetLocation(track);
+
+  const marker = L.marker([track.lat, track.lng], {
+    icon: L.divIcon({
+      className: "",
+      html: `<div class="asset-track ${className}" title="${escapeHtml(track?.name || "Asset suivi")}">
+        <span class="asset-marker"><span class="asset-marker__pulse"></span><span class="asset-marker__core">${escapeHtml(
+          track?.icon || "◎"
+        )}</span></span>
+        <span class="asset-label"><span class="asset-label__name">${escapeHtml(track?.name || "Asset suivi")}</span><span class="asset-label__time">${escapeHtml(
+          eventTime
+        )}</span></span>
+      </div>`,
+      iconSize: [250, 38],
+      iconAnchor: [15, 16]
+    }),
+    zIndexOffset: 880
+  });
+
+  marker.bindPopup(`
+    <strong>${escapeHtml(track?.name || "Asset suivi")}</strong><br>
+    ${escapeHtml(track?.type || "Asset strategique")} | ${escapeHtml(location)} | ${escapeHtml(eventTime)}
+  `);
+
+  marker.on("click", () => {
+    renderTrackedAssetDetails(track);
+    renderAlertsList();
+    if (isMobileViewport()) {
+      applyMobileTab("panel", { persist: true, forcePanelOpen: true });
+    }
+  });
+
+  return marker;
+}
+
+function renderTrackedAssetDetails(track) {
+  if (!track || !refs.alertDetails) return;
+  const alert = track.latestAlert || {};
+  const sourceName = alert?.sourceName || "Source inconnue";
+  const sourceNames = Array.isArray(track.sourceNames) ? track.sourceNames : [];
+  const location = formatTrackedAssetLocation(track);
+  const lastSeenDate =
+    Number.isFinite(track.lastSeenTs) && track.lastSeenTs > 0
+      ? formatDate(new Date(track.lastSeenTs).toISOString())
+      : formatAlertEventDateLong(alert, { allowPublicationFallback: true });
+  const firstSeenDate =
+    Number.isFinite(track.firstSeenTs) && track.firstSeenTs > 0
+      ? formatDate(new Date(track.firstSeenTs).toISOString())
+      : "Date inconnue";
+
+  ensureIntelOverlayVisible();
+  state.selectedAlertId = null;
+  state.selectedCountryKey = null;
+  state.selectedTrackedAssetKey = track.key;
+
+  toggleFold("detailFold", true);
+  refs.alertDetails.classList.remove("empty-state");
+  refs.alertDetails.innerHTML = `
+    <h3 class="mb-2">${escapeHtml(track.name)} <span class="country-flag">${escapeHtml(track.icon || "◎")}</span></h3>
+    <div class="detail-meta mb-2">
+      <span class="meta-chip tracked-asset-chip">TRACKED ASSET ${escapeHtml(trackedAssetCategoryLabel(track.category))}</span>
+      <span class="meta-chip">${escapeHtml(track.type || "Asset strategique")}</span>
+      <span class="meta-chip">Mentions ${Number(track.mentions || 1)}</span>
+      ${sourceBadgeHtml(alert)}
+      <span class="meta-chip">${escapeHtml(alert?.country?.name || "Inconnu")}</span>
+    </div>
+    <p class="mb-1"><strong>Nom détecté:</strong> ${escapeHtml(track.name)}</p>
+    <p class="mb-1"><strong>Type:</strong> ${escapeHtml(track.type || "Asset strategique")}</p>
+    <p class="mb-1"><strong>Opérateur:</strong> ${escapeHtml(track.operator || "Inconnu")}</p>
+    <p class="mb-1"><strong>Localisation:</strong> ${escapeHtml(location)}</p>
+    <p class="mb-1"><strong>Dernière détection:</strong> ${escapeHtml(lastSeenDate)}</p>
+    <p class="mb-2"><strong>Première détection (fenêtre active):</strong> ${escapeHtml(firstSeenDate)}</p>
+    <p class="mb-2"><strong>Sources:</strong> ${escapeHtml(sourceNames.join(", ") || sourceName)}</p>
+    <p class="mb-2"><strong>Détails événement:</strong> ${escapeHtml(alert?.summary || alert?.title || "Non disponible")}</p>
+    ${
+      alert?.sourceUrl
+        ? `<a href="${escapeHtml(alert.sourceUrl)}" class="btn btn-sm btn-outline-warning" target="_blank" rel="noopener noreferrer">
+      Ouvrir la source
+    </a>`
+        : ""
+    }
+  `;
+}
+
 function renderMapMarkers() {
   const visibleAlerts = getVisibleAlerts();
   const activeMapSignals = filterActiveMapSignals(visibleAlerts);
+  const trackedAssets = buildTrackedAssetTracks(activeMapSignals);
   recomputeCountryStatusLevels();
   updateCountryHeadlineCounters();
   const countrySummaries = buildCountrySummaries(visibleAlerts);
@@ -2816,13 +3304,16 @@ function renderMapMarkers() {
     if (state.markersLayer) {
       state.markersLayer.clearLayers();
     }
+    if (state.assetMarkersLayer) {
+      state.assetMarkersLayer.clearLayers();
+    }
     if (state.countryLegendLayer) {
       state.countryLegendLayer.clearLayers();
     }
     if (!state.globe) {
       initializeGlobe();
     }
-    renderGlobeMarkers(activeMapSignals, visibleAlerts);
+    renderGlobeMarkers(activeMapSignals, visibleAlerts, trackedAssets);
     scheduleMapSignalExpiryRefresh(activeMapSignals);
     return;
   }
@@ -2832,9 +3323,11 @@ function renderMapMarkers() {
   }
 
   state.markersLayer.clearLayers();
+  state.assetMarkersLayer?.clearLayers();
   state.countryLegendLayer?.clearLayers();
 
   const renderedAlerts = selectAlertsForCurrentZoom(activeMapSignals);
+  const renderedAssets = selectTrackedAssetsForCurrentZoom(trackedAssets);
   const priorityCountrySummaries = sortCountrySummariesForLegend(countrySummaries).filter(
     (summary) => summary?.status === "critical" || summary?.status === "tension"
   );
@@ -2845,13 +3338,18 @@ function renderMapMarkers() {
     state.markersLayer.addLayer(marker);
   });
 
+  renderedAssets.forEach((track) => {
+    const marker = createTrackedAssetMarker(track);
+    state.assetMarkersLayer?.addLayer(marker);
+  });
+
   countryLegends.forEach((summary) => {
     const legendMarker = createCountryLegendMarker(summary);
     state.countryLegendLayer?.addLayer(legendMarker);
   });
 
   if (refs.mapOverlayMetric) {
-    refs.mapOverlayMetric.textContent = `${renderedAlerts.length}/${activeMapSignals.length} points actifs | ${countryLegends.length} pays tension/actifs`;
+    refs.mapOverlayMetric.textContent = `${renderedAlerts.length}/${activeMapSignals.length} points actifs | ${renderedAssets.length} assets suivis | ${countryLegends.length} pays tension/actifs`;
   }
 
   scheduleMapSignalExpiryRefresh(activeMapSignals);
@@ -2866,6 +3364,7 @@ function renderAlertDetails(alert) {
   const sourceName = alert?.sourceName || "Inconnue";
 
   state.selectedCountryKey = null;
+  state.selectedTrackedAssetKey = null;
   toggleFold("detailFold", true);
   refs.alertDetails.classList.remove("empty-state");
   refs.alertDetails.innerHTML = `
@@ -4360,6 +4859,7 @@ async function renderCountryDetails(summary) {
   const key = summary?.key || `${summary?.country?.name || "country"}-${Date.now()}`;
   state.selectedCountryKey = key;
   state.selectedAlertId = null;
+  state.selectedTrackedAssetKey = null;
 
   const statusLabel = countryStatusLabel(summary.status);
   const statusClass = countryStatusClass(summary.status);
@@ -4463,6 +4963,17 @@ async function loadAlerts() {
       state.selectedAlertId = null;
       refs.alertDetails.classList.add("empty-state");
       refs.alertDetails.textContent = "Cliquez sur une alerte pour afficher le détail complet.";
+    }
+  }
+
+  if (!state.selectedAlertId && state.selectedTrackedAssetKey) {
+    const selectedTrack = buildTrackedAssetTracks(filterActiveMapSignals(getVisibleAlerts())).find(
+      (track) => track.key === state.selectedTrackedAssetKey
+    );
+    if (selectedTrack) {
+      renderTrackedAssetDetails(selectedTrack);
+    } else {
+      state.selectedTrackedAssetKey = null;
     }
   }
 
@@ -5106,6 +5617,7 @@ function initializeMap() {
   }).addTo(state.map);
 
   state.markersLayer = L.layerGroup().addTo(state.map);
+  state.assetMarkersLayer = L.layerGroup().addTo(state.map);
   state.countryLegendLayer = L.layerGroup().addTo(state.map);
 
   state.map.on("zoomend", () => {
@@ -5142,6 +5654,15 @@ function connectEventStream() {
       if (!tickerExists) {
         state.tickerAlerts.push(alert);
         state.tickerAlerts = sortAlertsByEventTimeDesc(state.tickerAlerts).slice(0, 30);
+      }
+
+      if (state.selectedTrackedAssetKey) {
+        const selectedTrack = buildTrackedAssetTracks(filterActiveMapSignals(getVisibleAlerts())).find(
+          (track) => track.key === state.selectedTrackedAssetKey
+        );
+        if (selectedTrack) {
+          renderTrackedAssetDetails(selectedTrack);
+        }
       }
 
       renderAlertsList();
