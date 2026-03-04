@@ -1805,6 +1805,52 @@ canvas {
   color: #e6edf8;
 }
 
+.country-callout.density-compact {
+  min-height: 21px;
+  max-width: 142px;
+  gap: 0.2rem;
+  padding: 0.08rem 0.28rem 0.08rem 0.22rem;
+  font-size: 0.54rem;
+  letter-spacing: 0.18px;
+}
+
+.country-callout.density-compact .country-callout__arrow {
+  font-size: 0.64rem;
+}
+
+.country-callout.density-compact .country-callout__flag {
+  font-size: 0.74rem;
+}
+
+.country-callout.density-compact .country-callout__name {
+  max-width: 92px;
+}
+
+.country-callout-wrap.density-mini {
+  gap: 0.14rem;
+}
+
+.country-callout.density-mini {
+  min-height: 18px;
+  max-width: 98px;
+  gap: 0.16rem;
+  padding: 0.07rem 0.2rem;
+  font-size: 0.48rem;
+  letter-spacing: 0.12px;
+}
+
+.country-callout.density-mini .country-callout__arrow {
+  display: none;
+}
+
+.country-callout.density-mini .country-callout__flag {
+  font-size: 0.66rem;
+}
+
+.country-callout.density-mini .country-callout__name {
+  max-width: 64px;
+}
+
 .country-callout.status-normal {
   border-color: rgba(53, 239, 159, 0.6);
   box-shadow: 0 0 0 1px rgba(53, 239, 159, 0.28), 0 5px 14px rgba(0, 0, 0, 0.32);

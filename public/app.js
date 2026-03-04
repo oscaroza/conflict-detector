@@ -3595,7 +3595,7 @@ function renderMapMarkers() {
     return summary?.status === "critical" || summary?.status === "tension" || hasNoCitySignals;
   });
   const currentZoom = Number(state.map?.getZoom?.() || 2);
-  const countryLegends = selectCountryLegendsForCurrentZoom(priorityCountrySummaries);
+  const countryLegends = priorityCountrySummaries;
   const noCitySignalGroups = countryLegends.reduce(
     (total, summary) => total + Math.max(0, Number(summary?.noCitySignalItems?.length || 0)),
     0
@@ -5056,114 +5056,19 @@ function sortCountrySummariesForLegend(summaries) {
   return [...(summaries || [])].sort((a, b) => countryLegendPriority(b) - countryLegendPriority(a));
 }
 
-function getCountryLegendLimitForZoom(zoom) {
-  if (!Number.isFinite(zoom)) return 14;
-  if (zoom < 3) return 16;
-  if (zoom < 4) return 20;
-  if (zoom < 5) return 15;
-  if (zoom < 6) return 10;
-  return 7;
-}
-
 function getCountryLegendNameMaxLenForZoom(zoom) {
   if (!Number.isFinite(zoom)) return 22;
-  if (zoom < 2.8) return 14;
-  if (zoom < 3.6) return 18;
+  if (zoom < 2.8) return 8;
+  if (zoom < 4.2) return 13;
   if (zoom < 4.6) return 22;
   return 28;
 }
 
-function getCountryLegendMinSpacingPxForZoom(zoom) {
-  if (!Number.isFinite(zoom)) return 170;
-  if (zoom < 2.8) return 205;
-  if (zoom < 3.6) return 178;
-  if (zoom < 4.6) return 146;
-  if (zoom < 5.6) return 118;
-  return 96;
-}
-
-function selectCountryLegendsForCurrentZoom(countrySummaries) {
-  const source = Array.isArray(countrySummaries) ? countrySummaries : [];
-  if (!source.length) {
-    return [];
-  }
-
-  const zoom = Number(state.map?.getZoom?.() || 2);
-  const maxLegends = getCountryLegendLimitForZoom(zoom);
-  if (!Number.isFinite(maxLegends) || maxLegends <= 0) {
-    return [];
-  }
-
-  const map = state.map;
-  if (!map?.latLngToContainerPoint) {
-    return source.slice(0, maxLegends);
-  }
-
-  const maxCandidates = Math.min(source.length, Math.max(maxLegends * 10, maxLegends));
-  const minSpacingPx = getCountryLegendMinSpacingPxForZoom(zoom);
-  const minSpacingSq = minSpacingPx * minSpacingPx;
-  const placedPoints = [];
-  const selected = [];
-  const selectedIndexes = new Set();
-
-  const canPlaceWithSpacing = (point, spacingSq) => {
-    for (let i = 0; i < placedPoints.length; i += 1) {
-      const existing = placedPoints[i];
-      const dx = point.x - existing.x;
-      const dy = point.y - existing.y;
-      if (dx * dx + dy * dy < spacingSq) {
-        return false;
-      }
-    }
-    return true;
-  };
-
-  const placeSummaryIfPossible = (summary, index, spacingSq) => {
-    const [lat, lng] = summary?.center || [null, null];
-    if (!isValidLatLng(lat, lng)) {
-      return false;
-    }
-
-    let point;
-    try {
-      point = map.latLngToContainerPoint([lat, lng]);
-    } catch (error) {
-      return false;
-    }
-
-    if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
-      return false;
-    }
-
-    if (!canPlaceWithSpacing(point, spacingSq)) {
-      return false;
-    }
-
-    selected.push(summary);
-    selectedIndexes.add(index);
-    placedPoints.push({ x: point.x, y: point.y });
-    return true;
-  };
-
-  for (let i = 0; i < maxCandidates && selected.length < maxLegends; i += 1) {
-    placeSummaryIfPossible(source[i], i, minSpacingSq);
-  }
-
-  if (selected.length < maxLegends) {
-    const relaxedSpacingSq = Math.max(56 * 56, Math.floor(minSpacingSq * 0.58));
-    for (let i = 0; i < maxCandidates && selected.length < maxLegends; i += 1) {
-      if (selectedIndexes.has(i)) {
-        continue;
-      }
-      placeSummaryIfPossible(source[i], i, relaxedSpacingSq);
-    }
-  }
-
-  if (!selected.length) {
-    return source.slice(0, maxLegends);
-  }
-
-  return selected;
+function getCountryLegendDensityMode(zoom) {
+  if (!Number.isFinite(zoom)) return "compact";
+  if (zoom < 2.8) return "mini";
+  if (zoom < 4.2) return "compact";
+  return "full";
 }
 
 function buildGlobeCountryLegendItems(countrySummaries) {
@@ -5201,16 +5106,20 @@ function createCountryLegendMarker(summary, options = {}) {
   const statusClass = countryStatusClass(summary.status);
   const countryName = summary?.country?.name || "Inconnu";
   const zoom = Number(options?.zoom);
+  const densityMode = getCountryLegendDensityMode(zoom);
+  const densityClass = `density-${densityMode}`;
+  const showNoCitySignals = densityMode === "full";
   const nameMaxLen = getCountryLegendNameMaxLenForZoom(zoom);
   const compactName = compactCountryName(countryName, nameMaxLen);
   const flag = countryCodeToFlagEmoji(summary?.country?.code);
   const noCitySignalItems = Array.isArray(summary?.noCitySignalItems)
     ? summary.noCitySignalItems
     : buildNoCitySignalItems(summary?.alerts || []);
-  const signalsRows = noCitySignalItems.length ? Math.ceil(noCitySignalItems.length / 6) : 0;
-  const markerHeight = 30 + (signalsRows > 0 ? 6 + signalsRows * 22 : 0);
-  const markerWidth = 232;
-  const noCitySignalsHtml = noCitySignalItems.length
+  const signalsRows = showNoCitySignals && noCitySignalItems.length ? Math.ceil(noCitySignalItems.length / 6) : 0;
+  const baseMarkerHeight = densityMode === "mini" ? 22 : densityMode === "compact" ? 24 : 30;
+  const markerHeight = baseMarkerHeight + (signalsRows > 0 ? 6 + signalsRows * 22 : 0);
+  const markerWidth = densityMode === "mini" ? 104 : densityMode === "compact" ? 148 : 232;
+  const noCitySignalsHtml = showNoCitySignals && noCitySignalItems.length
     ? `<div class="country-callout-signals">${noCitySignalItems
         .map((item) => {
           const signalLabel = item?.signalVisual?.label || "Signal";
@@ -5232,8 +5141,8 @@ function createCountryLegendMarker(summary, options = {}) {
   const marker = L.marker([lat, lng], {
     icon: L.divIcon({
       className: "",
-      html: `<div class="country-callout-wrap">
-        <div class="country-callout ${statusClass}" title="${escapeHtml(countryName)}"><span class="country-callout__arrow">➤</span><span class="country-callout__flag">${escapeHtml(flag)}</span><span class="country-callout__name">${escapeHtml(compactName)}</span></div>
+      html: `<div class="country-callout-wrap ${densityClass}">
+        <div class="country-callout ${statusClass} ${densityClass}" title="${escapeHtml(countryName)}"><span class="country-callout__arrow">➤</span><span class="country-callout__flag">${escapeHtml(flag)}</span><span class="country-callout__name">${escapeHtml(compactName)}</span></div>
         ${noCitySignalsHtml}
       </div>`,
       iconSize: [markerWidth, markerHeight],
