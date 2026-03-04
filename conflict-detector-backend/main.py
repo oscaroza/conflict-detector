@@ -40,6 +40,15 @@ logger = logging.getLogger("conflict_detector")
 _PIPELINE_COUNTERS = {
     "accepted_requests": 0,
     "rejected_requests": 0,
+    "total_requests": 0,
+    "rejected_by_reason": {},
+}
+
+_ACCEPTED_EVENTS = {"alert_accepted", "rss_alert_accepted"}
+_REJECTED_EVENTS = {"alert_rejected", "rss_alert_rejected", "rss_rejected_no_keywords", "rss_rejected_duplicate"}
+_EVENT_REASON_FALLBACKS = {
+    "rss_rejected_no_keywords": "rss_rejected_no_keywords",
+    "rss_rejected_duplicate": "rss_rejected_duplicate",
 }
 
 
@@ -70,18 +79,56 @@ _RSS_DUPLICATE_WINDOW_SECONDS = _safe_int_env(
 _RSS_DUPLICATE_CACHE_MAX_ITEMS = _safe_int_env("RSS_DUPLICATE_CACHE_MAX_ITEMS", default=1200, minimum=80, maximum=5000)
 _RSS_TITLE_CACHE: List[Dict[str, Any]] = []
 _RSS_TITLE_CACHE_LOCK = asyncio.Lock()
+_RSS_REJECTED_SOURCE_REF_TTL_SECONDS = _safe_int_env(
+    "RSS_REJECTED_SOURCE_REF_TTL_SECONDS",
+    default=24 * 3600,
+    minimum=24 * 3600,
+    maximum=7 * 24 * 3600,
+)
+_RSS_REJECTED_SOURCE_REF_CACHE_MAX_ITEMS = _safe_int_env(
+    "RSS_REJECTED_SOURCE_REF_CACHE_MAX_ITEMS",
+    default=12000,
+    minimum=500,
+    maximum=120000,
+)
+_RSS_REJECTED_SOURCE_REF_CACHE: Dict[str, Dict[str, Any]] = {}
+_RSS_REJECTED_SOURCE_REF_LOCK = asyncio.Lock()
 
 
 def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
+def _normalize_rejection_reason(event_name: str, raw_reason: Any) -> str:
+    fallback = _EVENT_REASON_FALLBACKS.get(event_name, event_name)
+    normalized = str(raw_reason or "").strip().lower()
+    if not normalized:
+        normalized = fallback
+    normalized = re.sub(r"[^a-z0-9_]+", "_", normalized)
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    return normalized or fallback
+
+
+def _increment_rejection_reason(reason: str) -> None:
+    bucket = _PIPELINE_COUNTERS.get("rejected_by_reason")
+    if not isinstance(bucket, dict):
+        bucket = {}
+        _PIPELINE_COUNTERS["rejected_by_reason"] = bucket
+    normalized = str(reason or "").strip() or "unknown_rejection_reason"
+    bucket[normalized] = int(bucket.get(normalized, 0)) + 1
+
+
 def log_event(event: str, **fields: Any) -> None:
     normalized_event = str(event or "").strip().lower()
-    if normalized_event in {"alert_accepted", "rss_alert_accepted"}:
+    if normalized_event in _ACCEPTED_EVENTS:
         _PIPELINE_COUNTERS["accepted_requests"] = int(_PIPELINE_COUNTERS.get("accepted_requests", 0)) + 1
-    elif normalized_event in {"alert_rejected", "rss_alert_rejected", "rss_rejected_no_keywords", "rss_rejected_duplicate"}:
+        _PIPELINE_COUNTERS["total_requests"] = int(_PIPELINE_COUNTERS.get("total_requests", 0)) + 1
+    elif normalized_event in _REJECTED_EVENTS:
+        reason = _normalize_rejection_reason(normalized_event, fields.get("reason"))
+        fields["reason"] = reason
         _PIPELINE_COUNTERS["rejected_requests"] = int(_PIPELINE_COUNTERS.get("rejected_requests", 0)) + 1
+        _PIPELINE_COUNTERS["total_requests"] = int(_PIPELINE_COUNTERS.get("total_requests", 0)) + 1
+        _increment_rejection_reason(reason)
 
     payload = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -91,10 +138,41 @@ def log_event(event: str, **fields: Any) -> None:
     logger.info(json.dumps(payload, ensure_ascii=False))
 
 
-def pipeline_counters_snapshot() -> Dict[str, int]:
+def pipeline_counters_snapshot() -> Dict[str, Any]:
+    accepted = int(_PIPELINE_COUNTERS.get("accepted_requests", 0))
+    rejected = int(_PIPELINE_COUNTERS.get("rejected_requests", 0))
+    total = int(_PIPELINE_COUNTERS.get("total_requests", accepted + rejected))
+    raw_reasons = _PIPELINE_COUNTERS.get("rejected_by_reason")
+    rejected_by_reason = dict(raw_reasons) if isinstance(raw_reasons, dict) else {}
+
+    def _to_int(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    breakdown: List[Dict[str, Any]] = []
+    for reason, count in sorted(
+        ((str(name or ""), _to_int(value)) for name, value in rejected_by_reason.items() if _to_int(value) > 0),
+        key=lambda item: (-item[1], item[0]),
+    ):
+        pct_of_rejected = round((count / rejected) * 100.0, 2) if rejected > 0 else 0.0
+        pct_of_total = round((count / total) * 100.0, 2) if total > 0 else 0.0
+        breakdown.append(
+            {
+                "reason": reason,
+                "count": count,
+                "pct_of_rejected": pct_of_rejected,
+                "pct_of_total": pct_of_total,
+            }
+        )
+
     return {
-        "accepted_requests": int(_PIPELINE_COUNTERS.get("accepted_requests", 0)),
-        "rejected_requests": int(_PIPELINE_COUNTERS.get("rejected_requests", 0)),
+        "accepted_requests": accepted,
+        "rejected_requests": rejected,
+        "total_requests": total,
+        "rejected_by_reason": rejected_by_reason,
+        "rejection_breakdown": breakdown,
     }
 
 
@@ -286,6 +364,69 @@ async def _seed_rss_title_cache_from_db() -> None:
         _prune_rss_title_cache(now_ts)
 
 
+def _normalize_cached_rejection_reason(reason: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9_]+", "_", str(reason or "").strip().lower())
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    return normalized or "unknown_rejection_reason"
+
+
+def _prune_rss_rejected_source_ref_cache(now_ts: float) -> None:
+    cutoff_ts = now_ts - float(_RSS_REJECTED_SOURCE_REF_TTL_SECONDS)
+    if _RSS_REJECTED_SOURCE_REF_CACHE:
+        stale_keys = [
+            key
+            for key, value in _RSS_REJECTED_SOURCE_REF_CACHE.items()
+            if float(value.get("seen_at", 0.0)) < cutoff_ts
+        ]
+        for key in stale_keys:
+            _RSS_REJECTED_SOURCE_REF_CACHE.pop(key, None)
+
+    overflow = len(_RSS_REJECTED_SOURCE_REF_CACHE) - _RSS_REJECTED_SOURCE_REF_CACHE_MAX_ITEMS
+    if overflow > 0:
+        oldest_keys = sorted(
+            _RSS_REJECTED_SOURCE_REF_CACHE.items(),
+            key=lambda item: float(item[1].get("seen_at", 0.0)),
+        )[:overflow]
+        for key, _ in oldest_keys:
+            _RSS_REJECTED_SOURCE_REF_CACHE.pop(key, None)
+
+
+async def _find_rss_rejected_source_ref(source_ref: str) -> Optional[Dict[str, Any]]:
+    normalized_ref = str(source_ref or "").strip()
+    if not normalized_ref:
+        return None
+
+    async with _RSS_REJECTED_SOURCE_REF_LOCK:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        _prune_rss_rejected_source_ref_cache(now_ts)
+        entry = _RSS_REJECTED_SOURCE_REF_CACHE.get(normalized_ref)
+        if entry is None:
+            return None
+        return dict(entry)
+
+
+async def _register_rss_rejected_source_ref(
+    source_ref: str,
+    reason: str,
+    source_name: str,
+    source_url: str,
+    title: str,
+) -> None:
+    normalized_ref = str(source_ref or "").strip()
+    if not normalized_ref:
+        return
+
+    async with _RSS_REJECTED_SOURCE_REF_LOCK:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        _prune_rss_rejected_source_ref_cache(now_ts)
+        _RSS_REJECTED_SOURCE_REF_CACHE[normalized_ref] = {
+            "reason": _normalize_cached_rejection_reason(reason),
+            "source_name": str(source_name or "").strip()[:180],
+            "source_url": str(source_url or "").strip()[:1200],
+            "title": str(title or "").strip()[:220],
+            "seen_at": now_ts,
+        }
+
 def _normalize_channel_handle(source_channel: str) -> str:
     raw = str(source_channel or "").strip().lstrip("@")
     return re.sub(r"[^a-zA-Z0-9_]", "", raw)
@@ -440,6 +581,42 @@ _FALLBACK_PRESS_TERMS = [
     "anniversary",
     "years ago",
 ]
+
+_TITLE_FR_MAX_WORDS = 8
+_TITLE_FR_NOISE_PATTERNS = [
+    re.compile(r"^\s*(breaking|urgent|alerte|flash)\s*[:\-–]*\s*", flags=re.IGNORECASE),
+    re.compile(r"^\s*(report|reports?|reported)\s*[:\-–]*\s*", flags=re.IGNORECASE),
+    re.compile(r"^\s*(sources?\s+say|according\s+to\s+sources?)\s*[:\-–]*\s*", flags=re.IGNORECASE),
+    re.compile(r"^\s*(it\s+is\s+reported\s+that)\s*[:\-–]*\s*", flags=re.IGNORECASE),
+]
+_FALLBACK_CATEGORY_TITLE_FR = {
+    "missile": "Frappe missile",
+    "drone": "Attaque drone",
+    "frappe_aerienne": "Frappe aerienne",
+    "artillerie": "Tirs d artillerie",
+    "conflit_terrestre": "Combat terrestre",
+    "cyberattaque": "Cyberattaque",
+    "diplomatie": "Tension diplomatique",
+    "terrorisme": "Attaque terroriste",
+    "nucleaire": "Incident nucleaire",
+    "autre": "Incident geopolitique",
+}
+_TITLE_FR_FRENCH_HINTS = {"a", "au", "aux", "en", "dans", "sur", "pres", "de", "attaque", "frappe", "incident", "explosion"}
+_TITLE_FR_ENGLISH_HINTS = {
+    "near",
+    "in",
+    "at",
+    "from",
+    "report",
+    "reported",
+    "sources",
+    "say",
+    "strike",
+    "strikes",
+    "attack",
+    "breaking",
+    "missile",
+}
 
 _RSS_GROQ_GATE_TERMS = [
     # Militaire / conflit
@@ -606,6 +783,78 @@ def _fallback_ai_severity(base_severity: str) -> Dict[str, Any]:
     return {"severity": severity, "severity_score": score}
 
 
+def _clean_title_fr(value: str, max_words: int = _TITLE_FR_MAX_WORDS) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+
+    changed = True
+    while changed:
+        changed = False
+        for pattern in _TITLE_FR_NOISE_PATTERNS:
+            next_text = pattern.sub("", text).strip()
+            if next_text != text:
+                text = next_text
+                changed = True
+
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9'’-]+", text)
+    if not words:
+        return ""
+    normalized = " ".join(words[: max(1, int(max_words))]).strip()
+    if not normalized:
+        return ""
+    return normalized[0].upper() + normalized[1:]
+
+
+def _looks_non_french_title(value: str) -> bool:
+    tokens = [token.lower() for token in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9'’-]+", str(value or ""))]
+    if not tokens:
+        return True
+    english_hits = sum(1 for token in tokens if token in _TITLE_FR_ENGLISH_HINTS)
+    french_hits = sum(1 for token in tokens if token in _TITLE_FR_FRENCH_HINTS)
+    return english_hits >= 2 and french_hits == 0
+
+
+def _build_title_fr_fallback(
+    payload: Dict[str, Any],
+    category_hint: str = "",
+    location_hint: str = "",
+) -> str:
+    explicit = _clean_title_fr(str(payload.get("title_fr") or ""))
+    if explicit and not _looks_non_french_title(explicit):
+        return explicit
+
+    category = str(category_hint or payload.get("ai_category") or "").strip().lower()
+    event_label = _FALLBACK_CATEGORY_TITLE_FR.get(category, _FALLBACK_CATEGORY_TITLE_FR["autre"])
+    if not event_label:
+        event_label = _FALLBACK_CATEGORY_TITLE_FR["autre"]
+
+    location = " ".join(
+        str(
+            location_hint
+            or payload.get("event_location")
+            or payload.get("country")
+            or ""
+        ).strip().split()
+    )
+    location = re.sub(r"\bnear\b", "pres de", location, flags=re.IGNORECASE)
+    location = re.sub(r"\bin\b", "a", location, flags=re.IGNORECASE)
+    location = re.sub(r"\bat\b", "a", location, flags=re.IGNORECASE)
+    location = re.sub(r"\bon\b", "a", location, flags=re.IGNORECASE)
+    location = location.strip(" ,.;:-")
+
+    if location and location.lower() not in {"inconnu", "unknown", "global"}:
+        lower_location = location.lower()
+        if lower_location.startswith(("pres de ", "a ", "au ", "aux ", "en ", "dans ", "sur ")):
+            candidate = f"{event_label} {location}"
+        else:
+            candidate = f"{event_label} a {location}"
+    else:
+        candidate = event_label
+
+    return _clean_title_fr(candidate)
+
+
 def _build_keyword_fallback_ai(payload: Dict[str, Any]) -> Dict[str, Any]:
     source_text = " ".join(
         [
@@ -668,9 +917,16 @@ def _build_keyword_fallback_ai(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not subcategories:
         subcategories = (terrain_hits or diplomatic_hits or press_hits)[:4]
 
+    title_fr = _build_title_fr_fallback(
+        payload,
+        category_hint=chosen_category,
+        location_hint=location_of_event,
+    )
+
     return {
         "category": chosen_category,
         "event_type": event_type,
+        "title_fr": title_fr,
         "actor": "",
         "actor_action": "",
         "target": "",
@@ -712,6 +968,7 @@ def _pending_ai_result(error: str = "queued_for_ai_analysis") -> Dict[str, Any]:
     return {
         "category": "autre",
         "event_type": "press_return",
+        "title_fr": "",
         "actor": "",
         "actor_action": "",
         "target": "",
@@ -796,6 +1053,7 @@ def _apply_ai_enrichment(payload: Dict[str, Any], ai_result: Dict[str, Any]) -> 
     enriched["ai_analyzed"] = bool(ai.get("ai_analyzed"))
     enriched["ai_category"] = str(ai.get("category") or "autre")
     enriched["ai_event_type"] = str(ai.get("event_type") or "press_return")
+    enriched["title_fr"] = _clean_title_fr(str(ai.get("title_fr") or enriched.get("title_fr") or ""))
     enriched["event_actor"] = str(ai.get("actor") or "").strip()
     enriched["event_actor_action"] = str(ai.get("actor_action") or "").strip()
     enriched["event_target"] = str(ai.get("target") or "").strip()
@@ -818,10 +1076,17 @@ def _apply_ai_enrichment(payload: Dict[str, Any], ai_result: Dict[str, Any]) -> 
         confidence = int(enriched.get("confidence") or 0)
         reliability = int(round(max(0.0, min(1.0, enriched["ai_reliability_score"])) * 100))
         enriched["confidence"] = max(0, min(100, int(round(confidence * 0.65 + reliability * 0.35))))
+        if not enriched["title_fr"] or _looks_non_french_title(enriched["title_fr"]):
+            enriched["title_fr"] = _build_title_fr_fallback(
+                enriched,
+                category_hint=enriched["ai_category"],
+                location_hint=str(enriched.get("event_location") or ""),
+            )
     else:
         fallback = _build_keyword_fallback_ai(enriched)
         enriched["ai_category"] = fallback["category"]
         enriched["ai_event_type"] = fallback["event_type"]
+        enriched["title_fr"] = _clean_title_fr(str(fallback.get("title_fr") or ""))
         enriched["event_actor"] = fallback["actor"]
         enriched["event_actor_action"] = fallback["actor_action"]
         enriched["event_target"] = fallback["target"]
@@ -947,9 +1212,31 @@ async def process_rss_item(item: Dict[str, Any]) -> None:
             existing = await get_alert_by_source_ref(source_ref)
             if existing is not None:
                 return
+            cached_rejected = await _find_rss_rejected_source_ref(source_ref)
+            if cached_rejected is not None:
+                now_ts = datetime.now(timezone.utc).timestamp()
+                seen_at = float(cached_rejected.get("seen_at", 0.0))
+                age_seconds = max(0, int(now_ts - seen_at)) if seen_at > 0 else None
+                log_event(
+                    "rss_skipped_cached_rejection",
+                    source=source_name,
+                    source_ref=source_ref,
+                    source_url=source_url,
+                    title=(title or "")[:180],
+                    reason=str(cached_rejected.get("reason") or ""),
+                    cached_age_seconds=age_seconds,
+                )
+                return
 
         keyword_gate = _rss_has_groq_keywords(title=title, description=description)
         if not keyword_gate["accepted"]:
+            await _register_rss_rejected_source_ref(
+                source_ref=source_ref,
+                reason="rss_rejected_no_keywords",
+                source_name=source_name,
+                source_url=source_url,
+                title=title,
+            )
             log_event(
                 "rss_rejected_no_keywords",
                 source=source_name,
@@ -975,6 +1262,13 @@ async def process_rss_item(item: Dict[str, Any]) -> None:
 
         duplicate_match = await _find_rss_title_duplicate(ai_title, source_ref)
         if duplicate_match is not None:
+            await _register_rss_rejected_source_ref(
+                source_ref=source_ref,
+                reason="rss_rejected_duplicate",
+                source_name=source_name,
+                source_url=source_url,
+                title=ai_title,
+            )
             log_event(
                 "rss_rejected_duplicate",
                 source=source_name,
@@ -1016,6 +1310,13 @@ async def process_rss_item(item: Dict[str, Any]) -> None:
 
         inserted = await insert_alert(alert_payload)
         if inserted is None:
+            await _register_rss_rejected_source_ref(
+                source_ref=source_ref,
+                reason="rss_rejected_duplicate",
+                source_name=source_name,
+                source_url=source_url,
+                title=ai_title,
+            )
             log_event(
                 "rss_rejected_duplicate",
                 source=source_name,
@@ -1244,6 +1545,8 @@ async def startup() -> None:
         rss_poll_seconds=app.state.rss_scraper.poll_seconds,
         rss_duplicate_title_threshold=_RSS_DUPLICATE_TITLE_THRESHOLD,
         rss_duplicate_window_seconds=_RSS_DUPLICATE_WINDOW_SECONDS,
+        rss_rejected_source_ref_ttl_seconds=_RSS_REJECTED_SOURCE_REF_TTL_SECONDS,
+        rss_rejected_source_ref_cache_max_items=_RSS_REJECTED_SOURCE_REF_CACHE_MAX_ITEMS,
         alert_score_threshold=ALERT_SCORE_THRESHOLD,
         duplicate_window_seconds=DUPLICATE_WINDOW_SECONDS,
         similarity_threshold=SIMILARITY_THRESHOLD,

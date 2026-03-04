@@ -144,6 +144,7 @@ async def _migrate_alerts_schema(conn: aiosqlite.Connection) -> None:
     await _ensure_column(conn, existing_columns, "source_type", "TEXT NOT NULL DEFAULT 'telegram'")
     await _ensure_column(conn, existing_columns, "source_ref", "TEXT NOT NULL DEFAULT ''")
     await _ensure_column(conn, existing_columns, "source_url", "TEXT NOT NULL DEFAULT ''")
+    await _ensure_column(conn, existing_columns, "title_fr", "TEXT NOT NULL DEFAULT ''")
     await _ensure_column(conn, existing_columns, "ai_analyzed", "INTEGER NOT NULL DEFAULT 0")
     await _ensure_column(conn, existing_columns, "ai_category", "TEXT NOT NULL DEFAULT 'autre'")
     await _ensure_column(conn, existing_columns, "ai_event_type", "TEXT NOT NULL DEFAULT 'press_return'")
@@ -171,6 +172,7 @@ async def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
                 title TEXT NOT NULL,
+                title_fr TEXT NOT NULL DEFAULT '',
                 type TEXT NOT NULL,
                 country TEXT NOT NULL,
                 region TEXT NOT NULL,
@@ -276,17 +278,18 @@ async def insert_alert(alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             cursor = await conn.execute(
                 """
                 INSERT INTO alerts (
-                    timestamp, title, type, country, region, lat, lng,
+                    timestamp, title, title_fr, type, country, region, lat, lng,
                     severity, confidence, source_channel, original_text, score,
                     source_type, source_ref, source_url,
                     ai_analyzed, ai_category, ai_event_type, ai_subcategories, ai_severity, ai_severity_score,
                     ai_countries, ai_actors, ai_summary, ai_reliability_score, ai_is_conflict_related,
                     event_actor, event_actor_action, event_target, event_location, event_context
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_ts.isoformat(),
                     str(alert.get("title") or "")[:220] or "Alerte terrain",
+                    str(alert.get("title_fr") or "")[:180],
                     str(alert.get("type") or "geopolitique"),
                     str(alert.get("country") or "Inconnu"),
                     str(alert.get("region") or "Global"),
@@ -348,6 +351,7 @@ async def update_alert_ai_fields(alert_id: int, payload: Dict[str, Any]) -> Opti
                 SET
                     severity = ?,
                     confidence = ?,
+                    title_fr = ?,
                     ai_analyzed = ?,
                     ai_category = ?,
                     ai_event_type = ?,
@@ -369,6 +373,7 @@ async def update_alert_ai_fields(alert_id: int, payload: Dict[str, Any]) -> Opti
                 (
                     str(payload.get("severity") or "moyen")[:32],
                     max(0, min(100, _safe_int(payload.get("confidence"), 0))),
+                    str(payload.get("title_fr") or "")[:180],
                     1 if bool(payload.get("ai_analyzed")) else 0,
                     str(payload.get("ai_category") or "autre")[:80],
                     str(payload.get("ai_event_type") or "press_return")[:40],

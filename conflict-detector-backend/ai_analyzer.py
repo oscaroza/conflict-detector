@@ -6,7 +6,7 @@ import threading
 import time
 import logging
 from collections import OrderedDict, deque
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from groq import Groq
@@ -85,11 +85,48 @@ _EVENT_TYPE_MAP = {
     "diplomatic": "diplomatic",
 }
 
+_TITLE_FR_MAX_WORDS = 8
+_TITLE_FR_NOISE_PATTERNS = [
+    re.compile(r"^\s*(breaking|urgent|alerte|flash)\s*[:\-–]*\s*", flags=re.IGNORECASE),
+    re.compile(r"^\s*(report|reports?|reported)\s*[:\-–]*\s*", flags=re.IGNORECASE),
+    re.compile(r"^\s*(sources?\s+say|according\s+to\s+sources?)\s*[:\-–]*\s*", flags=re.IGNORECASE),
+    re.compile(r"^\s*(it\s+is\s+reported\s+that)\s*[:\-–]*\s*", flags=re.IGNORECASE),
+]
+_CATEGORY_TITLE_FR = {
+    "missile": "Frappe missile",
+    "drone": "Attaque drone",
+    "frappe_aerienne": "Frappe aerienne",
+    "artillerie": "Tirs d artillerie",
+    "conflit_terrestre": "Combat terrestre",
+    "cyberattaque": "Cyberattaque",
+    "diplomatie": "Tension diplomatique",
+    "terrorisme": "Attaque terroriste",
+    "nucleaire": "Incident nucleaire",
+    "autre": "Incident geopolitique",
+}
+_TITLE_FR_FRENCH_HINTS = {"a", "au", "aux", "en", "dans", "sur", "pres", "de", "attaque", "frappe", "incident", "explosion"}
+_TITLE_FR_ENGLISH_HINTS = {
+    "near",
+    "in",
+    "at",
+    "from",
+    "report",
+    "reported",
+    "sources",
+    "say",
+    "strike",
+    "strikes",
+    "attack",
+    "breaking",
+    "missile",
+}
+
 
 def _neutral_result(error: str = "") -> Dict[str, Any]:
     return {
         "category": "autre",
         "event_type": "press_return",
+        "title_fr": "",
         "actor": "",
         "actor_action": "",
         "target": "",
@@ -110,6 +147,119 @@ def _neutral_result(error: str = "") -> Dict[str, Any]:
         "ai_retryable": False,
         "ai_retry_in_seconds": 0,
     }
+
+
+def _compact_spaces(value: str) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _strip_title_noise(value: str) -> str:
+    text = _compact_spaces(value)
+    if not text:
+        return ""
+    changed = True
+    while changed:
+        changed = False
+        for pattern in _TITLE_FR_NOISE_PATTERNS:
+            next_text = pattern.sub("", text).strip()
+            if next_text != text:
+                text = next_text
+                changed = True
+    text = text.strip(" .,:;|-")
+    return _compact_spaces(text)
+
+
+def _limit_title_words(value: str, max_words: int = _TITLE_FR_MAX_WORDS) -> str:
+    cleaned = _strip_title_noise(value)
+    if not cleaned:
+        return ""
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9'’-]+", cleaned)
+    if not words:
+        return ""
+    limited = " ".join(words[: max(1, int(max_words))]).strip()
+    if not limited:
+        return ""
+    return limited[0].upper() + limited[1:]
+
+
+def _location_hint_to_fr(value: str) -> str:
+    text = _compact_spaces(value)
+    if not text:
+        return ""
+    text = re.sub(r"\b\d+\s*km\s+from\b", "pres de", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bnear\b", "pres de", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bin\b", "a", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bat\b", "a", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bon\b", "a", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" ,.;:-")
+    return text
+
+
+def _looks_non_french_title(value: str) -> bool:
+    tokens = [token.lower() for token in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9'’-]+", str(value or ""))]
+    if not tokens:
+        return True
+    english_hits = sum(1 for token in tokens if token in _TITLE_FR_ENGLISH_HINTS)
+    french_hits = sum(1 for token in tokens if token in _TITLE_FR_FRENCH_HINTS)
+    return english_hits >= 2 and french_hits == 0
+
+
+def _pick_location_hint(payload: Dict[str, Any], title: str, description: str) -> str:
+    location_raw = _compact_spaces(str(payload.get("location_of_event") or ""))
+    if location_raw:
+        return location_raw
+
+    countries = _as_str_list(payload.get("countries"))
+    if countries:
+        return _compact_spaces(countries[0])
+
+    combined = f"{title} {description}"
+    loc_match = re.search(
+        r"\b(?:near|in|at|from)\s+([A-Z][A-Za-z0-9'’\-]+(?:\s+[A-Z][A-Za-z0-9'’\-]+){0,3})",
+        combined,
+    )
+    if loc_match:
+        return _compact_spaces(loc_match.group(1))
+    return ""
+
+
+def _infer_event_label(payload: Dict[str, Any], title: str, description: str) -> str:
+    category = str(payload.get("category") or "").strip().lower()
+    if category in _CATEGORY_TITLE_FR:
+        return _CATEGORY_TITLE_FR[category]
+
+    haystack = f"{title} {description} {payload.get('actor_action') or ''}".lower()
+    if "explosion" in haystack or "blast" in haystack:
+        return "Explosion"
+    if "missile" in haystack or "strike" in haystack:
+        return "Frappe"
+    if "drone" in haystack:
+        return "Attaque drone"
+    if "troop" in haystack or "combat" in haystack:
+        return "Combat"
+    if "nuclear" in haystack:
+        return "Incident nucleaire"
+    return _CATEGORY_TITLE_FR["autre"]
+
+
+def _build_title_fr(payload: Dict[str, Any], title: str, description: str) -> str:
+    ai_candidate = _limit_title_words(str(payload.get("title_fr") or ""))
+    if ai_candidate and not _looks_non_french_title(ai_candidate):
+        return ai_candidate
+
+    event_label = _infer_event_label(payload, title, description)
+    location_hint = _location_hint_to_fr(_pick_location_hint(payload, title, description))
+
+    if location_hint:
+        lower_hint = location_hint.lower()
+        if lower_hint.startswith(("pres de ", "a ", "au ", "aux ", "en ", "dans ", "sur ")):
+            fallback = f"{event_label} {location_hint}"
+        else:
+            fallback = f"{event_label} a {location_hint}"
+    else:
+        fallback = event_label
+
+    return _limit_title_words(fallback)
 
 
 def _clamp_score(value: Any) -> float:
@@ -242,7 +392,7 @@ def _set_model_in_result(payload: Dict[str, Any], model_name: str) -> Dict[str, 
     return normalized
 
 
-def _normalize_result(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_result(payload: Dict[str, Any], title: str = "", description: str = "") -> Dict[str, Any]:
     category = str(payload.get("category") or "autre").strip().lower()
     if category not in _ALLOWED_CATEGORIES:
         category = "autre"
@@ -261,6 +411,7 @@ def _normalize_result(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "category": category,
         "event_type": event_type,
+        "title_fr": _build_title_fr(payload, title=title, description=description),
         "actor": actor,
         "actor_action": actor_action,
         "target": target,
@@ -331,7 +482,7 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
     system_prompt = (
         "You are a geopolitical conflict event classifier and triage assistant. "
         "Return ONLY valid JSON with keys: "
-        "category, event_type, actor, actor_action, target, location_of_event, context, "
+        "category, event_type, title_fr, actor, actor_action, target, location_of_event, context, "
         "subcategories, severity, severity_score, countries, actors, summary, reliability_score, is_conflict_related. "
         "Allowed category values: missile, drone, frappe_aerienne, artillerie, conflit_terrestre, cyberattaque, diplomatie, terrorisme, nucleaire, autre. "
         "Allowed event_type values: terrain_event, press_return, diplomatic. "
@@ -340,6 +491,8 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
         "target is who/what receives the action. "
         "location_of_event is where the physical event occurred. "
         "context is diplomatic/observer reactions around the event. "
+        "title_fr must be a short direct French headline (quoi + ou), max 8 words. "
+        "title_fr must remove noisy formulas such as BREAKING, REPORT, sources say, it is reported that. "
         "Do not mix actor and target. "
         "If the grammatical subject uses observer verbs (condemns, protests, reacts to, denounces, was hit by, suffered), "
         "the real actor is often in the complement clause. "
@@ -389,7 +542,7 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
                     last_error = f"invalid_groq_json model={model_name} json_mode={force_json_mode}"
                     continue
 
-                normalized = _normalize_result(raw)
+                normalized = _normalize_result(raw, title=safe_title, description=safe_description)
                 return _set_model_in_result(normalized, model_name)
             except Exception as exc:
                 error_message = _error_text(exc)
