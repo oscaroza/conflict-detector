@@ -717,6 +717,60 @@ h1 {
   color: #f3f7ff;
 }
 
+.ai-reject-panel {
+  margin-top: 0.14rem;
+  border-top: 1px dashed rgba(255, 255, 255, 0.12);
+  padding-top: 0.24rem;
+  display: grid;
+  gap: 0.16rem;
+}
+
+.ai-reject-title {
+  margin: 0;
+  font-size: 0.6rem;
+  letter-spacing: 0.35px;
+  color: #f2c66e;
+  text-transform: uppercase;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.ai-reject-list {
+  display: grid;
+  gap: 0.14rem;
+}
+
+.ai-reject-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(1, 3, 7, 0.5);
+  padding: 0.14rem 0.22rem;
+}
+
+.ai-reject-reason {
+  font-size: 0.56rem;
+  color: #c8d5e7;
+  line-height: 1.3;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.ai-reject-metrics {
+  white-space: normal;
+  text-align: right;
+  font-size: 0.56rem;
+  color: #f3f7ff;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.ai-reject-empty {
+  margin: 0;
+  font-size: 0.56rem;
+  color: #8ea0bd;
+  font-family: "IBM Plex Mono", monospace;
+}
+
 .ai-logs-link {
   margin-top: 0.18rem;
   font-size: 0.6rem;

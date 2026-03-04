@@ -2744,6 +2744,9 @@ async function getAiQueueStatus(force = false) {
       rate_limit_per_minute: Number(process.env.AI_RATE_LIMIT_PER_MINUTE) || DEFAULT_AI_RATE_LIMIT_PER_MINUTE,
       accepted_requests: 0,
       rejected_requests: 0,
+      total_requests: 0,
+      rejected_by_reason: {},
+      rejection_breakdown: [],
       saturation_pct: 0,
       source: "local-fallback",
       updatedAt: new Date().toISOString()
@@ -2761,6 +2764,24 @@ async function getAiQueueStatus(force = false) {
       throw new Error(`Status code ${response.status}`);
     }
     const payload = await response.json();
+    const acceptedRequests = Math.max(0, Number(payload?.accepted_requests || 0));
+    const rejectedRequests = Math.max(0, Number(payload?.rejected_requests || 0));
+    const totalRequests = Math.max(0, Number(payload?.total_requests || acceptedRequests + rejectedRequests));
+    const rejectedByReason =
+      payload?.rejected_by_reason && typeof payload.rejected_by_reason === "object" && !Array.isArray(payload.rejected_by_reason)
+        ? payload.rejected_by_reason
+        : {};
+    const rejectionBreakdown = Array.isArray(payload?.rejection_breakdown)
+      ? payload.rejection_breakdown
+          .map((item) => ({
+            reason: String(item?.reason || "").trim(),
+            count: Math.max(0, Number(item?.count || 0)),
+            pct_of_rejected: Math.max(0, Number(item?.pct_of_rejected || 0)),
+            pct_of_total: Math.max(0, Number(item?.pct_of_total || 0))
+          }))
+          .filter((item) => item.reason && item.count > 0)
+      : [];
+
     const mapped = {
       provider: payload?.provider || "groq",
       ready: Boolean(payload?.ready),
@@ -2768,8 +2789,11 @@ async function getAiQueueStatus(force = false) {
       queue_capacity: Number(payload?.queue_capacity || 0),
       processed_last_minute: Number(payload?.processed_last_minute || 0),
       rate_limit_per_minute: Number(payload?.rate_limit_per_minute || DEFAULT_AI_RATE_LIMIT_PER_MINUTE),
-      accepted_requests: Math.max(0, Number(payload?.accepted_requests || 0)),
-      rejected_requests: Math.max(0, Number(payload?.rejected_requests || 0)),
+      accepted_requests: acceptedRequests,
+      rejected_requests: rejectedRequests,
+      total_requests: totalRequests,
+      rejected_by_reason: rejectedByReason,
+      rejection_breakdown: rejectionBreakdown,
       saturation_pct: Number(payload?.saturation_pct || 0),
       source: "telegram-backend",
       updatedAt: new Date().toISOString()
@@ -2787,6 +2811,9 @@ async function getAiQueueStatus(force = false) {
       rate_limit_per_minute: Number(process.env.AI_RATE_LIMIT_PER_MINUTE) || DEFAULT_AI_RATE_LIMIT_PER_MINUTE,
       accepted_requests: 0,
       rejected_requests: 0,
+      total_requests: 0,
+      rejected_by_reason: {},
+      rejection_breakdown: [],
       saturation_pct: 0,
       source: "error",
       error: error.message,

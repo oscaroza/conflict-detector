@@ -47,7 +47,8 @@ const state = {
     enabled: false,
     permission: "default"
   },
-  mobileTab: "map"
+  mobileTab: "map",
+  liveNotificationsCutoffTs: 0
 };
 
 const refs = {
@@ -125,8 +126,10 @@ const refs = {
   aiLoadBar: document.getElementById("aiLoadBar"),
   aiLoadValue: document.getElementById("aiLoadValue"),
   aiLoadMeta: document.getElementById("aiLoadMeta"),
+  aiTotalCount: document.getElementById("aiTotalCount"),
   aiAcceptedCount: document.getElementById("aiAcceptedCount"),
-  aiRejectedCount: document.getElementById("aiRejectedCount")
+  aiRejectedCount: document.getElementById("aiRejectedCount"),
+  aiRejectReasonsList: document.getElementById("aiRejectReasonsList")
 };
 
 let audioContext = null;
@@ -157,6 +160,13 @@ const MAP_SIGNAL_TTL_MINUTES = 60;
 const MAP_SIGNAL_TTL_MS = MAP_SIGNAL_TTL_MINUTES * 60 * 1000;
 const CONNECTIVITY_REFRESH_MS = 5 * 60 * 1000;
 const AI_QUEUE_REFRESH_MS = 18 * 1000;
+const REJECTION_REASON_LABELS = {
+  score_below_threshold: "score sous le seuil",
+  rss_rejected_no_keywords: "RSS sans mots-cles geopolitique",
+  rss_rejected_duplicate: "RSS doublon",
+  excluded_by_keywords: "mots-cles d exclusion",
+  empty_message: "message vide"
+};
 const TRACKED_ASSET_DEFINITIONS = [
   {
     key: "fs-charles-de-gaulle",
@@ -1613,6 +1623,52 @@ function sortAlertsByEventTimeDesc(alerts) {
 
     return String(b?._id || "").localeCompare(String(a?._id || ""));
   });
+}
+
+function latestKnownAlertEventTimestamp() {
+  let latestTs = 0;
+  const pools = [state.alerts, state.tickerAlerts];
+
+  pools.forEach((pool) => {
+    (pool || []).forEach((alert) => {
+      const ts = getAlertEventTimestamp(alert);
+      if (Number.isFinite(ts) && ts > latestTs) {
+        latestTs = ts;
+      }
+    });
+  });
+
+  return latestTs;
+}
+
+function armLiveNotificationsCutoff() {
+  const knownLatestTs = latestKnownAlertEventTimestamp();
+  const fallbackTs = Date.now();
+  const nextCutoffTs = knownLatestTs > 0 ? knownLatestTs : fallbackTs;
+
+  state.liveNotificationsCutoffTs = Math.max(
+    Number(state.liveNotificationsCutoffTs || 0),
+    Number(nextCutoffTs || 0)
+  );
+}
+
+function shouldNotifyForLiveIncomingAlert(alert, options = {}) {
+  const { alreadyKnown = false } = options;
+  if (alreadyKnown) {
+    return false;
+  }
+
+  const cutoffTs = Number(state.liveNotificationsCutoffTs || 0);
+  if (!Number.isFinite(cutoffTs) || cutoffTs <= 0) {
+    return true;
+  }
+
+  const alertTs = getAlertEventTimestamp(alert);
+  if (!Number.isFinite(alertTs) || alertTs <= 0) {
+    return false;
+  }
+
+  return alertTs > cutoffTs;
 }
 
 function scheduleMapSignalExpiryRefresh(alerts = []) {
@@ -6615,6 +6671,106 @@ function updateDetectionStatus() {
   refs.togglePauseBtn.textContent = paused ? "Reprendre" : "Pause";
 }
 
+function normalizeRejectionReason(reason) {
+  const normalized = String(reason || "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) {
+    return "unknown_reason";
+  }
+  return normalized.replace(/[^a-z0-9_]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "") || "unknown_reason";
+}
+
+function rejectionReasonLabel(reason) {
+  const normalized = normalizeRejectionReason(reason);
+  if (REJECTION_REASON_LABELS[normalized]) {
+    return REJECTION_REASON_LABELS[normalized];
+  }
+  return normalized.replace(/_/g, " ");
+}
+
+function toFixedPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return "0%";
+  }
+  return `${numeric.toFixed(1)}%`;
+}
+
+function extractRejectionBreakdown(payload, rejectedRequests, totalRequests) {
+  if (Array.isArray(payload?.rejection_breakdown)) {
+    return payload.rejection_breakdown
+      .map((item) => {
+        const reason = normalizeRejectionReason(item?.reason);
+        const count = Math.max(0, Number(item?.count || 0));
+        if (!reason || count <= 0) {
+          return null;
+        }
+        const pctOfRejected = Number(item?.pct_of_rejected);
+        const pctOfTotal = Number(item?.pct_of_total);
+        return {
+          reason,
+          count,
+          pctOfRejected: Number.isFinite(pctOfRejected)
+            ? Math.max(0, pctOfRejected)
+            : rejectedRequests > 0
+              ? (count * 100) / rejectedRequests
+              : 0,
+          pctOfTotal: Number.isFinite(pctOfTotal)
+            ? Math.max(0, pctOfTotal)
+            : totalRequests > 0
+              ? (count * 100) / totalRequests
+              : 0
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+  }
+
+  const map = payload?.rejected_by_reason;
+  if (!map || typeof map !== "object" || Array.isArray(map)) {
+    return [];
+  }
+  return Object.entries(map)
+    .map(([reason, countRaw]) => {
+      const reasonKey = normalizeRejectionReason(reason);
+      const count = Math.max(0, Number(countRaw || 0));
+      if (!reasonKey || count <= 0) {
+        return null;
+      }
+      return {
+        reason: reasonKey,
+        count,
+        pctOfRejected: rejectedRequests > 0 ? (count * 100) / rejectedRequests : 0,
+        pctOfTotal: totalRequests > 0 ? (count * 100) / totalRequests : 0
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+}
+
+function renderRejectionBreakdown(payload, rejectedRequests, totalRequests) {
+  if (!refs.aiRejectReasonsList) {
+    return;
+  }
+
+  const rows = extractRejectionBreakdown(payload, rejectedRequests, totalRequests);
+  if (rows.length === 0 || rejectedRequests <= 0) {
+    refs.aiRejectReasonsList.innerHTML = '<p class="ai-reject-empty">Aucun rejet detecte.</p>';
+    return;
+  }
+
+  refs.aiRejectReasonsList.innerHTML = rows
+    .map((row) => {
+      const reasonLabel = escapeHtml(rejectionReasonLabel(row.reason));
+      const countLabel = Math.max(0, Number(row.count || 0));
+      const pctRejectedLabel = toFixedPercent(row.pctOfRejected);
+      const pctTotalLabel = toFixedPercent(row.pctOfTotal);
+      return `<div class="ai-reject-row"><span class="ai-reject-reason">${reasonLabel}</span><span class="ai-reject-metrics">${countLabel} | ${pctRejectedLabel} rejets | ${pctTotalLabel} total</span></div>`;
+    })
+    .join("");
+}
+
 function renderAiQueueStatus(payload = null) {
   if (!refs.aiLoadBar || !refs.aiLoadValue || !refs.aiLoadMeta) {
     return;
@@ -6626,6 +6782,7 @@ function renderAiQueueStatus(payload = null) {
   const perMinute = Math.max(0, Number(payload?.processed_last_minute || 0));
   const acceptedRequests = Math.max(0, Number(payload?.accepted_requests || 0));
   const rejectedRequests = Math.max(0, Number(payload?.rejected_requests || 0));
+  const totalRequests = Math.max(0, Number(payload?.total_requests || acceptedRequests + rejectedRequests));
   const ready = Boolean(payload?.ready);
   const provider = String(payload?.provider || "n/a").toUpperCase();
 
@@ -6640,6 +6797,10 @@ function renderAiQueueStatus(payload = null) {
   if (refs.aiRejectedCount) {
     refs.aiRejectedCount.textContent = String(rejectedRequests);
   }
+  if (refs.aiTotalCount) {
+    refs.aiTotalCount.textContent = String(totalRequests);
+  }
+  renderRejectionBreakdown(payload, rejectedRequests, totalRequests);
 }
 
 async function loadAiQueueStatus() {
@@ -6654,6 +6815,9 @@ async function loadAiQueueStatus() {
       processed_last_minute: 0,
       accepted_requests: 0,
       rejected_requests: 0,
+      total_requests: 0,
+      rejected_by_reason: {},
+      rejection_breakdown: [],
       provider: "n/a",
       ready: false
     });
@@ -7313,11 +7477,17 @@ function initializeMap() {
 }
 
 function connectEventStream() {
+  armLiveNotificationsCutoff();
+
   if (state.eventSource) {
     state.eventSource.close();
   }
 
   state.eventSource = new EventSource("/api/stream");
+
+  state.eventSource.addEventListener("connected", () => {
+    armLiveNotificationsCutoff();
+  });
 
   state.eventSource.addEventListener("new-alert", (event) => {
     try {
@@ -7381,8 +7551,15 @@ function connectEventStream() {
         return;
       }
 
-      state.popupPinnedAlertIds.add(alertId);
       const alertForNotification = state.alerts.find((item) => alertIdentity(item) === alertId) || alert;
+      const shouldNotifyLive = shouldNotifyForLiveIncomingAlert(alertForNotification, {
+        alreadyKnown: existingAlertIndex >= 0
+      });
+      if (!shouldNotifyLive) {
+        return;
+      }
+
+      state.popupPinnedAlertIds.add(alertId);
 
       if (isSoundEnabled()) {
         playNotificationSound(alertForNotification.severity);

@@ -156,8 +156,15 @@
                 </div>
                 <p id="aiLoadMeta" class="ai-load-meta">File IA: --</p>
                 <div class="ai-request-stats">
+                  <p class="ai-request-line">Requetes recues: <strong id="aiTotalCount">0</strong></p>
                   <p class="ai-request-line">Requetes acceptees: <strong id="aiAcceptedCount">0</strong></p>
                   <p class="ai-request-line">Requetes rejetees: <strong id="aiRejectedCount">0</strong></p>
+                </div>
+                <div class="ai-reject-panel">
+                  <p class="ai-reject-title">Statistiques de rejet</p>
+                  <div id="aiRejectReasonsList" class="ai-reject-list">
+                    <p class="ai-reject-empty">Aucun rejet detecte.</p>
+                  </div>
                 </div>
                 <a
                   id="renderLogsLink"
