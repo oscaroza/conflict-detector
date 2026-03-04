@@ -1,6 +1,7 @@
 const state = {
   alerts: [],
   tickerAlerts: [],
+  popupPinnedAlertIds: new Set(),
   settings: null,
   map: null,
   markersLayer: null,
@@ -1440,6 +1441,50 @@ function normalizeText(value) {
     .trim();
 }
 
+function alertIdentity(alert) {
+  const raw = alert?._id ?? alert?.id ?? "";
+  const normalized = String(raw || "").trim();
+  return normalized;
+}
+
+function normalizeIncomingAlert(rawAlert) {
+  if (!rawAlert || typeof rawAlert !== "object") {
+    return null;
+  }
+
+  const normalized = { ...rawAlert };
+  const id = alertIdentity(rawAlert);
+  if (id) {
+    normalized._id = id;
+  }
+
+  if (typeof normalized.country === "string") {
+    normalized.country = {
+      name: normalized.country,
+      code: String(normalized.countryCode || "").trim() || "XX",
+      region: String(normalized.region || "").trim() || "Global"
+    };
+  }
+
+  if ((!normalized.country || typeof normalized.country !== "object") && normalized.countryName) {
+    normalized.country = {
+      name: String(normalized.countryName || "Inconnu"),
+      code: String(normalized.countryCode || "").trim() || "XX",
+      region: String(normalized.region || "").trim() || "Global"
+    };
+  }
+
+  if (typeof normalized.city === "string") {
+    normalized.city = {
+      name: normalized.city,
+      lat: null,
+      lng: null
+    };
+  }
+
+  return normalized;
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: {
@@ -1683,6 +1728,11 @@ function typeLabel(value) {
 }
 
 function isAlertTypeVisible(alert) {
+  const alertId = alertIdentity(alert);
+  if (alertId && state.popupPinnedAlertIds.has(alertId)) {
+    return true;
+  }
+
   const type = canonicalType(alert?.type);
   if (type === "geopolitique") {
     // pass
@@ -3932,7 +3982,7 @@ function getThreatMarkerGlyphSizePx(markerSizePx = 24) {
 function eventGroupKey(alert) {
   const groupId = String(alert?.eventGroupId || "").trim();
   if (groupId) return groupId;
-  return String(alert?._id || "").trim();
+  return alertIdentity(alert);
 }
 
 function gatherAlertSourceNames(alert) {
@@ -4607,12 +4657,13 @@ function normalizeRelatedAlerts(alerts) {
   const seen = new Set();
 
   (alerts || []).forEach((alert) => {
-    const id = String(alert?._id || "");
+    const normalizedAlert = normalizeIncomingAlert(alert);
+    const id = alertIdentity(normalizedAlert);
     if (!id || seen.has(id)) {
       return;
     }
     seen.add(id);
-    deduped.push(alert);
+    deduped.push(normalizedAlert);
   });
 
   return sortAlertsByEventTimeDesc(deduped);
@@ -4893,38 +4944,40 @@ function beginVerificationProgressAnimation() {
 }
 
 function mergeUpdatedAlertIntoState(updatedAlert) {
-  if (!updatedAlert?._id) return;
+  const normalizedUpdatedAlert = normalizeIncomingAlert(updatedAlert);
+  const updatedId = alertIdentity(normalizedUpdatedAlert);
+  if (!updatedId) return;
 
   let foundInAlerts = false;
   state.alerts = sortAlertsByEventTimeDesc(
     state.alerts.map((alert) => {
-      if (alert._id === updatedAlert._id) {
+      if (alertIdentity(alert) === updatedId) {
         foundInAlerts = true;
-        return updatedAlert;
+        return { ...alert, ...normalizedUpdatedAlert, _id: updatedId };
       }
       return alert;
     })
   );
-  if (!foundInAlerts && matchesCurrentFilters(updatedAlert)) {
-    state.alerts = sortAlertsByEventTimeDesc([updatedAlert, ...state.alerts]);
+  if (!foundInAlerts && matchesCurrentFilters(normalizedUpdatedAlert)) {
+    state.alerts = sortAlertsByEventTimeDesc([{ ...normalizedUpdatedAlert, _id: updatedId }, ...state.alerts]);
   }
 
   let foundInTicker = false;
   state.tickerAlerts = sortAlertsByEventTimeDesc(
     state.tickerAlerts.map((alert) => {
-      if (alert._id === updatedAlert._id) {
+      if (alertIdentity(alert) === updatedId) {
         foundInTicker = true;
-        return updatedAlert;
+        return { ...alert, ...normalizedUpdatedAlert, _id: updatedId };
       }
       return alert;
     })
   ).slice(0, 30);
   if (!foundInTicker) {
-    state.tickerAlerts = sortAlertsByEventTimeDesc([updatedAlert, ...state.tickerAlerts]).slice(0, 30);
+    state.tickerAlerts = sortAlertsByEventTimeDesc([{ ...normalizedUpdatedAlert, _id: updatedId }, ...state.tickerAlerts]).slice(0, 30);
   }
 
-  if (state.selectedAlertId === updatedAlert._id) {
-    renderAlertDetails(updatedAlert);
+  if (state.selectedAlertId === updatedId) {
+    renderAlertDetails(normalizedUpdatedAlert);
   }
 }
 
@@ -6284,6 +6337,7 @@ async function renderCountryDetails(summary) {
 }
 
 async function loadAlerts() {
+  const previousAlerts = [...state.alerts];
   const filters = getCurrentFilters();
   const query = new URLSearchParams();
 
@@ -6306,8 +6360,18 @@ async function loadAlerts() {
   }
 
   const payload = await api(`/api/alerts?${query.toString()}&limit=120`);
+  const incomingAlerts = (payload?.alerts || []).map((alert) => normalizeIncomingAlert(alert)).filter(Boolean);
+  const nextAlerts = sortAlertsByEventTimeDesc(incomingAlerts);
+  const seenIds = new Set(nextAlerts.map((alert) => alertIdentity(alert)).filter(Boolean));
+  const pinnedFallback = previousAlerts
+    .map((alert) => normalizeIncomingAlert(alert))
+    .filter((alert) => {
+      const id = alertIdentity(alert);
+      return id && state.popupPinnedAlertIds.has(id) && !seenIds.has(id);
+    });
+
   // Always render newest events on top based on event time.
-  state.alerts = sortAlertsByEventTimeDesc(payload.alerts);
+  state.alerts = sortAlertsByEventTimeDesc([...nextAlerts, ...pinnedFallback]);
 
   if (state.relatedOpenAlertId && !state.alerts.some((alert) => alert._id === state.relatedOpenAlertId)) {
     state.relatedOpenAlertId = null;
@@ -6362,7 +6426,9 @@ async function loadTickerAlerts() {
   }
 
   const payload = await api(`/api/alerts?${query.toString()}`);
-  const next = sortAlertsByEventTimeDesc(payload?.alerts || []).slice(0, 30);
+  const next = sortAlertsByEventTimeDesc(
+    (payload?.alerts || []).map((alert) => normalizeIncomingAlert(alert)).filter(Boolean)
+  ).slice(0, 30);
   state.tickerAlerts = next;
 
   renderTicker();
@@ -7154,20 +7220,36 @@ function connectEventStream() {
   state.eventSource.addEventListener("new-alert", (event) => {
     try {
       const payload = JSON.parse(event.data);
-      const alert = payload.alert;
+      const alert = normalizeIncomingAlert(payload?.alert);
+      const alertId = alertIdentity(alert);
+      if (!alert || !alertId) {
+        return;
+      }
       if (!isAlertTypeVisible(alert)) {
         return;
       }
-      const alreadyExists = state.alerts.some((existing) => existing._id === alert._id);
-      const tickerExists = state.tickerAlerts.some((existing) => existing._id === alert._id);
 
-      if (!alreadyExists && matchesCurrentFilters(alert)) {
-        state.alerts.push(alert);
+      const existingAlertIndex = state.alerts.findIndex((existing) => alertIdentity(existing) === alertId);
+      const existingTickerIndex = state.tickerAlerts.findIndex((existing) => alertIdentity(existing) === alertId);
+      let presentInFeed = false;
+
+      if (existingAlertIndex >= 0) {
+        const merged = { ...state.alerts[existingAlertIndex], ...alert, _id: alertId };
+        state.alerts[existingAlertIndex] = merged;
         state.alerts = sortAlertsByEventTimeDesc(state.alerts);
+        presentInFeed = true;
+      } else if (matchesCurrentFilters(alert)) {
+        state.alerts.push({ ...alert, _id: alertId });
+        state.alerts = sortAlertsByEventTimeDesc(state.alerts);
+        presentInFeed = true;
       }
 
-      if (!tickerExists) {
-        state.tickerAlerts.push(alert);
+      if (existingTickerIndex >= 0) {
+        const mergedTicker = { ...state.tickerAlerts[existingTickerIndex], ...alert, _id: alertId };
+        state.tickerAlerts[existingTickerIndex] = mergedTicker;
+        state.tickerAlerts = sortAlertsByEventTimeDesc(state.tickerAlerts).slice(0, 30);
+      } else {
+        state.tickerAlerts.push({ ...alert, _id: alertId });
         state.tickerAlerts = sortAlertsByEventTimeDesc(state.tickerAlerts).slice(0, 30);
       }
 
@@ -7189,13 +7271,22 @@ function connectEventStream() {
       loadRegionOptions().catch(() => {});
       loadStats().catch(() => {});
 
+      const visibleInFeedNow =
+        presentInFeed && getVisibleAlerts().some((item) => alertIdentity(item) === alertId);
+      if (!visibleInFeedNow) {
+        return;
+      }
+
+      state.popupPinnedAlertIds.add(alertId);
+      const alertForNotification = state.alerts.find((item) => alertIdentity(item) === alertId) || alert;
+
       if (isSoundEnabled()) {
-        playNotificationSound(alert.severity);
+        playNotificationSound(alertForNotification.severity);
       }
       const waitForVoice = isVoiceEnabled();
-      const flashSequenceId = triggerAlertFlash(alert, { waitForVoice });
+      const flashSequenceId = triggerAlertFlash(alertForNotification, { waitForVoice });
       if (waitForVoice) {
-        speakAlertMessage(alert)
+        speakAlertMessage(alertForNotification)
           .catch((error) => {
             console.warn("[voice] lecture alerte echouee:", error.message);
           })
@@ -7205,12 +7296,12 @@ function connectEventStream() {
             }
           });
       }
-      pushBrowserNotification(alert);
+      pushBrowserNotification(alertForNotification);
       showToast(
         "Nouvelle alerte détectée",
-        `${alert.country?.name || "Localisation inconnue"} | ${typeLabel(alert.type)} | Acte: ${formatAlertEventTime(alert)}`,
-        alert.severity,
-        alert.severity === "critical" ? 6500 : 5200
+        `${alertForNotification.country?.name || "Localisation inconnue"} | ${typeLabel(alertForNotification.type)} | Acte: ${formatAlertEventTime(alertForNotification)}`,
+        alertForNotification.severity,
+        alertForNotification.severity === "critical" ? 6500 : 5200
       );
     } catch (error) {
       console.error(error);
@@ -7218,22 +7309,25 @@ function connectEventStream() {
   });
 
   state.eventSource.addEventListener("alert-updated", (event) => {
-    const payload = JSON.parse(event.data);
-    if (!isAlertTypeVisible(payload?.alert)) {
-      state.alerts = state.alerts.filter((alert) => alert._id !== payload?.alert?._id);
-      state.tickerAlerts = state.tickerAlerts.filter((alert) => alert._id !== payload?.alert?._id);
+    const payload = JSON.parse(event.data || "{}");
+    const updatedAlert = normalizeIncomingAlert(payload?.alert);
+    const updatedId = alertIdentity(updatedAlert);
+    if (!updatedAlert || !updatedId) {
+      return;
+    }
+
+    if (!isAlertTypeVisible(updatedAlert)) {
+      state.alerts = state.alerts.filter((alert) => alertIdentity(alert) !== updatedId);
+      state.tickerAlerts = state.tickerAlerts.filter((alert) => alertIdentity(alert) !== updatedId);
+      state.popupPinnedAlertIds.delete(updatedId);
       renderAlertsList();
       renderMapMarkers();
       renderTicker();
       renderKeywordsWidget();
       return;
     }
-    state.alerts = sortAlertsByEventTimeDesc(
-      state.alerts.map((alert) => (alert._id === payload.alert._id ? payload.alert : alert))
-    );
-    state.tickerAlerts = sortAlertsByEventTimeDesc(
-      state.tickerAlerts.map((alert) => (alert._id === payload.alert._id ? payload.alert : alert))
-    );
+
+    mergeUpdatedAlertIntoState(updatedAlert);
     renderAlertsList();
     renderMapMarkers();
     renderTicker();
@@ -7241,9 +7335,14 @@ function connectEventStream() {
   });
 
   state.eventSource.addEventListener("alert-deleted", (event) => {
-    const payload = JSON.parse(event.data);
-    state.alerts = state.alerts.filter((alert) => alert._id !== payload.id);
-    state.tickerAlerts = state.tickerAlerts.filter((alert) => alert._id !== payload.id);
+    const payload = JSON.parse(event.data || "{}");
+    const deletedId = String(payload?.id || payload?._id || "").trim();
+    if (!deletedId) {
+      return;
+    }
+    state.alerts = state.alerts.filter((alert) => alertIdentity(alert) !== deletedId);
+    state.tickerAlerts = state.tickerAlerts.filter((alert) => alertIdentity(alert) !== deletedId);
+    state.popupPinnedAlertIds.delete(deletedId);
     renderAlertsList();
     renderMapMarkers();
     renderTicker();
