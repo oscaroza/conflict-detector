@@ -3835,7 +3835,16 @@ function renderMapMarkers() {
   const trackedAssets = buildTrackedAssetTracks(activeMapSignals);
   recomputeCountryStatusLevels();
   updateCountryHeadlineCounters();
-  const countrySummaries = buildCountrySummaries(activeMapSignals);
+  const allCountrySummaries = buildCountrySummaries(visibleAlerts);
+  const activeCountrySummaries = buildCountrySummaries(activeMapSignals);
+  const activeCountryByKey = new Map(activeCountrySummaries.map((summary) => [summary.key, summary]));
+  const countrySummaries = allCountrySummaries.map((summary) => {
+    const activeSummary = activeCountryByKey.get(summary.key);
+    return {
+      ...summary,
+      noCitySignalItems: activeSummary?.noCitySignalItems || []
+    };
+  });
 
   if (getMapMode() === "3d") {
     if (state.markersLayer) {
@@ -3850,7 +3859,7 @@ function renderMapMarkers() {
     if (!state.globe) {
       initializeGlobe();
     }
-    renderGlobeMarkers(activeMapSignals, activeMapSignals, trackedAssets);
+    renderGlobeMarkers(activeMapSignals, visibleAlerts, trackedAssets);
     scheduleMapSignalExpiryRefresh(activeMapSignals);
     return;
   }
