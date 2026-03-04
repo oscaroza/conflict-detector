@@ -306,3 +306,33 @@ npm start
 docker compose up -d
 docker compose down
 ```
+
+
+
+SCORE : 
+Très simple, ton système a 3 notes différentes :
+
+Score d’alerte (filtrage)
+Calcul: score = somme(des mots-clés trouvés × poids)
+Catégories actuelles:
+frappe = +10 par mot trouvé
+escalade_geopolitique = +8
+terrain_confirme = +5
+exclusion = -12
+Si score >= ALERT_SCORE_THRESHOLD (par défaut 8) → alerte acceptée.
+Sinon → rejetée.
+Sévérité (critical/high/medium/low)
+Détectée séparément via liste de mots.
+Ordre de priorité: critique → haute → moyen → faible.
+Premier match trouvé gagne.
+Confiance (0 à 100)
++30 canal fiable
++20 si “confirmed”/“breaking”
++20 si coordonnées GPS dans le texte
++15 si message > 100 caractères
++15 si lien externe
+-20 canal moins fiable
+Puis borné entre 0 et 100.
+En plus:
+
+Les doublons sont ignorés si très similaires (SIMILARITY_THRESHOLD=0.90) dans une fenêtre de 45s.

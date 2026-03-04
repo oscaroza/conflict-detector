@@ -1749,6 +1749,17 @@ canvas {
   padding-left: 0.1rem;
 }
 
+@media (hover: hover) and (pointer: fine) {
+  .country-callout-signals {
+    display: none;
+  }
+
+  .country-callout-wrap:hover .country-callout-signals,
+  .country-callout-wrap:focus-within .country-callout-signals {
+    display: flex;
+  }
+}
+
 .country-signal-chip {
   min-width: 18px;
   height: 18px;
