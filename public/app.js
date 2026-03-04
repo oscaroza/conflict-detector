@@ -1795,13 +1795,9 @@ function buildAlertVoiceMessage(alert) {
   const leadIn =
     severity === "critical" ? "Attention, attention. " : severity === "high" ? "Alerte prioritaire. " : "";
   const country = alert?.country?.name && alert.country.name !== "Inconnu" ? alert.country.name : "zone inconnue";
-  const title = String(alert?.title || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 105);
-
-  if (title) {
-    return `${leadIn}Nouvelle alerte ${severityVoiceLabel} concernant ${country}. ${title}.`;
+  const eventTime = formatAlertEventTime(alert);
+  if (eventTime && eventTime !== "Acte inconnu") {
+    return `${leadIn}Nouvelle alerte ${severityVoiceLabel} concernant ${country}. Heure de l'acte: ${eventTime}.`;
   }
   return `${leadIn}Nouvelle alerte ${severityVoiceLabel} concernant ${country}.`;
 }
