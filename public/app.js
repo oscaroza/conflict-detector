@@ -225,6 +225,134 @@ const TRACKED_ASSET_DEFINITIONS = [
     aliases: ["fighter jet", "military aircraft", "strategic bomber", "b-52", "f-15", "f-16", "rafale"]
   }
 ];
+const TRACKED_ASSET_PROFILE_BY_KEY = {
+  "fs-charles-de-gaulle": {
+    designation: "R91",
+    classType: "Porte-avions CATOBAR a propulsion nucleaire",
+    operatorNation: "France",
+    entryIntoService: "2001",
+    displacement: "~42 500 t",
+    length: "261.5 m",
+    speed: "~27 noeuds",
+    range: "Endurance longue (propulsion nucleaire)",
+    airWing: "Rafale M, E-2C Hawkeye, helicos NH90/Dauphin",
+    crew: "~1 900",
+    armament: "Aster / Mistral selon config + escorte du groupe aeronaval",
+    mission: "Projection aeronavale, superiorite aerienne, frappe",
+    homeBase: "Toulon",
+    status: "Actif"
+  },
+  "uss-gerald-r-ford": {
+    designation: "CVN-78",
+    classType: "Porte-avions nucleaire classe Gerald R. Ford",
+    operatorNation: "Etats-Unis",
+    entryIntoService: "2017",
+    displacement: "~100 000 t",
+    length: "337 m",
+    speed: ">30 noeuds",
+    range: "Endurance tres longue (propulsion nucleaire)",
+    airWing: "~75 appareils (selon mission)",
+    crew: "~4 500 (navire + groupe aerien)",
+    armament: "ESSM, RAM, CIWS + guerre electronique",
+    mission: "Projection de puissance et frappe aeronavale",
+    homeBase: "Norfolk",
+    status: "Actif"
+  },
+  "uss-dwight-eisenhower": {
+    designation: "CVN-69",
+    classType: "Porte-avions nucleaire classe Nimitz",
+    operatorNation: "Etats-Unis",
+    entryIntoService: "1977",
+    displacement: "~100 000 t",
+    length: "332.8 m",
+    speed: ">30 noeuds",
+    range: "Endurance tres longue (propulsion nucleaire)",
+    airWing: "~70-75 appareils (selon mission)",
+    crew: "~5 000 (navire + groupe aerien)",
+    armament: "Sea Sparrow, RAM, CIWS + guerre electronique",
+    mission: "Projection de puissance et operations aeronavales",
+    homeBase: "Norfolk",
+    status: "Actif"
+  },
+  "air-force-one": {
+    designation: "VC-25A (Boeing 747-200B) / transition VC-25B",
+    classType: "Avion gouvernemental strategique",
+    operatorNation: "Etats-Unis",
+    entryIntoService: "1990 (VC-25A)",
+    length: "70.6 m",
+    speed: "~0.84 Mach",
+    range: "~12 600 km (sans ravitaillement)",
+    crew: "Pilotes + equipage mission + securite",
+    airWing: "Non applicable",
+    armament: "Systemes defensifs et communications classes",
+    mission: "Transport presidentiel, commandement aeroporte",
+    homeBase: "Joint Base Andrews",
+    status: "Actif"
+  }
+};
+const TRACKED_ASSET_PROFILE_FALLBACK_BY_CATEGORY = {
+  carrier: {
+    classType: "Porte-avions (type non confirme)",
+    operatorNation: "Operateur non confirme",
+    displacement: "40 000 a 100 000 t (selon classe)",
+    speed: "25 a 30+ noeuds",
+    airWing: "30 a 75 appareils (selon unite)",
+    crew: "1 500 a 5 000",
+    mission: "Projection aeronavale",
+    status: "A confirmer"
+  },
+  submarine: {
+    classType: "Sous-marin (type non confirme)",
+    operatorNation: "Operateur non confirme",
+    displacement: "Variable selon classe (diesel / nucleaire)",
+    speed: "Vitesse classee (sous-marine)",
+    range: "Autonomie elevee (selon propulsion)",
+    crew: "40 a 150",
+    mission: "Dissuasion, patrouille, renseignement",
+    status: "A confirmer"
+  },
+  warship: {
+    classType: "Navire de guerre (type non confirme)",
+    operatorNation: "Operateur non confirme",
+    displacement: "2 000 a 12 000+ t",
+    speed: "25 a 32 noeuds",
+    crew: "120 a 350+",
+    mission: "Escorte, defense aerienne, frappe navale",
+    status: "A confirmer"
+  },
+  aircraft: {
+    classType: "Aeronef militaire (type non confirme)",
+    operatorNation: "Operateur non confirme",
+    speed: "Variable selon plateforme",
+    range: "Variable selon plateforme",
+    crew: "1 a 10+",
+    mission: "Transport, surveillance, frappe ou commandement",
+    status: "A confirmer"
+  },
+  default: {
+    classType: "Asset strategique (details non confirmes)",
+    operatorNation: "Operateur non confirme",
+    status: "A confirmer"
+  }
+};
+const TRACKED_ASSET_PROFILE_FIELDS = [
+  { key: "designation", label: "Designation" },
+  { key: "classType", label: "Classe / Modele" },
+  { key: "operatorNation", label: "Nation operatrice" },
+  { key: "entryIntoService", label: "Mise en service" },
+  { key: "displacement", label: "Deplacement" },
+  { key: "length", label: "Longueur" },
+  { key: "speed", label: "Vitesse" },
+  { key: "range", label: "Rayon d'action" },
+  { key: "airWing", label: "Capacite aero / charge" },
+  { key: "crew", label: "Equipage" },
+  { key: "armament", label: "Capteurs / Armement" },
+  { key: "mission", label: "Mission principale" },
+  { key: "homeBase", label: "Base d'attache" },
+  { key: "status", label: "Statut" },
+  { key: "detectionQuality", label: "Qualite de detection" },
+  { key: "notes", label: "Notes" }
+];
 const TRACKED_ASSET_RULES = TRACKED_ASSET_DEFINITIONS.map((definition) => ({
   ...definition,
   aliasTokens: (definition.aliases || []).map((alias) => normalizeText(alias)).filter(Boolean)
@@ -353,6 +481,53 @@ function trackedAssetCategoryLabel(category) {
       warship: "Navire militaire"
     }[category] || "Asset strategique"
   );
+}
+
+function trackedAssetDetectionQualityLabel(track) {
+  if (track?.generic) {
+    return "Detection generique (unite exacte non confirmee)";
+  }
+  return "Detection nominale (unite specifique reconnue)";
+}
+
+function formatTrackedAssetProfileValue(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .join(" | ");
+  }
+  return String(value || "").trim();
+}
+
+function getTrackedAssetProfile(track) {
+  const category = String(track?.category || "default");
+  const fallback =
+    TRACKED_ASSET_PROFILE_FALLBACK_BY_CATEGORY[category] || TRACKED_ASSET_PROFILE_FALLBACK_BY_CATEGORY.default || {};
+  const specific = TRACKED_ASSET_PROFILE_BY_KEY[String(track?.key || "")] || {};
+
+  return {
+    ...fallback,
+    ...specific,
+    operatorNation: specific.operatorNation || String(track?.operator || fallback.operatorNation || "Inconnu"),
+    detectionQuality: trackedAssetDetectionQualityLabel(track)
+  };
+}
+
+function buildTrackedAssetProfileRows(track) {
+  const profile = getTrackedAssetProfile(track);
+  return TRACKED_ASSET_PROFILE_FIELDS.map((field) => {
+    const value = formatTrackedAssetProfileValue(profile[field.key]);
+    if (!value) {
+      return "";
+    }
+    return `<div class="asset-profile-item">
+      <span class="asset-profile-item__label">${escapeHtml(field.label)}</span>
+      <span class="asset-profile-item__value">${escapeHtml(value)}</span>
+    </div>`;
+  })
+    .filter(Boolean)
+    .join("");
 }
 
 function getGlobeCountryVisual(status) {
@@ -3233,6 +3408,7 @@ function buildTrackedAssetTracks(alerts) {
           category: rule.category || "default",
           icon: rule.icon || "◎",
           generic: Boolean(rule.generic),
+          detectionAliases: Array.isArray(rule.aliases) ? rule.aliases.slice(0, 10) : [],
           lat,
           lng,
           latestAlert: alert,
@@ -3247,6 +3423,9 @@ function buildTrackedAssetTracks(alerts) {
       existing.mentions += 1;
       if (sourceName && !existing.sourceNames.includes(sourceName)) {
         existing.sourceNames.push(sourceName);
+      }
+      if ((!existing.detectionAliases || existing.detectionAliases.length === 0) && Array.isArray(rule.aliases)) {
+        existing.detectionAliases = rule.aliases.slice(0, 10);
       }
 
       if (Number.isFinite(eventTs) && eventTs > 0) {
@@ -3513,6 +3692,12 @@ function renderTrackedAssetDetails(track) {
     Number.isFinite(track.firstSeenTs) && track.firstSeenTs > 0
       ? formatDate(new Date(track.firstSeenTs).toISOString())
       : "Date inconnue";
+  const profileRows = buildTrackedAssetProfileRows(track);
+  const detectionAliases = (Array.isArray(track.detectionAliases) ? track.detectionAliases : [])
+    .map((alias) => String(alias || "").trim())
+    .filter(Boolean)
+    .slice(0, 8)
+    .join(", ");
 
   ensureIntelOverlayVisible();
   state.selectedAlertId = null;
@@ -3536,6 +3721,19 @@ function renderTrackedAssetDetails(track) {
     <p class="mb-1"><strong>Localisation:</strong> ${escapeHtml(location)}</p>
     <p class="mb-1"><strong>Dernière détection:</strong> ${escapeHtml(lastSeenDate)}</p>
     <p class="mb-2"><strong>Première détection (fenêtre active):</strong> ${escapeHtml(firstSeenDate)}</p>
+    ${
+      profileRows
+        ? `<div class="asset-profile-card mb-2">
+      <p class="asset-profile-title mb-1">Fiche appareil detecte</p>
+      <div class="asset-profile-grid">${profileRows}</div>
+    </div>`
+        : ""
+    }
+    ${
+      detectionAliases
+        ? `<p class="mb-2"><strong>Mots-cles de detection:</strong> ${escapeHtml(detectionAliases)}</p>`
+        : ""
+    }
     <p class="mb-2"><strong>Sources:</strong> ${escapeHtml(sourceNames.join(", ") || sourceName)}</p>
     <p class="mb-2"><strong>Détails événement:</strong> ${escapeHtml(alert?.summary || alert?.title || "Non disponible")}</p>
     ${

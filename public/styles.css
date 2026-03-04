@@ -1884,6 +1884,51 @@ canvas {
   box-shadow: 0 0 0 1px rgba(82, 246, 222, 0.22);
 }
 
+.asset-profile-card {
+  border: 1px solid var(--line-soft);
+  background: rgba(7, 11, 18, 0.62);
+  padding: 0.46rem;
+}
+
+.asset-profile-title {
+  margin: 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: #7effe8;
+}
+
+.asset-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.3rem;
+}
+
+.asset-profile-item {
+  border: 1px solid var(--line-soft);
+  background: rgba(4, 8, 14, 0.78);
+  padding: 0.28rem 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  min-height: 56px;
+}
+
+.asset-profile-item__label {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.56rem;
+  letter-spacing: 0.45px;
+  color: #9db4cc;
+  text-transform: uppercase;
+}
+
+.asset-profile-item__value {
+  font-size: 0.7rem;
+  line-height: 1.3;
+  color: #edf5ff;
+}
+
 .asset-track {
   --asset-color: #4ef0da;
   --asset-shadow: rgba(78, 240, 218, 0.5);
