@@ -212,6 +212,12 @@ function normalizeLocationLabel(value) {
     .replace(/[^a-z0-9]/g, "");
 }
 
+function expandCountryAbbreviations(value) {
+  return String(value || "")
+    .replace(/\bU\.?S\.?A?\b/g, "United States of America")
+    .replace(/\bU\.?K\.?\b/g, "United Kingdom");
+}
+
 function detectDirectionalHint(text) {
   const input = String(text || "");
   const hints = DIRECTION_PATTERN_MAP.filter((item) => item.regex.test(input)).map((item) => item.key);
@@ -301,12 +307,13 @@ function resolveBorderLocationFromMentions(articleText, mentions = []) {
 }
 
 function resolveGeoSignals(articleText, initialCountryInfo = null) {
-  let countryInfo = normalizeCountryInfo(initialCountryInfo || extractCountry(articleText));
-  const strategicArea = extractStrategicArea(articleText);
-  const directionalHint = detectDirectionalHint(articleText);
-  const mentions = extractCountryMentions(articleText, 4);
-  const borderLocation = resolveBorderLocationFromMentions(articleText, mentions);
-  const exactCity = extractCity(articleText, countryInfo);
+  const lookupText = expandCountryAbbreviations(articleText);
+  let countryInfo = normalizeCountryInfo(initialCountryInfo || extractCountry(lookupText));
+  const strategicArea = extractStrategicArea(lookupText);
+  const directionalHint = detectDirectionalHint(lookupText);
+  const mentions = extractCountryMentions(lookupText, 4);
+  const borderLocation = resolveBorderLocationFromMentions(lookupText, mentions);
+  const exactCity = extractCity(lookupText, countryInfo);
 
   if (exactCity && isUnknownCountryInfo(countryInfo)) {
     countryInfo = normalizeCountryInfo({
@@ -382,9 +389,45 @@ function computeMarkerCoordinates({
   countryInfo,
   rawLat = null,
   rawLng = null,
+  allowRawOverride = false,
   applyDirection = true,
   directionalHint = ""
 }) {
+  const haversineDistanceBetween = (latA, lngA, latB, lngB) => {
+    if (![latA, lngA, latB, lngB].every((value) => Number.isFinite(value))) {
+      return Number.POSITIVE_INFINITY;
+    }
+
+    const earthRadiusKm = 6371;
+    const dLat = ((latB - latA) * Math.PI) / 180;
+    const dLng = ((lngB - lngA) * Math.PI) / 180;
+    const p1 = (latA * Math.PI) / 180;
+    const p2 = (latB * Math.PI) / 180;
+    const aVal =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.sin(dLng / 2) * Math.sin(dLng / 2) * Math.cos(p1) * Math.cos(p2);
+    const c = 2 * Math.atan2(Math.sqrt(aVal), Math.sqrt(1 - aVal));
+    return earthRadiusKm * c;
+  };
+
+  const maxRawDistanceKm = (info) => {
+    const area = Number(info?.area || 0);
+    if (area >= 6_000_000) return 2500;
+    if (area >= 2_000_000) return 1800;
+    if (area >= 800_000) return 1200;
+    if (area >= 300_000) return 850;
+    return 600;
+  };
+
+  const canUseRawCoordinates = () => {
+    if (!allowRawOverride) return false;
+    if (!Number.isFinite(rawLat) || !Number.isFinite(rawLng)) return false;
+    if (isUnknownCountryInfo(countryInfo)) return false;
+    const countryLat = Number(countryInfo?.lat);
+    const countryLng = Number(countryInfo?.lng);
+    const distance = haversineDistanceBetween(Number(rawLat), Number(rawLng), countryLat, countryLng);
+    return Number.isFinite(distance) && distance <= maxRawDistanceKm(countryInfo);
+  };
+
   let lat = null;
   let lng = null;
   const hasExactCity = cityInfo && cityInfo.isStrategicArea !== true && cityInfo.isBorder !== true;
@@ -392,7 +435,7 @@ function computeMarkerCoordinates({
   if (hasExactCity && Number.isFinite(cityInfo?.lat) && Number.isFinite(cityInfo?.lng)) {
     lat = Number(cityInfo.lat);
     lng = Number(cityInfo.lng);
-  } else if (Number.isFinite(rawLat) && Number.isFinite(rawLng)) {
+  } else if (canUseRawCoordinates()) {
     lat = Number(rawLat);
     lng = Number(rawLng);
   } else if (Number.isFinite(cityInfo?.lat) && Number.isFinite(cityInfo?.lng)) {
@@ -425,7 +468,7 @@ function normalizeRoleText(value, maxLen = 120) {
 }
 
 function safeCountryFromFragment(value) {
-  const info = extractCountry(value);
+  const info = extractCountry(expandCountryAbbreviations(value));
   const normalized = normalizeCountryInfo(info);
   if (isUnknownCountryInfo(normalized)) {
     return { name: "", code: "" };
@@ -790,56 +833,191 @@ function buildEventRoles(articleText, fallbackGeo = null, aiRoleSeed = null) {
   };
 }
 
+function countryInfoFromHint(value) {
+  const normalized = normalizeCountryInfo(extractCountry(expandCountryAbbreviations(value)));
+  if (isUnknownCountryInfo(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+function isCountryMentionedInArticle(countryInfo, articleText) {
+  if (isUnknownCountryInfo(countryInfo)) {
+    return false;
+  }
+
+  const mentions = extractCountryMentions(expandCountryAbbreviations(articleText), 10);
+  const expectedCode = String(countryInfo?.code || "").toUpperCase();
+  const expectedName = normalizeLocationLabel(countryInfo?.name || "");
+
+  return mentions.some((mention) => {
+    const mentionCode = String(mention?.code || "").toUpperCase();
+    const mentionName = normalizeLocationLabel(mention?.name || "");
+    if (expectedCode && mentionCode && expectedCode === mentionCode) {
+      return true;
+    }
+    return Boolean(expectedName && mentionName && expectedName === mentionName);
+  });
+}
+
+function isDiplomaticPlacementContext(articleText, eventRoles = null) {
+  const text = String(articleText || "");
+  if (DIPLOMATIC_PLACEMENT_PATTERNS.some((pattern) => pattern.test(text))) {
+    return true;
+  }
+  const action = lower(eventRoles?.actorAction || "");
+  return /(condemn|protest|react|denounc|sanction|warn|inform|announce|brief|statement|communique|talk|meeting|summit)/.test(
+    action
+  );
+}
+
+function inferSpeakerCountry(articleText, eventRoles = null, fallbackGeo = null) {
+  const actorCountry = safeCountryFromFragment(eventRoles?.actor || "");
+  if (actorCountry.name) {
+    return actorCountry;
+  }
+
+  const text = String(articleText || "");
+  const speakerMatch = text.match(
+    /\b([a-zA-Z][a-zA-Z\s\-\(\)\.]{1,90})\s+(informs?|briefs?|tells?|warns?|announces?|states?|says?|said|notifies?|addresses?)\b/i
+  );
+  if (speakerMatch) {
+    const speakerCountry = safeCountryFromFragment(speakerMatch[1]);
+    if (speakerCountry.name) {
+      return speakerCountry;
+    }
+  }
+
+  const headingSlice = text.split(/[,:;\-]/)[0];
+  const headingCountry = safeCountryFromFragment(headingSlice);
+  if (headingCountry.name) {
+    return headingCountry;
+  }
+
+  const fallbackCountry = normalizeCountryInfo(fallbackGeo?.countryInfo);
+  if (!isUnknownCountryInfo(fallbackCountry)) {
+    return {
+      name: fallbackCountry.name,
+      code: fallbackCountry.code
+    };
+  }
+
+  return { name: "", code: "" };
+}
+
 function resolveGeoFromEventRoles(articleText, fallbackGeo, eventRoles) {
   const base = fallbackGeo || resolveGeoSignals(articleText);
+  const text = String(articleText || "");
   const locationText = normalizeRoleText(eventRoles?.locationOfEvent || eventRoles?.target || "", 180);
-
-  if (!locationText) {
-    return {
-      countryInfo: base.countryInfo,
-      cityInfo: base.cityInfo,
-      strategicArea: base.strategicArea,
-      geoMeta: {
-        ...(base.geoMeta || {}),
-        placementBasis: "geo_fallback"
-      }
-    };
-  }
-
+  const actorCountryHint = safeCountryFromFragment(eventRoles?.actor || "");
   const targetCountryHint = safeCountryFromFragment(eventRoles?.target || locationText);
-  const initialCountry = targetCountryHint?.name
-    ? normalizeCountryInfo({
-        name: targetCountryHint.name,
-        code: targetCountryHint.code,
-        region: "Global",
-        lat: base?.countryInfo?.lat,
-        lng: base?.countryInfo?.lng
-      })
-    : null;
-  const roleGeo = resolveGeoSignals(locationText, initialCountry);
-  const hasValidRoleGeo = hasConcreteGeoSignal(roleGeo.countryInfo, roleGeo.cityInfo, roleGeo.strategicArea, roleGeo.geoMeta);
+  const hasBaseCity = Number.isFinite(base?.cityInfo?.lat) && Number.isFinite(base?.cityInfo?.lng);
+  const hasBaseArea = Number.isFinite(base?.strategicArea?.lat) && Number.isFinite(base?.strategicArea?.lng);
 
-  if (hasValidRoleGeo) {
-    return {
-      countryInfo: roleGeo.countryInfo,
-      cityInfo: roleGeo.cityInfo,
-      strategicArea: roleGeo.strategicArea,
-      geoMeta: {
-        ...(roleGeo.geoMeta || {}),
-        placementBasis: "location_of_event"
-      }
-    };
+  const withPlacementBasis = (geo, basis) => ({
+    countryInfo: geo?.countryInfo || normalizeCountryInfo({}),
+    cityInfo: geo?.cityInfo || null,
+    strategicArea: geo?.strategicArea || null,
+    geoMeta: {
+      ...(geo?.geoMeta || {}),
+      placementBasis: basis
+    }
+  });
+
+  if (locationText) {
+    const initialCountry = targetCountryHint?.name ? countryInfoFromHint(targetCountryHint.name) : null;
+    const roleGeo = resolveGeoSignals(locationText, initialCountry);
+    const hasValidRoleGeo = hasConcreteGeoSignal(roleGeo.countryInfo, roleGeo.cityInfo, roleGeo.strategicArea, roleGeo.geoMeta);
+    if (hasValidRoleGeo) {
+      return withPlacementBasis(roleGeo, "location_of_event");
+    }
   }
 
-  return {
-    countryInfo: base.countryInfo,
-    cityInfo: base.cityInfo,
-    strategicArea: base.strategicArea,
-    geoMeta: {
-      ...(base.geoMeta || {}),
-      placementBasis: "geo_fallback"
+  if (isDiplomaticPlacementContext(text, eventRoles)) {
+    const speakerCountry = inferSpeakerCountry(text, eventRoles, base);
+    const speakerCountryInfo = countryInfoFromHint(speakerCountry.name);
+    if (speakerCountryInfo) {
+      return withPlacementBasis(
+        {
+          countryInfo: speakerCountryInfo,
+          cityInfo: null,
+          strategicArea: null,
+          geoMeta: base.geoMeta
+        },
+        "speaker_country"
+      );
     }
-  };
+  }
+
+  if (
+    actorCountryHint.name &&
+    targetCountryHint.name &&
+    normalizeLocationLabel(actorCountryHint.name) !== normalizeLocationLabel(targetCountryHint.name)
+  ) {
+    const targetCountryInfo = countryInfoFromHint(targetCountryHint.name);
+    if (targetCountryInfo) {
+      return withPlacementBasis(
+        {
+          countryInfo: targetCountryInfo,
+          cityInfo: null,
+          strategicArea: null,
+          geoMeta: base.geoMeta
+        },
+        "target_country"
+      );
+    }
+  }
+
+  const baseCountry = normalizeCountryInfo(base?.countryInfo);
+  if (!hasBaseCity && !hasBaseArea && !isUnknownCountryInfo(baseCountry) && !isCountryMentionedInArticle(baseCountry, text)) {
+    const textCountryInfo = countryInfoFromHint(text);
+    if (textCountryInfo) {
+      return withPlacementBasis(
+        {
+          countryInfo: textCountryInfo,
+          cityInfo: null,
+          strategicArea: null,
+          geoMeta: base.geoMeta
+        },
+        "text_country_fallback"
+      );
+    }
+    return withPlacementBasis(
+      {
+        countryInfo: normalizeCountryInfo({
+          name: "Inconnu",
+          code: "XX",
+          region: "Global",
+          lat: 20,
+          lng: 0
+        }),
+        cityInfo: null,
+        strategicArea: null,
+        geoMeta: base.geoMeta
+      },
+      "unknown_center"
+    );
+  }
+
+  if (!hasBaseCity && !hasBaseArea && isUnknownCountryInfo(baseCountry)) {
+    return withPlacementBasis(
+      {
+        countryInfo: normalizeCountryInfo({
+          name: "Inconnu",
+          code: "XX",
+          region: "Global",
+          lat: 20,
+          lng: 0
+        }),
+        cityInfo: null,
+        strategicArea: null,
+        geoMeta: base.geoMeta
+      },
+      "unknown_center"
+    );
+  }
+
+  return withPlacementBasis(base, "geo_fallback");
 }
 
 function includesAny(text, keywords = []) {
@@ -1124,6 +1302,23 @@ const DIPLOMATIC_PATTERNS = [
   /\btalks?\b/i,
   /\bnegotiation\b/i,
   /\bceasefire proposal\b/i
+];
+
+const DIPLOMATIC_PLACEMENT_PATTERNS = [
+  /\bcongress\b/i,
+  /\bsenate\b/i,
+  /\bparliament\b/i,
+  /\blawmakers\b/i,
+  /\blegislators\b/i,
+  /\bbriefing\b/i,
+  /\bbriefs?\b/i,
+  /\binforms?\b/i,
+  /\bannounces?\b/i,
+  /\bstatement\b/i,
+  /\bwarns?\b/i,
+  /\bcondemns?\b/i,
+  /\bdenounces?\b/i,
+  /\bprotests?\b/i
 ];
 
 const TERRAIN_EVENT_PATTERNS = [
@@ -2168,6 +2363,7 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
         countryInfo,
         rawLat,
         rawLng,
+        allowRawOverride: (geoMeta?.placementBasis || "") === "geo_fallback",
         applyDirection: true,
         directionalHint: geoMeta?.directionalHint || ""
       });

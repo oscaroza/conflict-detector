@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { buildEventRoles } = require('../src/services/feedService');
+const { buildEventRoles, resolveGeoFromEventRoles } = require('../src/services/feedService');
 
 const normalize = (value) =>
   String(value || '')
@@ -59,4 +59,46 @@ for (const testCase of cases) {
   console.log(`OK: ${testCase.text}`);
 }
 
-console.log(`\n${passed}/${cases.length} cas validés.`);
+const placementCases = [
+  {
+    text: 'Explosion near a nuclear facility in Iran',
+    expectedCountry: 'iran'
+  },
+  {
+    text: 'US informs Congress that Iranian drones are a massive threat',
+    expectedCountry: 'united states'
+  },
+  {
+    text: 'Iran launches missiles at the United States',
+    expectedCountry: 'united states'
+  },
+  {
+    text: 'Unknown source reports an incident with no location',
+    expectedCountry: 'inconnu'
+  }
+];
+
+const fallbackGeoSaudi = {
+  countryInfo: {
+    name: 'Arabie saoudite',
+    code: 'SA',
+    region: 'Moyen-Orient',
+    lat: 23.8859,
+    lng: 45.0792,
+    area: 2149690
+  },
+  cityInfo: null,
+  strategicArea: null,
+  geoMeta: {}
+};
+
+for (const placementCase of placementCases) {
+  const roles = buildEventRoles(placementCase.text);
+  const resolved = resolveGeoFromEventRoles(placementCase.text, fallbackGeoSaudi, roles);
+  const country = normalize(resolved?.countryInfo?.name);
+  assert.equal(country, placementCase.expectedCountry);
+  passed += 1;
+  console.log(`OK: placement ${placementCase.text}`);
+}
+
+console.log(`\n${passed}/${cases.length + placementCases.length} cas validés.`);
