@@ -1715,18 +1715,19 @@ canvas {
 }
 
 .country-callout {
-  min-height: 24px;
+  min-height: 18px;
   max-width: 220px;
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  padding: 0.12rem 0.42rem 0.12rem 0.3rem;
+  gap: var(--country-content-gap, 0.3rem);
+  padding: var(--country-pad-y, 0.12rem) var(--country-pad-right, 0.42rem) var(--country-pad-y, 0.12rem)
+    var(--country-pad-left, 0.3rem);
   border: 1px solid rgba(255, 255, 255, 0.36);
   border-radius: 0;
   background: rgba(7, 11, 18, 0.9);
   color: #f3f7ff;
   font-family: "IBM Plex Mono", monospace;
-  font-size: 0.62rem;
+  font-size: var(--country-font-size, 0.62rem);
   letter-spacing: 0.25px;
   line-height: 1.15;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.62), 0 5px 14px rgba(0, 0, 0, 0.34);
@@ -1737,7 +1738,7 @@ canvas {
   display: inline-flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.22rem;
+  gap: var(--country-wrap-gap, 0.22rem);
   pointer-events: auto;
 }
 
@@ -1788,12 +1789,13 @@ canvas {
 }
 
 .country-callout__arrow {
-  font-size: 0.76rem;
+  display: var(--country-arrow-display, inline);
+  font-size: var(--country-arrow-size, 0.76rem);
   opacity: 0.95;
 }
 
 .country-callout__flag {
-  font-size: 0.85rem;
+  font-size: var(--country-flag-size, 0.85rem);
   line-height: 1;
 }
 
@@ -1801,54 +1803,8 @@ canvas {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 160px;
+  max-width: var(--country-name-max-width, 160px);
   color: #e6edf8;
-}
-
-.country-callout.density-compact {
-  min-height: 21px;
-  max-width: 142px;
-  gap: 0.2rem;
-  padding: 0.08rem 0.28rem 0.08rem 0.22rem;
-  font-size: 0.54rem;
-  letter-spacing: 0.18px;
-}
-
-.country-callout.density-compact .country-callout__arrow {
-  font-size: 0.64rem;
-}
-
-.country-callout.density-compact .country-callout__flag {
-  font-size: 0.74rem;
-}
-
-.country-callout.density-compact .country-callout__name {
-  max-width: 92px;
-}
-
-.country-callout-wrap.density-mini {
-  gap: 0.14rem;
-}
-
-.country-callout.density-mini {
-  min-height: 18px;
-  max-width: 98px;
-  gap: 0.16rem;
-  padding: 0.07rem 0.2rem;
-  font-size: 0.48rem;
-  letter-spacing: 0.12px;
-}
-
-.country-callout.density-mini .country-callout__arrow {
-  display: none;
-}
-
-.country-callout.density-mini .country-callout__flag {
-  font-size: 0.66rem;
-}
-
-.country-callout.density-mini .country-callout__name {
-  max-width: 64px;
 }
 
 .country-callout.status-normal {

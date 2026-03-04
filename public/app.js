@@ -5251,18 +5251,33 @@ function sortCountrySummariesForLegend(summaries) {
 }
 
 function getCountryLegendNameMaxLenForZoom(zoom) {
-  if (!Number.isFinite(zoom)) return 22;
-  if (zoom < 2.8) return 8;
-  if (zoom < 4.2) return 13;
-  if (zoom < 4.6) return 22;
+  const z = Number.isFinite(zoom) ? zoom : 2;
+  if (z < 2.2) return 5;
+  if (z < 2.8) return 7;
+  if (z < 3.6) return 10;
+  if (z < 4.4) return 14;
+  if (z < 5.2) return 19;
   return 28;
 }
 
-function getCountryLegendDensityMode(zoom) {
-  if (!Number.isFinite(zoom)) return "compact";
-  if (zoom < 2.8) return "mini";
-  if (zoom < 4.2) return "compact";
-  return "full";
+function getCountryLegendDisplayConfig(zoom) {
+  const z = Number.isFinite(zoom) ? zoom : 2;
+  const normalized = Math.max(0, Math.min(1, (z - 2.2) / 3.8));
+  return {
+    showArrow: z >= 2.9,
+    showNoCitySignals: z >= 4.6,
+    fontSizeRem: 0.37 + normalized * 0.28,
+    flagSizeRem: 0.5 + normalized * 0.35,
+    arrowSizeRem: 0.52 + normalized * 0.28,
+    nameMaxWidthPx: Math.round(42 + normalized * 122),
+    wrapGapRem: 0.1 + normalized * 0.16,
+    contentGapRem: 0.1 + normalized * 0.2,
+    padYRem: 0.05 + normalized * 0.08,
+    padLeftRem: 0.14 + normalized * 0.16,
+    padRightRem: 0.2 + normalized * 0.22,
+    markerWidth: Math.round(88 + normalized * 156),
+    baseMarkerHeight: Math.round(18 + normalized * 12)
+  };
 }
 
 function buildGlobeCountryLegendItems(countrySummaries) {
@@ -5300,9 +5315,8 @@ function createCountryLegendMarker(summary, options = {}) {
   const statusClass = countryStatusClass(summary.status);
   const countryName = summary?.country?.name || "Inconnu";
   const zoom = Number(options?.zoom);
-  const densityMode = getCountryLegendDensityMode(zoom);
-  const densityClass = `density-${densityMode}`;
-  const showNoCitySignals = densityMode === "full";
+  const displayConfig = getCountryLegendDisplayConfig(zoom);
+  const showNoCitySignals = displayConfig.showNoCitySignals;
   const nameMaxLen = getCountryLegendNameMaxLenForZoom(zoom);
   const compactName = compactCountryName(countryName, nameMaxLen);
   const flag = countryCodeToFlagEmoji(summary?.country?.code);
@@ -5310,9 +5324,21 @@ function createCountryLegendMarker(summary, options = {}) {
     ? summary.noCitySignalItems
     : buildNoCitySignalItems(summary?.alerts || []);
   const signalsRows = showNoCitySignals && noCitySignalItems.length ? Math.ceil(noCitySignalItems.length / 6) : 0;
-  const baseMarkerHeight = densityMode === "mini" ? 22 : densityMode === "compact" ? 24 : 30;
-  const markerHeight = baseMarkerHeight + (signalsRows > 0 ? 6 + signalsRows * 22 : 0);
-  const markerWidth = densityMode === "mini" ? 104 : densityMode === "compact" ? 148 : 232;
+  const markerHeight = displayConfig.baseMarkerHeight + (signalsRows > 0 ? 6 + signalsRows * 22 : 0);
+  const markerWidth = displayConfig.markerWidth;
+  const markerAnchorY = Math.max(11, Math.round(displayConfig.baseMarkerHeight * 0.65));
+  const calloutStyle = [
+    `--country-font-size:${displayConfig.fontSizeRem.toFixed(3)}rem`,
+    `--country-flag-size:${displayConfig.flagSizeRem.toFixed(3)}rem`,
+    `--country-arrow-size:${displayConfig.arrowSizeRem.toFixed(3)}rem`,
+    `--country-name-max-width:${displayConfig.nameMaxWidthPx}px`,
+    `--country-wrap-gap:${displayConfig.wrapGapRem.toFixed(3)}rem`,
+    `--country-content-gap:${displayConfig.contentGapRem.toFixed(3)}rem`,
+    `--country-pad-y:${displayConfig.padYRem.toFixed(3)}rem`,
+    `--country-pad-left:${displayConfig.padLeftRem.toFixed(3)}rem`,
+    `--country-pad-right:${displayConfig.padRightRem.toFixed(3)}rem`,
+    `--country-arrow-display:${displayConfig.showArrow ? "inline" : "none"}`
+  ].join(";");
   const noCitySignalsHtml = showNoCitySignals && noCitySignalItems.length
     ? `<div class="country-callout-signals">${noCitySignalItems
         .map((item) => {
@@ -5335,12 +5361,12 @@ function createCountryLegendMarker(summary, options = {}) {
   const marker = L.marker([lat, lng], {
     icon: L.divIcon({
       className: "",
-      html: `<div class="country-callout-wrap ${densityClass}">
-        <div class="country-callout ${statusClass} ${densityClass}" title="${escapeHtml(countryName)}"><span class="country-callout__arrow">➤</span><span class="country-callout__flag">${escapeHtml(flag)}</span><span class="country-callout__name">${escapeHtml(compactName)}</span></div>
+      html: `<div class="country-callout-wrap" style="${calloutStyle}">
+        <div class="country-callout ${statusClass}" title="${escapeHtml(countryName)}"><span class="country-callout__arrow">➤</span><span class="country-callout__flag">${escapeHtml(flag)}</span><span class="country-callout__name">${escapeHtml(compactName)}</span></div>
         ${noCitySignalsHtml}
       </div>`,
       iconSize: [markerWidth, markerHeight],
-      iconAnchor: [8, 15]
+      iconAnchor: [8, markerAnchorY]
     }),
     zIndexOffset: 460
   });
