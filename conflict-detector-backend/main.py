@@ -48,7 +48,7 @@ def log_event(event: str, **fields: Any) -> None:
     normalized_event = str(event or "").strip().lower()
     if normalized_event in {"alert_accepted", "rss_alert_accepted"}:
         _PIPELINE_COUNTERS["accepted_requests"] = int(_PIPELINE_COUNTERS.get("accepted_requests", 0)) + 1
-    elif normalized_event in {"alert_rejected", "rss_alert_rejected"}:
+    elif normalized_event in {"alert_rejected", "rss_alert_rejected", "rss_rejected_no_keywords"}:
         _PIPELINE_COUNTERS["rejected_requests"] = int(_PIPELINE_COUNTERS.get("rejected_requests", 0)) + 1
 
     payload = {
@@ -300,6 +300,83 @@ _FALLBACK_PRESS_TERMS = [
     "years ago",
 ]
 
+_RSS_GROQ_GATE_TERMS = [
+    # Militaire / conflit
+    "war",
+    "warfare",
+    "military",
+    "troops",
+    "soldiers",
+    "army",
+    "navy",
+    "air force",
+    "airforce",
+    "airstrike",
+    "air strike",
+    "strike",
+    "attack",
+    "bomb",
+    "missile",
+    "rocket",
+    "explosion",
+    "blast",
+    "gunfire",
+    "shooting",
+    "killed",
+    "wounded",
+    "casualties",
+    "dead",
+    "death",
+    "hostage",
+    "siege",
+    "invasion",
+    "offensive",
+    "ceasefire",
+    "frontline",
+    "battlefield",
+    "combat",
+    "weapons",
+    "artillery",
+    "drone",
+    "tank",
+    "warship",
+    # Geopolitique
+    "conflict",
+    "crisis",
+    "tension",
+    "sanctions",
+    "nuclear",
+    "terrorism",
+    "terrorist",
+    "coup",
+    "protest",
+    "riot",
+    "uprising",
+    "rebel",
+    "militia",
+    "insurgent",
+    "hostilities",
+    "diplomatic",
+    "ultimatum",
+    "threat",
+    "aggression",
+    "annexation",
+    "occupation",
+    "blockade",
+    # Organisations / acteurs
+    "nato",
+    "iaea",
+    "hamas",
+    "hezbollah",
+    "isis",
+    "wagner",
+    "houthis",
+    "taliban",
+]
+_RSS_GROQ_GATE_SPECIAL_PATTERNS = {
+    "UN": re.compile(r"\b(?:UN|U\.N\.)\b"),
+}
+
 
 def _normalize_lookup_text(value: str) -> str:
     return f" {re.sub(r'[^a-z0-9]+', ' ', str(value or '').lower()).strip()} "
@@ -316,6 +393,30 @@ def _find_matched_terms(normalized_text: str, terms: List[str]) -> List[str]:
             matches.append(normalized_term)
             seen.add(normalized_term)
     return matches
+
+
+def _rss_has_groq_keywords(title: str, description: str) -> Dict[str, Any]:
+    scan_text = " ".join(part for part in [str(title or ""), str(description or "")] if part).strip()
+    if not scan_text:
+        return {"accepted": False, "matched_keywords": []}
+
+    normalized_text = _normalize_lookup_text(scan_text)
+    matches = _find_matched_terms(normalized_text, _RSS_GROQ_GATE_TERMS)
+
+    for label, pattern in _RSS_GROQ_GATE_SPECIAL_PATTERNS.items():
+        if pattern.search(scan_text):
+            matches.append(label)
+
+    deduped: List[str] = []
+    seen = set()
+    for token in matches:
+        key = str(token or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(str(token).strip())
+
+    return {"accepted": bool(deduped), "matched_keywords": deduped}
 
 
 def _fallback_ai_severity(base_severity: str) -> Dict[str, Any]:
@@ -579,6 +680,17 @@ async def process_rss_item(item: Dict[str, Any]) -> None:
             existing = await get_alert_by_source_ref(source_ref)
             if existing is not None:
                 return
+
+        keyword_gate = _rss_has_groq_keywords(title=title, description=description)
+        if not keyword_gate["accepted"]:
+            log_event(
+                "rss_rejected_no_keywords",
+                source=source_name,
+                source_ref=source_ref,
+                source_url=source_url,
+                title=(title or "")[:180],
+            )
+            return
 
         analysis = analyze_message(combined_text, source_name)
         if not analysis.accepted:

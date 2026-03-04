@@ -216,6 +216,9 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 - Scoring mots-clés:
   - `score >= ALERT_SCORE_THRESHOLD` (defaut `8`) => alerte acceptee
   - sinon rejet
+- Filtre RSS avant IA:
+  - le titre + resume doivent contenir au moins 1 mot-cle militaire/geopolitique
+  - sinon l'article est rejete immediatement (`rss_rejected_no_keywords`) sans appel Groq
 - Déduplication:
   - similarite `>= SIMILARITY_THRESHOLD` (defaut `0.90`)
   - fenetre `DUPLICATE_WINDOW_SECONDS` (defaut `45s`)
