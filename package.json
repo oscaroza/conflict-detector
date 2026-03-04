@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
-    "lint": "echo 'No lint configured'"
+    "lint": "echo 'No lint configured'",
+    "test:roles": "node scripts/test-event-roles.js"
   },
   "engines": {
     "node": "20.x"

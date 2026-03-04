@@ -155,6 +155,11 @@ async def _migrate_alerts_schema(conn: aiosqlite.Connection) -> None:
     await _ensure_column(conn, existing_columns, "ai_summary", "TEXT NOT NULL DEFAULT ''")
     await _ensure_column(conn, existing_columns, "ai_reliability_score", "REAL NOT NULL DEFAULT 0.0")
     await _ensure_column(conn, existing_columns, "ai_is_conflict_related", "INTEGER NOT NULL DEFAULT 0")
+    await _ensure_column(conn, existing_columns, "event_actor", "TEXT NOT NULL DEFAULT ''")
+    await _ensure_column(conn, existing_columns, "event_actor_action", "TEXT NOT NULL DEFAULT ''")
+    await _ensure_column(conn, existing_columns, "event_target", "TEXT NOT NULL DEFAULT ''")
+    await _ensure_column(conn, existing_columns, "event_location", "TEXT NOT NULL DEFAULT ''")
+    await _ensure_column(conn, existing_columns, "event_context", "TEXT NOT NULL DEFAULT ''")
 
 
 async def init_db() -> None:
@@ -275,8 +280,9 @@ async def insert_alert(alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                     severity, confidence, source_channel, original_text, score,
                     source_type, source_ref, source_url,
                     ai_analyzed, ai_category, ai_event_type, ai_subcategories, ai_severity, ai_severity_score,
-                    ai_countries, ai_actors, ai_summary, ai_reliability_score, ai_is_conflict_related
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ai_countries, ai_actors, ai_summary, ai_reliability_score, ai_is_conflict_related,
+                    event_actor, event_actor_action, event_target, event_location, event_context
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_ts.isoformat(),
@@ -305,6 +311,11 @@ async def insert_alert(alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                     str(alert.get("ai_summary") or "")[:1200],
                     max(0.0, min(1.0, _safe_float(alert.get("ai_reliability_score"), 0.0))),
                     1 if bool(alert.get("ai_is_conflict_related")) else 0,
+                    str(alert.get("event_actor") or "")[:120],
+                    str(alert.get("event_actor_action") or "")[:120],
+                    str(alert.get("event_target") or "")[:160],
+                    str(alert.get("event_location") or "")[:220],
+                    str(alert.get("event_context") or "")[:300],
                 ),
             )
             alert_id = cursor.lastrowid

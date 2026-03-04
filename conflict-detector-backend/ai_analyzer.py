@@ -86,6 +86,11 @@ def _neutral_result(error: str = "") -> Dict[str, Any]:
     return {
         "category": "autre",
         "event_type": "press_return",
+        "actor": "",
+        "actor_action": "",
+        "target": "",
+        "location_of_event": "",
+        "context": "",
         "subcategories": [],
         "severity": "moyenne",
         "severity_score": 0.0,
@@ -224,10 +229,20 @@ def _normalize_result(payload: Dict[str, Any]) -> Dict[str, Any]:
     summary = " ".join(str(payload.get("summary") or "").split()).strip()
     if len(summary) > 500:
         summary = summary[:500].strip()
+    actor = " ".join(str(payload.get("actor") or "").split()).strip()[:120]
+    actor_action = " ".join(str(payload.get("actor_action") or "").split()).strip()[:120]
+    target = " ".join(str(payload.get("target") or "").split()).strip()[:140]
+    location_of_event = " ".join(str(payload.get("location_of_event") or "").split()).strip()[:180]
+    context = " ".join(str(payload.get("context") or "").split()).strip()[:220]
 
     return {
         "category": category,
         "event_type": event_type,
+        "actor": actor,
+        "actor_action": actor_action,
+        "target": target,
+        "location_of_event": location_of_event,
+        "context": context,
         "subcategories": _as_str_list(payload.get("subcategories")),
         "severity": severity,
         "severity_score": _clamp_score(payload.get("severity_score")),
@@ -296,9 +311,18 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
     system_prompt = (
         "You are a geopolitical conflict event classifier and triage assistant. "
         "Return ONLY valid JSON with keys: "
-        "category, event_type, subcategories, severity, severity_score, countries, actors, summary, reliability_score, is_conflict_related. "
+        "category, event_type, actor, actor_action, target, location_of_event, context, "
+        "subcategories, severity, severity_score, countries, actors, summary, reliability_score, is_conflict_related. "
         "Allowed category values: missile, drone, frappe_aerienne, artillerie, conflit_terrestre, cyberattaque, diplomatie, terrorisme, nucleaire, autre. "
         "Allowed event_type values: terrain_event, press_return, diplomatic. "
+        "actor is who performs the physical action. "
+        "actor_action is the concrete action performed by actor. "
+        "target is who/what receives the action. "
+        "location_of_event is where the physical event occurred. "
+        "context is diplomatic/observer reactions around the event. "
+        "Do not mix actor and target. "
+        "If the grammatical subject uses observer verbs (condemns, protests, reacts to, denounces, was hit by, suffered), "
+        "the real actor is often in the complement clause. "
         "Allowed severity values: critique, haute, moyenne, faible. "
         "severity_score and reliability_score must be floats between 0.0 and 1.0. "
         "summary must be factual and max 2 short sentences. "

@@ -415,6 +415,433 @@ function computeMarkerCoordinates({
   return { lat, lng };
 }
 
+function normalizeRoleText(value, maxLen = 120) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/^[,;:\-\s]+/, "")
+    .replace(/[,;:\-\s]+$/, "")
+    .trim()
+    .slice(0, maxLen);
+}
+
+function safeCountryFromFragment(value) {
+  const info = extractCountry(value);
+  const normalized = normalizeCountryInfo(info);
+  if (isUnknownCountryInfo(normalized)) {
+    return { name: "", code: "" };
+  }
+  return {
+    name: normalized.name,
+    code: normalized.code
+  };
+}
+
+function splitIntoSentences(text) {
+  return String(text || "")
+    .split(/[\.\n!?]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function inferActionFromText(text) {
+  const source = String(text || "");
+  const directMatch = source.match(
+    /\b(missile strike|missile attack|drone strike|drone attack|bombing|airstrike|shelling|troop deployment|troop movements?|raid|attack|strike|invasion|interception)\b/i
+  );
+  if (directMatch) {
+    return normalizeRoleText(directMatch[1], 72);
+  }
+
+  const verbMatch = source.match(/\b(fires?|launch(?:es|ed)?|strikes?|bombs?|attacks?|invades?|deploys?|intercepts?)\b/i);
+  if (verbMatch) {
+    return normalizeRoleText(verbMatch[1], 72);
+  }
+
+  return "";
+}
+
+function findPrimarySubjectCountry(text, mentions = []) {
+  const subjectSlice = String(text || "")
+    .split(/\b(condemns?|protests?|reacts?\s+to|denounces?|sanctions?|retaliates?|intercepts?|fires?|launch(?:es|ed)?|strikes?|bombs?|attacks?|invades?|deploys?)\b/i)[0]
+    .trim();
+  if (subjectSlice) {
+    const subjectCountry = safeCountryFromFragment(subjectSlice);
+    if (subjectCountry.name) {
+      return subjectCountry;
+    }
+  }
+  const firstMention = mentions[0];
+  if (firstMention && firstMention.name && firstMention.code !== "XX") {
+    return {
+      name: firstMention.name,
+      code: String(firstMention.code || "").toUpperCase()
+    };
+  }
+  return { name: "", code: "" };
+}
+
+function inferActorFromComplement(complement, subjectCountryName = "") {
+  const text = String(complement || "").trim();
+  if (!text) return { name: "", code: "" };
+
+  const orgActor = text.match(/\b(NATO|OTAN|HAMAS|HEZBOLLAH|HOUTHIS?|IDF)\b/i);
+  if (orgActor) {
+    return { name: normalizeRoleText(orgActor[1], 80).toUpperCase(), code: "" };
+  }
+
+  const byOrFrom = text.match(/\b(?:from|by)\s+([a-zA-Z][a-zA-Z\s\-\(\)]{1,80})/i);
+  if (byOrFrom) {
+    const candidate = safeCountryFromFragment(byOrFrom[1]);
+    if (candidate.name) return candidate;
+    return { name: normalizeRoleText(byOrFrom[1], 80), code: "" };
+  }
+
+  const leadingEntity = text.match(/^\s*([a-zA-Z][a-zA-Z\s\-\(\)]{1,80})\s+following\b/i);
+  if (leadingEntity) {
+    const candidate = safeCountryFromFragment(leadingEntity[1]);
+    if (candidate.name) return candidate;
+  }
+
+  const attackOwner = text.match(/\b([a-zA-Z][a-zA-Z\s\-\(\)]{1,80})\s+(?:missile|drone|rocket|troop|bombing|strike|attack|offensive)\b/i);
+  if (attackOwner) {
+    const candidate = safeCountryFromFragment(attackOwner[1]);
+    if (candidate.name) return candidate;
+    const fallbackName = normalizeRoleText(attackOwner[1], 80);
+    if (fallbackName && normalizeLocationLabel(fallbackName) !== normalizeLocationLabel(subjectCountryName)) {
+      return { name: fallbackName, code: "" };
+    }
+  }
+
+  const fallback = safeCountryFromFragment(text);
+  if (fallback.name && fallback.name !== subjectCountryName) {
+    return fallback;
+  }
+
+  return { name: "", code: "" };
+}
+
+function inferTargetLocationFromComplement(complement, subjectCountryName = "") {
+  const text = String(complement || "").trim();
+  if (!text) {
+    return { target: "", locationOfEvent: "" };
+  }
+
+  const normalized = text.toLowerCase();
+  const locationMatch = text.match(/\b(?:on|in|at|near|against|of)\s+([a-zA-Z0-9][a-zA-Z0-9\s\-\(\)]{1,120})/i);
+  let location = locationMatch ? normalizeRoleText(locationMatch[1], 140) : "";
+
+  if (/its\s+(soil|territory)/i.test(text) && subjectCountryName) {
+    location = subjectCountryName;
+  }
+  if (/its\s+border/i.test(text) && subjectCountryName) {
+    location = `${subjectCountryName} border`;
+  }
+
+  const rawTarget = normalizeRoleText(location || "", 110);
+  const targetCountry = safeCountryFromFragment(location || text);
+  const shouldKeepRawTarget =
+    /\b(base|border|city|province|district|territory|soil|kharkiv|gaza|donetsk|aleppo|front)\b/i.test(rawTarget);
+  const target = shouldKeepRawTarget ? rawTarget : targetCountry.name || rawTarget;
+
+  if (!location && target) {
+    location = target;
+  }
+  if (!location && normalized.includes("border") && subjectCountryName) {
+    location = `${subjectCountryName} border`;
+  }
+
+  return {
+    target,
+    locationOfEvent: normalizeRoleText(location, 140)
+  };
+}
+
+function validateRoleInversion(eventRoles, articleText, subjectCountry = { name: "", code: "" }) {
+  const roles = { ...(eventRoles || {}) };
+  const text = String(articleText || "");
+  if (!OBSERVER_VERB_PATTERN.test(text)) {
+    return roles;
+  }
+
+  const subjectName = normalizeRoleText(subjectCountry?.name || "");
+  if (!subjectName) {
+    return roles;
+  }
+
+  if (normalizeLocationLabel(roles.actor) === normalizeLocationLabel(subjectName)) {
+    const segments = text.split(OBSERVER_VERB_PATTERN);
+    const complement = segments.length >= 3 ? segments[2] : text;
+    const inferredActor = inferActorFromComplement(complement, subjectName);
+    if (inferredActor.name && normalizeLocationLabel(inferredActor.name) !== normalizeLocationLabel(subjectName)) {
+      roles.actor = inferredActor.name;
+      roles.actorCode = inferredActor.code;
+      if (!roles.target) {
+        roles.target = subjectName;
+        roles.targetCode = String(subjectCountry.code || "");
+      }
+      if (!roles.validationNotes) {
+        roles.validationNotes = "actor_adjusted_from_observer_verb";
+      }
+    }
+  }
+
+  if (/\bintercepts?\b/i.test(text) && /\blaunched\s+from\b/i.test(text)) {
+    const fromMatch = text.match(/\blaunched\s+from\s+([a-zA-Z][a-zA-Z\s\-\(\)]{1,80})/i);
+    if (fromMatch) {
+      const inferredActor = safeCountryFromFragment(fromMatch[1]);
+      if (inferredActor.name) {
+        roles.actor = inferredActor.name;
+        roles.actorCode = inferredActor.code;
+      }
+      if (!roles.target) {
+        roles.target = subjectName;
+        roles.targetCode = String(subjectCountry.code || "");
+      }
+      if (!roles.locationOfEvent && roles.target) {
+        roles.locationOfEvent = roles.target;
+      }
+      if (!roles.validationNotes) {
+        roles.validationNotes = "actor_adjusted_from_launch_origin";
+      }
+    }
+  }
+
+  return roles;
+}
+
+function buildEventRoles(articleText, fallbackGeo = null, aiRoleSeed = null) {
+  const text = String(articleText || "").replace(/\s+/g, " ").trim();
+  const mentions = extractCountryMentions(text, 8);
+  const subjectCountry = findPrimarySubjectCountry(text, mentions);
+
+  const base = {
+    actor: normalizeRoleText(aiRoleSeed?.actor || ""),
+    actorCode: normalizeRoleText(aiRoleSeed?.actorCode || "", 8).toUpperCase(),
+    actorAction: normalizeRoleText(aiRoleSeed?.actorAction || ""),
+    target: normalizeRoleText(aiRoleSeed?.target || ""),
+    targetCode: normalizeRoleText(aiRoleSeed?.targetCode || "", 8).toUpperCase(),
+    locationOfEvent: normalizeRoleText(aiRoleSeed?.locationOfEvent || ""),
+    context: normalizeRoleText(aiRoleSeed?.context || "", 220),
+    placementBasis: "unknown",
+    validationNotes: ""
+  };
+
+  const sentences = splitIntoSentences(text);
+  const observerSentence = sentences.find((sentence) => OBSERVER_VERB_PATTERN.test(sentence)) || "";
+  const actionSentence =
+    sentences.find((sentence) => ACTOR_ACTION_VERB_PATTERN.test(sentence) && !OBSERVER_VERB_PATTERN.test(sentence)) ||
+    sentences.find((sentence) => ATTACK_NOUN_PATTERN.test(sentence)) ||
+    sentences[0] ||
+    "";
+
+  if (observerSentence && !base.context) {
+    base.context = normalizeRoleText(observerSentence, 220);
+  }
+
+  if (!base.actorAction) {
+    base.actorAction = inferActionFromText(actionSentence || observerSentence || text);
+  }
+
+  const observerMatch = text.match(
+    /\b([a-zA-Z][a-zA-Z\s\-\(\)]{1,90})\s+(condemns?|protests?|reacts?\s+to|denounces?|sanctions?|retaliates?|intercepts?)\s+(.+)/i
+  );
+
+  if (observerMatch) {
+    const subject = safeCountryFromFragment(observerMatch[1]);
+    const complement = observerMatch[3];
+
+    if (!base.target && subject.name) {
+      base.target = subject.name;
+      base.targetCode = subject.code;
+    }
+
+    if (!base.actor) {
+      const inferredActor = inferActorFromComplement(complement, subject.name);
+      if (inferredActor.name) {
+        base.actor = inferredActor.name;
+        base.actorCode = inferredActor.code;
+      }
+    }
+
+    const inferredTarget = inferTargetLocationFromComplement(complement, subject.name);
+    if (!base.target && inferredTarget.target) {
+      base.target = inferredTarget.target;
+      const targetCountry = safeCountryFromFragment(base.target);
+      const keepDetailedTarget =
+        /\b(base|border|city|province|district|territory|soil|front)\b/i.test(base.target) && base.target.length >= 8;
+      if (targetCountry.name && !keepDetailedTarget) {
+        base.target = targetCountry.name;
+        base.targetCode = targetCountry.code;
+      } else if (!base.targetCode && targetCountry.name) {
+        base.targetCode = targetCountry.code;
+      }
+    }
+    if (!base.locationOfEvent && inferredTarget.locationOfEvent) {
+      base.locationOfEvent = inferredTarget.locationOfEvent;
+    }
+  }
+
+  const launchedFromMatch = text.match(
+    /\b([a-zA-Z][a-zA-Z\s\-\(\)]{1,90})\s+intercepts?.*launched\s+from\s+([a-zA-Z][a-zA-Z\s\-\(\)]{1,90})/i
+  );
+  if (launchedFromMatch) {
+    const targetCountry = safeCountryFromFragment(launchedFromMatch[1]);
+    const actorCountry = safeCountryFromFragment(launchedFromMatch[2]);
+    if (actorCountry.name) {
+      base.actor = actorCountry.name;
+      base.actorCode = actorCountry.code;
+    }
+    if (targetCountry.name) {
+      base.target = targetCountry.name;
+      base.targetCode = targetCountry.code;
+      base.locationOfEvent = targetCountry.name;
+    }
+    base.actorAction = "drone launch";
+  }
+
+  const retaliationMatch = text.match(
+    /\b([a-zA-Z][a-zA-Z\s\-\(\)]{1,90})\s+retaliates?.*after\s+([a-zA-Z][a-zA-Z\s\-\(\)]{1,90})\s+(bombing|strike|attack|shelling)\s+of\s+([a-zA-Z][a-zA-Z\s\-\(\)]{1,120})/i
+  );
+  if (retaliationMatch) {
+    const actorCountry = safeCountryFromFragment(retaliationMatch[2]);
+    if (actorCountry.name) {
+      base.actor = actorCountry.name;
+      base.actorCode = actorCountry.code;
+    }
+    base.actorAction = normalizeRoleText(retaliationMatch[3], 72);
+    const targetName = normalizeRoleText(retaliationMatch[4], 90);
+    if (targetName) {
+      base.target = targetName;
+      const targetCountry = safeCountryFromFragment(targetName);
+      if (targetCountry.name) {
+        base.target = targetCountry.name;
+        base.targetCode = targetCountry.code;
+      }
+      base.locationOfEvent = targetName;
+    }
+  }
+
+  const directActionMatch = text.match(
+    /\b([a-zA-Z][a-zA-Z\s\-\(\)]{1,90})\s+(fires?|launch(?:es|ed)?|strikes?|bombs?|attacks?|invades?|deploys?)\s+(.+)/i
+  );
+  if (directActionMatch) {
+    if (!base.actor) {
+      const actorCountry = safeCountryFromFragment(directActionMatch[1]);
+      if (actorCountry.name) {
+        base.actor = actorCountry.name;
+        base.actorCode = actorCountry.code;
+      }
+    }
+    if (!base.actorAction) {
+      base.actorAction = normalizeRoleText(directActionMatch[2], 72);
+    }
+    if (!base.target || !base.locationOfEvent) {
+      const complementInfo = inferTargetLocationFromComplement(directActionMatch[3], base.target || "");
+      if (!base.target && complementInfo.target) {
+        base.target = complementInfo.target;
+      }
+      if (!base.locationOfEvent && complementInfo.locationOfEvent) {
+        base.locationOfEvent = complementInfo.locationOfEvent;
+      }
+      if (base.target && !base.targetCode) {
+        const targetCountry = safeCountryFromFragment(base.target);
+        if (targetCountry.name) {
+          base.target = targetCountry.name;
+          base.targetCode = targetCountry.code;
+        }
+      }
+    }
+  }
+
+  if (!base.actor && subjectCountry.name && ATTACK_NOUN_PATTERN.test(text)) {
+    base.actor = subjectCountry.name;
+    base.actorCode = subjectCountry.code;
+  }
+
+  if (!base.target && fallbackGeo?.countryInfo && !isUnknownCountryInfo(fallbackGeo.countryInfo)) {
+    base.target = fallbackGeo.countryInfo.name;
+    base.targetCode = fallbackGeo.countryInfo.code;
+  }
+
+  if (!base.locationOfEvent) {
+    if (base.target) {
+      base.locationOfEvent = base.target;
+    } else if (fallbackGeo?.cityInfo?.name) {
+      base.locationOfEvent = fallbackGeo.cityInfo.name;
+    } else if (!isUnknownCountryInfo(fallbackGeo?.countryInfo)) {
+      base.locationOfEvent = fallbackGeo.countryInfo.name;
+    } else if (fallbackGeo?.strategicArea?.name) {
+      base.locationOfEvent = fallbackGeo.strategicArea.name;
+    }
+  }
+
+  const validated = validateRoleInversion(base, text, subjectCountry);
+  return {
+    actor: normalizeRoleText(validated.actor, 90),
+    actorCode: normalizeRoleText(validated.actorCode, 8).toUpperCase(),
+    actorAction: normalizeRoleText(validated.actorAction || inferActionFromText(text), 80),
+    target: normalizeRoleText(validated.target, 110),
+    targetCode: normalizeRoleText(validated.targetCode, 8).toUpperCase(),
+    locationOfEvent: normalizeRoleText(validated.locationOfEvent, 140),
+    context: normalizeRoleText(validated.context, 220),
+    placementBasis: "unknown",
+    validationNotes: normalizeRoleText(validated.validationNotes, 120)
+  };
+}
+
+function resolveGeoFromEventRoles(articleText, fallbackGeo, eventRoles) {
+  const base = fallbackGeo || resolveGeoSignals(articleText);
+  const locationText = normalizeRoleText(eventRoles?.locationOfEvent || eventRoles?.target || "", 180);
+
+  if (!locationText) {
+    return {
+      countryInfo: base.countryInfo,
+      cityInfo: base.cityInfo,
+      strategicArea: base.strategicArea,
+      geoMeta: {
+        ...(base.geoMeta || {}),
+        placementBasis: "geo_fallback"
+      }
+    };
+  }
+
+  const targetCountryHint = safeCountryFromFragment(eventRoles?.target || locationText);
+  const initialCountry = targetCountryHint?.name
+    ? normalizeCountryInfo({
+        name: targetCountryHint.name,
+        code: targetCountryHint.code,
+        region: "Global",
+        lat: base?.countryInfo?.lat,
+        lng: base?.countryInfo?.lng
+      })
+    : null;
+  const roleGeo = resolveGeoSignals(locationText, initialCountry);
+  const hasValidRoleGeo = hasConcreteGeoSignal(roleGeo.countryInfo, roleGeo.cityInfo, roleGeo.strategicArea, roleGeo.geoMeta);
+
+  if (hasValidRoleGeo) {
+    return {
+      countryInfo: roleGeo.countryInfo,
+      cityInfo: roleGeo.cityInfo,
+      strategicArea: roleGeo.strategicArea,
+      geoMeta: {
+        ...(roleGeo.geoMeta || {}),
+        placementBasis: "location_of_event"
+      }
+    };
+  }
+
+  return {
+    countryInfo: base.countryInfo,
+    cityInfo: base.cityInfo,
+    strategicArea: base.strategicArea,
+    geoMeta: {
+      ...(base.geoMeta || {}),
+      placementBasis: "geo_fallback"
+    }
+  };
+}
+
 function includesAny(text, keywords = []) {
   const normalized = lower(text);
   return keywords.some((keyword) => normalized.includes(lower(keyword)));
@@ -752,6 +1179,12 @@ const DIRECTION_PATTERN_MAP = [
   { key: "east", regex: /\b(east|eastern|est|oriental)\b/i },
   { key: "west", regex: /\b(west|western|ouest|occidental)\b/i }
 ];
+
+const ACTOR_ACTION_VERB_PATTERN = /\b(fires?|launch(?:es|ed)?|strikes?|bombs?|attacks?|invades?|deploys?|bombing|shelling|raid(s)?|offensive)\b/i;
+const OBSERVER_VERB_PATTERN =
+  /\b(condemns?|protests?|reacts?\s+to|denounces?|sanctions?|retaliates?|intercepts?|was hit by|suffered)\b/i;
+const ATTACK_NOUN_PATTERN =
+  /\b(missile strike|missile attack|drone strike|drone attack|bombing|airstrike|strike|attack|shelling|offensive|troop movements?)\b/i;
 
 const TOKEN_STOP_WORDS = new Set([
   "the",
@@ -1676,7 +2109,19 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
 
       const articleText = `${title} ${summary}`.trim();
       const telegramCountryInfo = resolveTelegramCountryInfo(rawAlert, articleText);
-      const { countryInfo, cityInfo, strategicArea, geoMeta } = resolveGeoSignals(articleText, telegramCountryInfo);
+      const fallbackGeo = resolveGeoSignals(articleText, telegramCountryInfo);
+      const aiRoleSeed = {
+        actor: String(rawAlert?.event_actor || rawAlert?.ai_actor || rawAlert?.actor || "").trim(),
+        actorCode: String(rawAlert?.event_actor_code || rawAlert?.ai_actor_code || "").trim().toUpperCase(),
+        actorAction: String(rawAlert?.event_actor_action || rawAlert?.ai_actor_action || "").trim(),
+        target: String(rawAlert?.event_target || rawAlert?.ai_target || rawAlert?.target || "").trim(),
+        targetCode: String(rawAlert?.event_target_code || rawAlert?.ai_target_code || "").trim().toUpperCase(),
+        locationOfEvent: String(rawAlert?.event_location || rawAlert?.location_of_event || "").trim(),
+        context: String(rawAlert?.event_context || rawAlert?.context || "").trim()
+      };
+      const eventRoles = buildEventRoles(articleText, fallbackGeo, aiRoleSeed);
+      const roleGeo = resolveGeoFromEventRoles(articleText, fallbackGeo, eventRoles);
+      const { countryInfo, cityInfo, strategicArea, geoMeta } = roleGeo;
 
       if (!matchesSettingsFilters(articleText, countryInfo, settings)) {
         continue;
@@ -1726,6 +2171,7 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
         applyDirection: true,
         directionalHint: geoMeta?.directionalHint || ""
       });
+      eventRoles.placementBasis = geoMeta?.placementBasis || "geo_fallback";
 
       mapped.push({
         title,
@@ -1775,8 +2221,10 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
           strategicArea: geoMeta?.strategicArea || "",
           directionalHint: geoMeta?.directionalHint || "",
           isBorder: Boolean(geoMeta?.isBorder),
-          borderCountries: Array.isArray(geoMeta?.borderCountries) ? geoMeta.borderCountries : []
+          borderCountries: Array.isArray(geoMeta?.borderCountries) ? geoMeta.borderCountries : [],
+          placementBasis: geoMeta?.placementBasis || "geo_fallback"
         },
+        eventRoles,
         location: {
           type: "Point",
           coordinates: [marker.lng, marker.lat]
@@ -1853,7 +2301,10 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
       .trim();
 
     const articleText = `${title} ${summary}`;
-    const { countryInfo, cityInfo, strategicArea, geoMeta } = resolveGeoSignals(articleText);
+    const fallbackGeo = resolveGeoSignals(articleText);
+    const eventRoles = buildEventRoles(articleText, fallbackGeo);
+    const roleGeo = resolveGeoFromEventRoles(articleText, fallbackGeo, eventRoles);
+    const { countryInfo, cityInfo, strategicArea, geoMeta } = roleGeo;
 
     if (!matchesSettingsFilters(articleText, countryInfo, settings)) {
       continue;
@@ -1894,6 +2345,7 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
       applyDirection: true,
       directionalHint: geoMeta?.directionalHint || ""
     });
+    eventRoles.placementBasis = geoMeta?.placementBasis || "geo_fallback";
 
     const inferredEventTime = inferOccurredAt(articleText, publishedAt);
 
@@ -1929,8 +2381,10 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
         strategicArea: geoMeta?.strategicArea || "",
         directionalHint: geoMeta?.directionalHint || "",
         isBorder: Boolean(geoMeta?.isBorder),
-        borderCountries: Array.isArray(geoMeta?.borderCountries) ? geoMeta.borderCountries : []
+        borderCountries: Array.isArray(geoMeta?.borderCountries) ? geoMeta.borderCountries : [],
+        placementBasis: geoMeta?.placementBasis || "geo_fallback"
       },
+      eventRoles,
       location: {
         type: "Point",
         coordinates: [marker.lng, marker.lat]
@@ -2267,6 +2721,8 @@ module.exports = {
   verifyAlertById,
   findRelatedAlertsForAnchor,
   getAiQueueStatus,
+  buildEventRoles,
+  resolveGeoFromEventRoles,
   startScheduler,
   reschedule,
   getRuntimeState

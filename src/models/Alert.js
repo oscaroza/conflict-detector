@@ -64,7 +64,19 @@ const AlertSchema = new mongoose.Schema(
       strategicArea: { type: String, default: "" },
       directionalHint: { type: String, default: "" },
       isBorder: { type: Boolean, default: false },
-      borderCountries: { type: [String], default: [] }
+      borderCountries: { type: [String], default: [] },
+      placementBasis: { type: String, default: "geo_fallback" }
+    },
+    eventRoles: {
+      actor: { type: String, default: "" },
+      actorCode: { type: String, default: "" },
+      actorAction: { type: String, default: "" },
+      target: { type: String, default: "" },
+      targetCode: { type: String, default: "" },
+      locationOfEvent: { type: String, default: "" },
+      context: { type: String, default: "" },
+      placementBasis: { type: String, default: "unknown" },
+      validationNotes: { type: String, default: "" }
     },
     read: { type: Boolean, default: false },
     deletedAt: { type: Date, default: null },
