@@ -2823,6 +2823,33 @@ function detectIncidentSignal(alert) {
 
   if (
     includesAny(text, [
+      "troop deployment",
+      "troops deployed",
+      "troops deploy",
+      "deploying troops",
+      "deploy troops",
+      "forces deployed",
+      "ground forces deployed",
+      "troop buildup",
+      "military buildup",
+      "reinforcements deployed",
+      "reinforcements sent",
+      "deploiement de troupes",
+      "deploiement des troupes",
+      "troupes deployee",
+      "troupes deployees",
+      "troupes deploye",
+      "envoi de troupes",
+      "renforts militaires",
+      "renforts envoyes",
+      "mobilisation de troupes"
+    ])
+  ) {
+    return "troop-deployment";
+  }
+
+  if (
+    includesAny(text, [
       "ground assault",
       "ground offensive",
       "troops advance",
@@ -3030,6 +3057,11 @@ function getSignalVisual(signal) {
         glyph: "🔥",
         className: "signal-fire"
       },
+      "troop-deployment": {
+        label: "Deploiement de troupes",
+        glyph: "🪖",
+        className: "signal-troop-deployment"
+      },
       "ground-combat": {
         label: "Attaque au sol / combat terrestre",
         glyph: "⚔",
@@ -3095,6 +3127,7 @@ function signalColorHex(signal) {
       "leader-communication": "#8cb4ff",
       infrastructure: "#ffc96e",
       fire: "#ff8748",
+      "troop-deployment": "#ffbf69",
       "ground-combat": "#ffa0a0",
       hostage: "#c9cde1",
       "civil-unrest": "#ffe37a",

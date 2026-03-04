@@ -2010,6 +2010,10 @@ canvas {
   color: #ff8748;
 }
 
+.threat-marker.signal-troop-deployment .threat-marker__glyph {
+  color: #ffbf69;
+}
+
 .threat-marker.signal-ground-combat .threat-marker__glyph {
   color: #ffa0a0;
 }
