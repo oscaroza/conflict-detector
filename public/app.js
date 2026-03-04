@@ -5898,7 +5898,8 @@ function getCountryLegendDisplayConfig(zoom, options = {}) {
   const normalized = Math.max(0, Math.min(1, (z - 2.2) / 3.8));
   const base = {
     showArrow: z >= 2.9,
-    showNoCitySignals: z >= 4.6,
+    // Keep signal chips available even when zoomed out.
+    showNoCitySignals: true,
     fontSizeRem: 0.37 + normalized * 0.28,
     flagSizeRem: 0.5 + normalized * 0.35,
     arrowSizeRem: 0.52 + normalized * 0.28,
@@ -5970,9 +5971,11 @@ function createCountryLegendMarker(summary, options = {}) {
   const compactName = compactCountryName(countryName, nameMaxLen);
   const priorityClass = isPriorityCountry ? "priority-country" : "";
   const flag = countryCodeToFlagEmoji(summary?.country?.code);
-  const noCitySignalItems = Array.isArray(summary?.noCitySignalItems)
+  const noCitySignalItemsSource = Array.isArray(summary?.noCitySignalItems)
     ? summary.noCitySignalItems
     : buildNoCitySignalItems(summary?.alerts || []);
+  const maxSignalsByZoom = zoom < 2.6 ? 2 : zoom < 3.2 ? 4 : zoom < 4 ? 6 : 12;
+  const noCitySignalItems = noCitySignalItemsSource.slice(0, maxSignalsByZoom);
   const signalsRows = showNoCitySignals && noCitySignalItems.length ? Math.ceil(noCitySignalItems.length / 6) : 0;
   const markerHeight = displayConfig.baseMarkerHeight + (signalsRows > 0 ? 6 + signalsRows * 22 : 0);
   const markerWidth = displayConfig.markerWidth;
