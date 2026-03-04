@@ -10,7 +10,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Set
 
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from ai_analyzer import (
     ai_health as get_ai_health,
@@ -1085,6 +1085,11 @@ async def root() -> Dict[str, Any]:
         "docs": "/docs",
         "health": "/health",
     }
+
+
+@app.head("/", include_in_schema=False)
+async def root_head() -> Response:
+    return Response(status_code=200)
 
 
 @app.get("/api/alerts")
