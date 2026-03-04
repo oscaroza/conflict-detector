@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+from difflib import SequenceMatcher
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, List, Optional, Set
@@ -42,6 +43,35 @@ _PIPELINE_COUNTERS = {
 }
 
 
+def _safe_float_env(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = str(os.getenv(name, str(default))).strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _safe_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = str(os.getenv(name, str(default))).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value))
+
+_RSS_DUPLICATE_TITLE_THRESHOLD = _safe_float_env("RSS_DUPLICATE_TITLE_THRESHOLD", default=0.70, minimum=0.5, maximum=0.98)
+_RSS_DUPLICATE_WINDOW_SECONDS = _safe_int_env(
+    "RSS_DUPLICATE_WINDOW_SECONDS",
+    default=6 * 3600,
+    minimum=300,
+    maximum=7 * 24 * 3600,
+)
+_RSS_DUPLICATE_CACHE_MAX_ITEMS = _safe_int_env("RSS_DUPLICATE_CACHE_MAX_ITEMS", default=1200, minimum=80, maximum=5000)
+_RSS_TITLE_CACHE: List[Dict[str, Any]] = []
+_RSS_TITLE_CACHE_LOCK = asyncio.Lock()
+
+
 def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -50,7 +80,7 @@ def log_event(event: str, **fields: Any) -> None:
     normalized_event = str(event or "").strip().lower()
     if normalized_event in {"alert_accepted", "rss_alert_accepted"}:
         _PIPELINE_COUNTERS["accepted_requests"] = int(_PIPELINE_COUNTERS.get("accepted_requests", 0)) + 1
-    elif normalized_event in {"alert_rejected", "rss_alert_rejected", "rss_rejected_no_keywords"}:
+    elif normalized_event in {"alert_rejected", "rss_alert_rejected", "rss_rejected_no_keywords", "rss_rejected_duplicate"}:
         _PIPELINE_COUNTERS["rejected_requests"] = int(_PIPELINE_COUNTERS.get("rejected_requests", 0)) + 1
 
     payload = {
@@ -145,6 +175,115 @@ def _build_title(text: str) -> str:
     first_line = (text or "").strip().splitlines()[0] if text else ""
     title = first_line.strip()[:220]
     return title or "Alerte terrain"
+
+
+def _normalize_rss_title_for_dedupe(title: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(title or "").lower()).strip()
+    return re.sub(r"\s+", " ", normalized)
+
+
+def _prune_rss_title_cache(now_ts: float) -> None:
+    cutoff_ts = now_ts - float(_RSS_DUPLICATE_WINDOW_SECONDS)
+    if _RSS_TITLE_CACHE:
+        _RSS_TITLE_CACHE[:] = [item for item in _RSS_TITLE_CACHE if float(item.get("seen_at", 0.0)) >= cutoff_ts]
+    if len(_RSS_TITLE_CACHE) > _RSS_DUPLICATE_CACHE_MAX_ITEMS:
+        overflow = len(_RSS_TITLE_CACHE) - _RSS_DUPLICATE_CACHE_MAX_ITEMS
+        del _RSS_TITLE_CACHE[:overflow]
+
+
+async def _find_rss_title_duplicate(title: str, source_ref: str) -> Optional[Dict[str, Any]]:
+    normalized_title = _normalize_rss_title_for_dedupe(title)
+    if not normalized_title:
+        return None
+
+    async with _RSS_TITLE_CACHE_LOCK:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        _prune_rss_title_cache(now_ts)
+
+        for candidate in reversed(_RSS_TITLE_CACHE):
+            candidate_source_ref = str(candidate.get("source_ref") or "").strip()
+            if source_ref and candidate_source_ref and source_ref == candidate_source_ref:
+                continue
+
+            candidate_title = str(candidate.get("normalized_title") or "").strip()
+            if not candidate_title:
+                continue
+
+            similarity = SequenceMatcher(None, normalized_title, candidate_title).ratio()
+            if similarity > _RSS_DUPLICATE_TITLE_THRESHOLD:
+                return {
+                    "similarity": round(float(similarity), 4),
+                    "source_ref": candidate_source_ref,
+                    "source_name": str(candidate.get("source_name") or "").strip(),
+                    "source_url": str(candidate.get("source_url") or "").strip(),
+                    "title": str(candidate.get("title") or "").strip(),
+                }
+    return None
+
+
+async def _register_rss_title(title: str, source_ref: str, source_name: str, source_url: str) -> None:
+    normalized_title = _normalize_rss_title_for_dedupe(title)
+    if not normalized_title:
+        return
+
+    async with _RSS_TITLE_CACHE_LOCK:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        _prune_rss_title_cache(now_ts)
+        _RSS_TITLE_CACHE.append(
+            {
+                "normalized_title": normalized_title,
+                "title": str(title or "").strip()[:220],
+                "source_ref": str(source_ref or "").strip(),
+                "source_name": str(source_name or "").strip()[:180],
+                "source_url": str(source_url or "").strip()[:1200],
+                "seen_at": now_ts,
+            }
+        )
+        if len(_RSS_TITLE_CACHE) > _RSS_DUPLICATE_CACHE_MAX_ITEMS:
+            overflow = len(_RSS_TITLE_CACHE) - _RSS_DUPLICATE_CACHE_MAX_ITEMS
+            del _RSS_TITLE_CACHE[:overflow]
+
+
+async def _seed_rss_title_cache_from_db() -> None:
+    rss_alerts = await get_alerts(limit=min(_RSS_DUPLICATE_CACHE_MAX_ITEMS, 500), source_type="rss")
+    if not rss_alerts:
+        return
+
+    async with _RSS_TITLE_CACHE_LOCK:
+        _RSS_TITLE_CACHE.clear()
+        now_ts = datetime.now(timezone.utc).timestamp()
+        cutoff_ts = now_ts - float(_RSS_DUPLICATE_WINDOW_SECONDS)
+
+        for alert in reversed(rss_alerts):
+            title = str(alert.get("title") or "").strip()
+            normalized_title = _normalize_rss_title_for_dedupe(title)
+            if not normalized_title:
+                continue
+
+            seen_at = datetime.now(timezone.utc).timestamp()
+            raw_ts = str(alert.get("timestamp") or "").strip()
+            try:
+                parsed_ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp()
+                if parsed_ts > 0:
+                    seen_at = parsed_ts
+            except Exception:
+                pass
+
+            if seen_at < cutoff_ts:
+                continue
+
+            _RSS_TITLE_CACHE.append(
+                {
+                    "normalized_title": normalized_title,
+                    "title": title[:220],
+                    "source_ref": str(alert.get("source_ref") or "").strip(),
+                    "source_name": str(alert.get("source_channel") or "").strip()[:180],
+                    "source_url": str(alert.get("source_url") or "").strip()[:1200],
+                    "seen_at": seen_at,
+                }
+            )
+
+        _prune_rss_title_cache(now_ts)
 
 
 def _normalize_channel_handle(source_channel: str) -> str:
@@ -384,6 +523,39 @@ def _normalize_lookup_text(value: str) -> str:
     return f" {re.sub(r'[^a-z0-9]+', ' ', str(value or '').lower()).strip()} "
 
 
+def _keyword_term_variants(normalized_term: str) -> List[str]:
+    base = re.sub(r"[^a-z0-9]+", " ", str(normalized_term or "").lower()).strip()
+    if not base:
+        return []
+
+    tokens = [token for token in base.split(" ") if token]
+    if not tokens:
+        return []
+
+    tail = tokens[-1]
+    tail_forms = [tail]
+
+    if len(tail) >= 4:
+        tail_forms.extend([f"{tail}s", f"{tail}es"])
+        if tail.endswith("y") and len(tail) >= 5:
+            tail_forms.append(f"{tail[:-1]}ies")
+        if tail.endswith("e") and len(tail) >= 5:
+            tail_forms.extend([f"{tail[:-1]}ing", f"{tail}d"])
+        else:
+            tail_forms.extend([f"{tail}ing", f"{tail}ed"])
+
+    variants: List[str] = []
+    seen = set()
+    for tail_variant in tail_forms:
+        candidate_tokens = tokens[:-1] + [tail_variant]
+        candidate = " ".join(candidate_tokens).strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        variants.append(candidate)
+    return variants
+
+
 def _find_matched_terms(normalized_text: str, terms: List[str]) -> List[str]:
     matches: List[str] = []
     seen = set()
@@ -391,7 +563,8 @@ def _find_matched_terms(normalized_text: str, terms: List[str]) -> List[str]:
         normalized_term = re.sub(r"[^a-z0-9]+", " ", str(term or "").lower()).strip()
         if not normalized_term or normalized_term in seen:
             continue
-        if f" {normalized_term} " in normalized_text:
+        variants = _keyword_term_variants(normalized_term)
+        if any(f" {variant} " in normalized_text for variant in variants):
             matches.append(normalized_term)
             seen.add(normalized_term)
     return matches
@@ -799,6 +972,24 @@ async def process_rss_item(item: Dict[str, Any]) -> None:
         location = resolve_location(combined_text)
         ai_title = title or _build_title(combined_text)
         ai_description = description or combined_text
+
+        duplicate_match = await _find_rss_title_duplicate(ai_title, source_ref)
+        if duplicate_match is not None:
+            log_event(
+                "rss_rejected_duplicate",
+                source=source_name,
+                source_ref=source_ref,
+                source_url=source_url,
+                title=(ai_title or "")[:180],
+                duplicate_source_ref=str(duplicate_match.get("source_ref") or ""),
+                duplicate_source=str(duplicate_match.get("source_name") or ""),
+                duplicate_url=str(duplicate_match.get("source_url") or ""),
+                duplicate_title=str(duplicate_match.get("title") or "")[:180],
+                similarity=float(duplicate_match.get("similarity") or 0.0),
+                threshold=float(_RSS_DUPLICATE_TITLE_THRESHOLD),
+            )
+            return
+
         cache_key = source_ref or f"rss:{source_url or title}"
         cached_ai_result = get_cached_analysis(cache_key)
         ai_result = cached_ai_result if cached_ai_result is not None else _pending_ai_result()
@@ -825,7 +1016,17 @@ async def process_rss_item(item: Dict[str, Any]) -> None:
 
         inserted = await insert_alert(alert_payload)
         if inserted is None:
+            log_event(
+                "rss_rejected_duplicate",
+                source=source_name,
+                source_ref=source_ref,
+                source_url=source_url,
+                title=(ai_title or "")[:180],
+                reason="db_duplicate_guard",
+            )
             return
+
+        await _register_rss_title(ai_title, source_ref, source_name, source_url)
 
         ws_manager: WebSocketManager = app.state.ws_manager
         await ws_manager.broadcast({"type": "new_alert", "alert": inserted})
@@ -985,6 +1186,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 async def startup() -> None:
     configure_logging()
     await init_db()
+    await _seed_rss_title_cache_from_db()
 
     app.state.ws_manager = WebSocketManager()
     app.state.sse_manager = SSEManager()
@@ -1035,6 +1237,8 @@ async def startup() -> None:
         rss_listener=rss_status,
         rss_feeds=rss_feeds,
         rss_poll_seconds=app.state.rss_scraper.poll_seconds,
+        rss_duplicate_title_threshold=_RSS_DUPLICATE_TITLE_THRESHOLD,
+        rss_duplicate_window_seconds=_RSS_DUPLICATE_WINDOW_SECONDS,
         alert_score_threshold=ALERT_SCORE_THRESHOLD,
         duplicate_window_seconds=DUPLICATE_WINDOW_SECONDS,
         similarity_threshold=SIMILARITY_THRESHOLD,
