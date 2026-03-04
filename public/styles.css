@@ -1807,6 +1807,15 @@ canvas {
   color: #e6edf8;
 }
 
+.country-callout.priority-country {
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.country-callout.priority-country .country-callout__name {
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.72);
+}
+
 .country-callout.status-normal {
   border-color: rgba(53, 239, 159, 0.6);
   box-shadow: 0 0 0 1px rgba(53, 239, 159, 0.28), 0 5px 14px rgba(0, 0, 0, 0.32);
