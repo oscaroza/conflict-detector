@@ -1776,6 +1776,56 @@ function sourceBadgeHtml(alert, extraClass = "") {
   return `<span class="meta-chip source-chip ${className} ${extraClass}">${escapeHtml(label)}</span>`;
 }
 
+function eventRolesValue(alert) {
+  const roles = alert?.eventRoles || alert?.event_roles || {};
+  if (!roles || typeof roles !== "object") {
+    return {
+      actor: "",
+      actorCode: "",
+      actorAction: "",
+      target: "",
+      targetCode: "",
+      locationOfEvent: "",
+      context: "",
+      placementBasis: "",
+      validationNotes: ""
+    };
+  }
+
+  return {
+    actor: String(roles.actor || roles.event_actor || "").trim(),
+    actorCode: String(roles.actorCode || roles.actor_code || "").trim().toUpperCase(),
+    actorAction: String(roles.actorAction || roles.actor_action || "").trim(),
+    target: String(roles.target || "").trim(),
+    targetCode: String(roles.targetCode || roles.target_code || "").trim().toUpperCase(),
+    locationOfEvent: String(roles.locationOfEvent || roles.location_of_event || "").trim(),
+    context: String(roles.context || "").trim(),
+    placementBasis: String(roles.placementBasis || roles.placement_basis || "").trim(),
+    validationNotes: String(roles.validationNotes || roles.validation_notes || "").trim()
+  };
+}
+
+function eventRolesLocationLabel(alert) {
+  const roles = eventRolesValue(alert);
+  if (roles.locationOfEvent) {
+    return roles.locationOfEvent;
+  }
+  if (alert?.city?.name) {
+    return `${alert.city.name}, ${alert?.country?.name || "Inconnu"}`;
+  }
+  return alert?.country?.name || "Inconnu";
+}
+
+function eventActorTargetArrowLabel(alert) {
+  const roles = eventRolesValue(alert);
+  if (!roles.actor || !roles.target) {
+    return "";
+  }
+  const actorFlag = roles.actorCode ? countryCodeToFlagEmoji(roles.actorCode) : "⦿";
+  const targetFlag = roles.targetCode ? countryCodeToFlagEmoji(roles.targetCode) : "⦿";
+  return `${actorFlag} ${roles.actor} → ${targetFlag} ${roles.target}`;
+}
+
 function collectEventGroupAlerts(alert) {
   const key = eventGroupKey(alert);
   if (!key) {
@@ -4058,7 +4108,9 @@ function createMarker(alert, options = {}) {
 
   marker.bindPopup(`
     <strong>${escapeHtml(alert.title)}</strong><br>
-    ${escapeHtml(alert.city?.name ? `${alert.city.name}, ${alert.country?.name || "Inconnu"}` : alert.country?.name || "Inconnu")} | ${escapeHtml(typeLabel(alert.type))} | ${escapeHtml(signalVisual.label)}
+    ${escapeHtml(eventRolesLocationLabel(alert))} | ${escapeHtml(typeLabel(alert.type))} | ${escapeHtml(signalVisual.label)}${
+      eventActorTargetArrowLabel(alert) ? `<br>${escapeHtml(eventActorTargetArrowLabel(alert))}` : ""
+    }
   `);
 
   marker.on("click", () => {
@@ -4329,6 +4381,7 @@ function renderTelegramSourcesHtml(alert, relatedAlerts = []) {
 function renderAlertDetails(alert, options = {}) {
   ensureIntelOverlayVisible();
   const signalVisual = getSignalVisual(detectIncidentSignal(alert));
+  const eventRoles = eventRolesValue(alert);
   const confidence = confidenceScoreValue(alert);
   const sourceCount = Math.max(1, Number(alert?._eventSourceCount || sourceCountValue(alert) || 1));
   const relatedAlerts = getDetailRelatedAlerts(alert);
@@ -4367,6 +4420,16 @@ function renderAlertDetails(alert, options = {}) {
       <span class="meta-chip">${escapeHtml(alert.country?.region || "Global")}</span>
     </div>
     <p class="mb-2"><strong>Résumé:</strong> ${escapeHtml(aiSummary || alert.summary || "Résumé non disponible")}</p>
+    ${
+      eventActorTargetArrowLabel(alert)
+        ? `<p class="mb-2"><strong>Flux acteur → cible:</strong> ${escapeHtml(eventActorTargetArrowLabel(alert))}</p>`
+        : ""
+    }
+    <p class="mb-1"><strong>Auteur:</strong> ${escapeHtml(eventRoles.actor || "Non identifié")}</p>
+    <p class="mb-1"><strong>Cible:</strong> ${escapeHtml(eventRoles.target || "Non identifiée")}</p>
+    <p class="mb-1"><strong>Lieu événement:</strong> ${escapeHtml(eventRoles.locationOfEvent || eventRolesLocationLabel(alert))}</p>
+    <p class="mb-1"><strong>Type d'action:</strong> ${escapeHtml(eventRoles.actorAction || signalVisual.label)}</p>
+    <p class="mb-2"><strong>Contexte diplomatique:</strong> ${escapeHtml(eventRoles.context || "Aucun contexte diplomatique détecté")}</p>
     ${aiAnalyzed ? `<p class="mb-2"><strong>IA Catégorie:</strong> ${escapeHtml(aiVisual.label)}</p>` : ""}
     <p class="mb-2"><strong>Source:</strong> ${sourceBadgeHtml(alert, "source-chip-inline")} <span class="source-name-inline">${escapeHtml(
     sourceName
