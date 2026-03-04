@@ -123,7 +123,9 @@ const refs = {
   toggleSpaceCivilBtn: document.getElementById("toggleSpaceCivilBtn"),
   aiLoadBar: document.getElementById("aiLoadBar"),
   aiLoadValue: document.getElementById("aiLoadValue"),
-  aiLoadMeta: document.getElementById("aiLoadMeta")
+  aiLoadMeta: document.getElementById("aiLoadMeta"),
+  aiAcceptedCount: document.getElementById("aiAcceptedCount"),
+  aiRejectedCount: document.getElementById("aiRejectedCount")
 };
 
 let audioContext = null;
@@ -6388,6 +6390,8 @@ function renderAiQueueStatus(payload = null) {
   const queueLength = Math.max(0, Number(payload?.queue_length || 0));
   const queueCapacity = Math.max(0, Number(payload?.queue_capacity || 0));
   const perMinute = Math.max(0, Number(payload?.processed_last_minute || 0));
+  const acceptedRequests = Math.max(0, Number(payload?.accepted_requests || 0));
+  const rejectedRequests = Math.max(0, Number(payload?.rejected_requests || 0));
   const ready = Boolean(payload?.ready);
   const provider = String(payload?.provider || "n/a").toUpperCase();
 
@@ -6396,6 +6400,12 @@ function renderAiQueueStatus(payload = null) {
   refs.aiLoadMeta.textContent = `File IA: ${queueLength}/${queueCapacity || "--"} | ${perMinute}/min | ${provider} ${
     ready ? "READY" : "OFF"
   }`;
+  if (refs.aiAcceptedCount) {
+    refs.aiAcceptedCount.textContent = String(acceptedRequests);
+  }
+  if (refs.aiRejectedCount) {
+    refs.aiRejectedCount.textContent = String(rejectedRequests);
+  }
 }
 
 async function loadAiQueueStatus() {
@@ -6408,6 +6418,8 @@ async function loadAiQueueStatus() {
       queue_length: 0,
       queue_capacity: 0,
       processed_last_minute: 0,
+      accepted_requests: 0,
+      rejected_requests: 0,
       provider: "n/a",
       ready: false
     });

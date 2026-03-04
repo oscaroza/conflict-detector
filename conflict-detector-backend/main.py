@@ -34,18 +34,36 @@ from telegram_scraper import TelegramScraper
 
 logger = logging.getLogger("conflict_detector")
 
+_PIPELINE_COUNTERS = {
+    "accepted_requests": 0,
+    "rejected_requests": 0,
+}
+
 
 def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 def log_event(event: str, **fields: Any) -> None:
+    normalized_event = str(event or "").strip().lower()
+    if normalized_event in {"alert_accepted", "rss_alert_accepted"}:
+        _PIPELINE_COUNTERS["accepted_requests"] = int(_PIPELINE_COUNTERS.get("accepted_requests", 0)) + 1
+    elif normalized_event in {"alert_rejected", "rss_alert_rejected"}:
+        _PIPELINE_COUNTERS["rejected_requests"] = int(_PIPELINE_COUNTERS.get("rejected_requests", 0)) + 1
+
     payload = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "event": event,
         **fields,
     }
     logger.info(json.dumps(payload, ensure_ascii=False))
+
+
+def pipeline_counters_snapshot() -> Dict[str, int]:
+    return {
+        "accepted_requests": int(_PIPELINE_COUNTERS.get("accepted_requests", 0)),
+        "rejected_requests": int(_PIPELINE_COUNTERS.get("rejected_requests", 0)),
+    }
 
 
 class WebSocketManager:
@@ -374,7 +392,10 @@ async def health() -> Dict[str, Any]:
 
 @app.get("/api/ai/health")
 async def ai_health() -> Dict[str, Any]:
-    return get_ai_health()
+    return {
+        **get_ai_health(),
+        **pipeline_counters_snapshot(),
+    }
 
 
 @app.get("/")
@@ -435,6 +456,7 @@ async def api_stats() -> Dict[str, Any]:
         "at": datetime.now(timezone.utc).isoformat(),
         "defcon": defcon,
         **snapshot,
+        **pipeline_counters_snapshot(),
         "top_sources": [
             {"source_channel": name, "count": count}
             for name, count in source_counter.most_common(8)

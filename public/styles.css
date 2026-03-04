@@ -698,6 +698,38 @@ h1 {
   font-family: "IBM Plex Mono", monospace;
 }
 
+.ai-request-stats {
+  margin-top: 0.12rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  padding-top: 0.26rem;
+  display: grid;
+  gap: 0.12rem;
+}
+
+.ai-request-line {
+  margin: 0;
+  font-size: 0.58rem;
+  color: #c3d0e2;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.ai-request-line strong {
+  color: #f3f7ff;
+}
+
+.ai-logs-link {
+  margin-top: 0.18rem;
+  font-size: 0.6rem;
+  color: #9ad7ff;
+  text-decoration: none;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.ai-logs-link:hover {
+  color: #ffd24a;
+  text-decoration: underline;
+}
+
 .latest-strip {
   display: grid;
   grid-template-columns: auto 1fr;

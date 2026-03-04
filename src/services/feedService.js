@@ -2092,6 +2092,8 @@ async function getAiQueueStatus(force = false) {
       queue_capacity: 0,
       processed_last_minute: 0,
       rate_limit_per_minute: Number(process.env.AI_RATE_LIMIT_PER_MINUTE) || DEFAULT_AI_RATE_LIMIT_PER_MINUTE,
+      accepted_requests: 0,
+      rejected_requests: 0,
       saturation_pct: 0,
       source: "local-fallback",
       updatedAt: new Date().toISOString()
@@ -2116,6 +2118,8 @@ async function getAiQueueStatus(force = false) {
       queue_capacity: Number(payload?.queue_capacity || 0),
       processed_last_minute: Number(payload?.processed_last_minute || 0),
       rate_limit_per_minute: Number(payload?.rate_limit_per_minute || DEFAULT_AI_RATE_LIMIT_PER_MINUTE),
+      accepted_requests: Math.max(0, Number(payload?.accepted_requests || 0)),
+      rejected_requests: Math.max(0, Number(payload?.rejected_requests || 0)),
       saturation_pct: Number(payload?.saturation_pct || 0),
       source: "telegram-backend",
       updatedAt: new Date().toISOString()
@@ -2131,6 +2135,8 @@ async function getAiQueueStatus(force = false) {
       queue_capacity: 0,
       processed_last_minute: 0,
       rate_limit_per_minute: Number(process.env.AI_RATE_LIMIT_PER_MINUTE) || DEFAULT_AI_RATE_LIMIT_PER_MINUTE,
+      accepted_requests: 0,
+      rejected_requests: 0,
       saturation_pct: 0,
       source: "error",
       error: error.message,
