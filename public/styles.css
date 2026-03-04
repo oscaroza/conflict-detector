@@ -1971,8 +1971,8 @@ canvas {
 }
 
 .threat-marker {
-  width: 24px;
-  height: 24px;
+  width: var(--threat-marker-size, 24px);
+  height: var(--threat-marker-size, 24px);
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.68);
   background: radial-gradient(circle at 30% 26%, rgba(40, 52, 70, 0.92), rgba(6, 9, 14, 0.95));
@@ -1982,7 +1982,7 @@ canvas {
 }
 
 .threat-marker__glyph {
-  font-size: 12px;
+  font-size: var(--threat-marker-glyph-size, 12px);
   line-height: 1;
   filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.55));
 }

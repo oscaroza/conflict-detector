@@ -3601,12 +3601,93 @@ function selectTrackedAssetsForCurrentZoom(tracks) {
   return insideView.concat(outsideView).slice(0, maxMarkers);
 }
 
-function createMarker(alert) {
-  const latLng = getAlertLatLng(alert);
+function getThreatMarkerSizePx(groupSize = 1) {
+  const total = Math.max(1, Number(groupSize) || 1);
+  const shrink = Math.log2(total) * 3;
+  return Math.max(13, Math.round(26 - shrink));
+}
+
+function getThreatMarkerGlyphSizePx(markerSizePx = 24) {
+  return Math.max(8, Math.round(Number(markerSizePx || 24) * 0.48));
+}
+
+function buildAlertMarkerPlacements(alerts) {
+  const source = Array.isArray(alerts) ? alerts : [];
+  if (!source.length) {
+    return [];
+  }
+
+  const grouped = new Map();
+  source.forEach((alert, index) => {
+    const [lat, lng] = getAlertLatLng(alert);
+    if (!isValidLatLng(lat, lng)) {
+      return;
+    }
+    const key = `${Number(lat).toFixed(4)}:${Number(lng).toFixed(4)}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        lat,
+        lng,
+        items: []
+      });
+    }
+    grouped.get(key).items.push({ alert, index });
+  });
+
+  const placements = [];
+  grouped.forEach((group) => {
+    const total = group.items.length;
+    const markerSizePx = getThreatMarkerSizePx(total);
+    const glyphSizePx = getThreatMarkerGlyphSizePx(markerSizePx);
+
+    if (total <= 1 || !state.map?.latLngToContainerPoint || !state.map?.containerPointToLatLng) {
+      group.items.forEach((item) => {
+        placements.push({
+          alert: item.alert,
+          latLng: [group.lat, group.lng],
+          markerSizePx,
+          glyphSizePx,
+          groupSize: total,
+          sortIndex: item.index
+        });
+      });
+      return;
+    }
+
+    const basePoint = state.map.latLngToContainerPoint([group.lat, group.lng]);
+    const spreadUnitPx = Math.max(6, markerSizePx * 0.72);
+
+    group.items.forEach((item, idx) => {
+      const angle = idx * 2.399963229728653;
+      const radius = spreadUnitPx * Math.sqrt(idx + 1);
+      const point = L.point(basePoint.x + Math.cos(angle) * radius, basePoint.y + Math.sin(angle) * radius);
+      const displacedLatLng = state.map.containerPointToLatLng(point);
+      placements.push({
+        alert: item.alert,
+        latLng: [displacedLatLng.lat, displacedLatLng.lng],
+        markerSizePx,
+        glyphSizePx,
+        groupSize: total,
+        sortIndex: item.index
+      });
+    });
+  });
+
+  return placements.sort((a, b) => Number(a.sortIndex || 0) - Number(b.sortIndex || 0));
+}
+
+function createMarker(alert, options = {}) {
+  const latLng = Array.isArray(options?.latLng) ? options.latLng : getAlertLatLng(alert);
   const signal = detectIncidentSignal(alert);
   const signalVisual = getSignalVisual(signal);
   const severity = normalizeSeverity(alert.severity);
+  const groupSize = Math.max(1, Number(options?.groupSize || 1));
+  const markerSizePx = Math.max(12, Math.round(Number(options?.markerSizePx || getThreatMarkerSizePx(groupSize))));
+  const glyphSizePx = Math.max(8, Math.round(Number(options?.glyphSizePx || getThreatMarkerGlyphSizePx(markerSizePx))));
+  const iconSizePx = markerSizePx + 2;
+  const iconAnchorPx = Math.round(iconSizePx / 2);
   const shouldPulse = severity === "critical" || severity === "high";
+  const markerTitle = groupSize > 1 ? `${signalVisual.label} (${groupSize} evenements)` : signalVisual.label;
   const markerClasses = [
     "threat-marker",
     shouldPulse ? "is-unread" : "is-read",
@@ -3617,9 +3698,9 @@ function createMarker(alert) {
   const marker = L.marker(latLng, {
     icon: L.divIcon({
       className: "",
-      html: `<div class="${markerClasses}" title="${escapeHtml(signalVisual.label)}"><span class="threat-marker__glyph">${signalVisual.glyph}</span></div>`,
-      iconSize: [26, 26],
-      iconAnchor: [13, 13]
+      html: `<div class="${markerClasses}" style="--threat-marker-size:${markerSizePx}px;--threat-marker-glyph-size:${glyphSizePx}px;" title="${escapeHtml(markerTitle)}"><span class="threat-marker__glyph">${signalVisual.glyph}</span></div>`,
+      iconSize: [iconSizePx, iconSizePx],
+      iconAnchor: [iconAnchorPx, iconAnchorPx]
     })
   });
 
@@ -3795,8 +3876,15 @@ function renderMapMarkers() {
     0
   );
 
-  renderedAlerts.forEach((alert) => {
-    const marker = createMarker(alert);
+  const alertPlacements = buildAlertMarkerPlacements(renderedAlerts);
+
+  alertPlacements.forEach((placement) => {
+    const marker = createMarker(placement.alert, {
+      latLng: placement.latLng,
+      markerSizePx: placement.markerSizePx,
+      glyphSizePx: placement.glyphSizePx,
+      groupSize: placement.groupSize
+    });
     state.markersLayer.addLayer(marker);
   });
 
