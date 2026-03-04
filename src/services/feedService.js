@@ -1,8 +1,9 @@
 const Parser = require("rss-parser");
 const Alert = require("../models/Alert");
 const Settings = require("../models/Settings");
-const { extractCountry } = require("../utils/countryMatcher");
+const { extractCountry, extractCountryMentions } = require("../utils/countryMatcher");
 const { extractCity } = require("../utils/cityMatcher");
+const { extractStrategicArea } = require("../utils/strategicAreaMatcher");
 const { inferOccurredAt } = require("../utils/eventTimeParser");
 const streamService = require("./streamService");
 
@@ -19,6 +20,8 @@ const FETCH_TIMEOUT_MS = 15000;
 const GDELT_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc";
 const TELEGRAM_SYNC_TIMEOUT_MS = 12000;
 const TELEGRAM_SYNC_DEFAULT_LIMIT = 120;
+const AI_QUEUE_STATUS_CACHE_MS = 12000;
+const DEFAULT_AI_RATE_LIMIT_PER_MINUTE = 10;
 
 function readNumberEnv(name, defaultValue, min, max) {
   const raw = Number(process.env[name]);
@@ -181,6 +184,348 @@ function clampConfidence(value) {
   return Math.max(0, Math.min(100, Math.round(num)));
 }
 
+function normalizeCountryInfo(countryInfo) {
+  const codeRaw = String(countryInfo?.code ?? "XX").trim();
+  const normalizedCode = codeRaw ? codeRaw.toUpperCase() : "";
+
+  return {
+    name: String(countryInfo?.name || "Inconnu").trim() || "Inconnu",
+    code: normalizedCode,
+    region: String(countryInfo?.region || "Global").trim() || "Global",
+    lat: Number.isFinite(Number(countryInfo?.lat)) ? Number(countryInfo.lat) : 20,
+    lng: Number.isFinite(Number(countryInfo?.lng)) ? Number(countryInfo.lng) : 0,
+    area: Number.isFinite(Number(countryInfo?.area)) ? Number(countryInfo.area) : 0
+  };
+}
+
+function isUnknownCountryInfo(countryInfo) {
+  const normalizedName = String(countryInfo?.name || "").trim().toLowerCase();
+  const normalizedCode = String(countryInfo?.code || "").trim().toUpperCase();
+  return !normalizedName || normalizedName === "inconnu" || normalizedCode === "XX";
+}
+
+function normalizeLocationLabel(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function detectDirectionalHint(text) {
+  const input = String(text || "");
+  const hints = DIRECTION_PATTERN_MAP.filter((item) => item.regex.test(input)).map((item) => item.key);
+  return Array.from(new Set(hints)).join(",");
+}
+
+function directionalOffsetScale(countryInfo) {
+  const area = Number(countryInfo?.area || 0);
+  if (area >= 6_000_000) return 2.5;
+  if (area >= 2_000_000) return 2.1;
+  if (area >= 800_000) return 1.6;
+  if (area >= 300_000) return 1.2;
+  return 0.8;
+}
+
+function applyDirectionalOffset(lat, lng, directionalHint, countryInfo) {
+  const hints = String(directionalHint || "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (!hints.length || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return { lat, lng };
+  }
+
+  const scale = directionalOffsetScale(countryInfo);
+  let nextLat = lat;
+  let nextLng = lng;
+
+  if (hints.includes("north")) {
+    nextLat += scale;
+  }
+  if (hints.includes("south")) {
+    nextLat -= scale;
+  }
+  if (hints.includes("east")) {
+    nextLng += scale;
+  }
+  if (hints.includes("west")) {
+    nextLng -= scale;
+  }
+
+  return {
+    lat: Math.max(-89.5, Math.min(89.5, nextLat)),
+    lng: Math.max(-179.5, Math.min(179.5, nextLng))
+  };
+}
+
+function resolveBorderLocationFromMentions(articleText, mentions = []) {
+  const normalized = normalizeLocationLabel(articleText);
+  const hasBorderWord = /(border|frontier|frontiere|frontière)/i.test(String(articleText || ""));
+  if (!hasBorderWord || !normalized) {
+    return null;
+  }
+
+  const uniqueMentions = [];
+  const seen = new Set();
+  for (const mention of mentions) {
+    const code = String(mention?.code || "").toUpperCase();
+    if (!code || code === "XX" || seen.has(code)) {
+      continue;
+    }
+    seen.add(code);
+    uniqueMentions.push(mention);
+    if (uniqueMentions.length >= 2) {
+      break;
+    }
+  }
+
+  if (uniqueMentions.length < 2) {
+    return null;
+  }
+
+  const [first, second] = uniqueMentions;
+  if (!Number.isFinite(first?.lat) || !Number.isFinite(first?.lng) || !Number.isFinite(second?.lat) || !Number.isFinite(second?.lng)) {
+    return null;
+  }
+
+  const midLat = (Number(first.lat) + Number(second.lat)) / 2;
+  const midLng = (Number(first.lng) + Number(second.lng)) / 2;
+  return {
+    name: `Frontiere ${first.name} - ${second.name}`,
+    lat: midLat,
+    lng: midLng,
+    countries: [first.name, second.name]
+  };
+}
+
+function resolveGeoSignals(articleText, initialCountryInfo = null) {
+  let countryInfo = normalizeCountryInfo(initialCountryInfo || extractCountry(articleText));
+  const strategicArea = extractStrategicArea(articleText);
+  const directionalHint = detectDirectionalHint(articleText);
+  const mentions = extractCountryMentions(articleText, 4);
+  const borderLocation = resolveBorderLocationFromMentions(articleText, mentions);
+  const exactCity = extractCity(articleText, countryInfo);
+
+  if (exactCity && isUnknownCountryInfo(countryInfo)) {
+    countryInfo = normalizeCountryInfo({
+      name: exactCity.countryName,
+      code: exactCity.countryCode,
+      region: exactCity.region || "Global",
+      lat: exactCity.lat,
+      lng: exactCity.lng
+    });
+  }
+
+  if (borderLocation && isUnknownCountryInfo(countryInfo)) {
+    const firstMention = mentions[0];
+    if (firstMention) {
+      countryInfo = normalizeCountryInfo(firstMention);
+    }
+  }
+
+  if (strategicArea && isUnknownCountryInfo(countryInfo)) {
+    countryInfo = normalizeCountryInfo({
+      name: strategicArea.name,
+      code: "",
+      region: strategicArea.region || "Global",
+      lat: strategicArea.lat,
+      lng: strategicArea.lng
+    });
+  }
+
+  let cityInfo = borderLocation
+    ? {
+        name: borderLocation.name,
+        countryName: countryInfo.name,
+        countryCode: countryInfo.code,
+        region: countryInfo.region || "Global",
+        lat: borderLocation.lat,
+        lng: borderLocation.lng,
+        isBorder: true
+      }
+    : exactCity;
+
+  if (!cityInfo && strategicArea) {
+    const countryKey = normalizeLocationLabel(countryInfo?.name);
+    const areaKey = normalizeLocationLabel(strategicArea.name);
+    if (!countryKey || countryKey !== areaKey) {
+      cityInfo = {
+        name: strategicArea.name,
+        countryName: countryInfo.name,
+        countryCode: countryInfo.code,
+        region: strategicArea.region || countryInfo.region || "Global",
+        lat: strategicArea.lat,
+        lng: strategicArea.lng,
+        isStrategicArea: true
+      };
+    }
+  }
+
+  return {
+    countryInfo,
+    cityInfo,
+    strategicArea,
+    geoMeta: {
+      strategicArea: strategicArea?.name || "",
+      directionalHint,
+      isBorder: Boolean(borderLocation),
+      borderCountries: borderLocation?.countries || []
+    }
+  };
+}
+
+function computeMarkerCoordinates({
+  cityInfo,
+  strategicArea,
+  countryInfo,
+  rawLat = null,
+  rawLng = null,
+  applyDirection = true,
+  directionalHint = ""
+}) {
+  let lat = null;
+  let lng = null;
+  const hasExactCity = cityInfo && cityInfo.isStrategicArea !== true && cityInfo.isBorder !== true;
+
+  if (hasExactCity && Number.isFinite(cityInfo?.lat) && Number.isFinite(cityInfo?.lng)) {
+    lat = Number(cityInfo.lat);
+    lng = Number(cityInfo.lng);
+  } else if (Number.isFinite(rawLat) && Number.isFinite(rawLng)) {
+    lat = Number(rawLat);
+    lng = Number(rawLng);
+  } else if (Number.isFinite(cityInfo?.lat) && Number.isFinite(cityInfo?.lng)) {
+    lat = Number(cityInfo.lat);
+    lng = Number(cityInfo.lng);
+  } else if (Number.isFinite(strategicArea?.lat) && Number.isFinite(strategicArea?.lng)) {
+    lat = Number(strategicArea.lat);
+    lng = Number(strategicArea.lng);
+  } else {
+    lat = Number(countryInfo?.lat) || 20;
+    lng = Number(countryInfo?.lng) || 0;
+  }
+
+  if (applyDirection && !hasExactCity && directionalHint) {
+    const shifted = applyDirectionalOffset(lat, lng, directionalHint, countryInfo);
+    lat = shifted.lat;
+    lng = shifted.lng;
+  }
+
+  return { lat, lng };
+}
+
+function includesAny(text, keywords = []) {
+  const normalized = lower(text);
+  return keywords.some((keyword) => normalized.includes(lower(keyword)));
+}
+
+function isCivilSpaceEvent(articleText) {
+  const text = String(articleText || "");
+  if (!includesAny(text, CIVIL_SPACE_KEYWORDS)) {
+    return false;
+  }
+  return !includesAny(text, MILITARY_SPACE_CONTEXT_KEYWORDS);
+}
+
+function detectAiEventType(articleText, aiCategory = "") {
+  const text = String(articleText || "");
+  if (TERRAIN_EVENT_PATTERNS.some((pattern) => pattern.test(text))) {
+    return "terrain_event";
+  }
+  if (DIPLOMATIC_PATTERNS.some((pattern) => pattern.test(text)) || lower(aiCategory) === "diplomatie") {
+    return "diplomatic";
+  }
+  if (ACTION_EDITORIAL_PATTERNS.some((pattern) => pattern.test(text))) {
+    return "press_return";
+  }
+  return hasActionSignal(text) ? "terrain_event" : "press_return";
+}
+
+function hasConcreteGeoSignal(countryInfo, cityInfo, strategicArea, geoMeta = null) {
+  if (Number.isFinite(cityInfo?.lat) && Number.isFinite(cityInfo?.lng)) {
+    return true;
+  }
+  if (Number.isFinite(strategicArea?.lat) && Number.isFinite(strategicArea?.lng)) {
+    return true;
+  }
+  if (geoMeta?.isBorder) {
+    return true;
+  }
+  if (geoMeta?.directionalHint && !isUnknownCountryInfo(countryInfo)) {
+    return true;
+  }
+  return !isUnknownCountryInfo(countryInfo);
+}
+
+function isActionableEvent(articleText, geoSignals = {}, aiCategory = "") {
+  const text = String(articleText || "");
+  if (!text.trim()) {
+    return false;
+  }
+
+  if (ACTION_EDITORIAL_PATTERNS.some((pattern) => pattern.test(text))) {
+    return false;
+  }
+  if (isCivilSpaceEvent(text)) {
+    return false;
+  }
+
+  const eventType = detectAiEventType(text, aiCategory);
+  if (eventType !== "terrain_event") {
+    return false;
+  }
+
+  return hasConcreteGeoSignal(geoSignals.countryInfo, geoSignals.cityInfo, geoSignals.strategicArea, geoSignals.geoMeta);
+}
+
+function normalizeEventStatusLabel(value) {
+  const normalized = lower(value);
+  if (normalized === "confirmed" || normalized === "confirme") return "CONFIRME";
+  if (normalized === "false" || normalized === "faux") return "FAUX";
+  if (normalized === "probable") return "PROBABLE";
+  return "NON CONFIRME";
+}
+
+function computeVerificationAssessment(alert, relatedAlerts = []) {
+  const alerts = [alert, ...(Array.isArray(relatedAlerts) ? relatedAlerts : [])].filter(Boolean);
+  const sourceFamilies = new Set(alerts.map((item) => normalizeSourceFamily(item?.sourceName || "")).filter(Boolean));
+  const independentSources = Math.max(1, sourceFamilies.size);
+  const confidence = confidenceScoreValueLike(alert);
+  const credibilityBase = /(reuters|ap |associated press|bbc|guardian|al jazeera|france 24|@)/i.test(
+    String(alert?.sourceName || "")
+  )
+    ? 2
+    : 0;
+  const score = Math.max(0, Math.min(10, Math.round((confidence / 14 + independentSources * 1.5 + credibilityBase) * 10) / 10));
+
+  let status = "NON CONFIRME";
+  if (independentSources >= 3 && score >= 7) {
+    status = "CONFIRME";
+  } else if (independentSources >= 2 && score >= 5) {
+    status = "PROBABLE";
+  } else if (score <= 2.5) {
+    status = "FAUX";
+  }
+
+  const justification = `Sources independantes: ${independentSources}, confiance calculee: ${score}/10.`;
+  return {
+    status: normalizeEventStatusLabel(status),
+    score,
+    independentSources,
+    primarySourceCredibility: credibilityBase > 0 ? "source_reconnue" : "source_a_confirmer",
+    justification
+  };
+}
+
+function confidenceScoreValueLike(alert) {
+  const score = Number(alert?.confidenceScore);
+  if (Number.isFinite(score)) {
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }
+  return 35;
+}
+
 function resolveTelegramCountryInfo(rawAlert, articleText) {
   const declaredCountry = String(rawAlert?.country || "").trim();
   const declaredRegion = String(rawAlert?.region || "").trim();
@@ -196,7 +541,7 @@ function resolveTelegramCountryInfo(rawAlert, articleText) {
       lat: Number.isFinite(declaredLat) ? declaredLat : 20,
       lng: Number.isFinite(declaredLng) ? declaredLng : 0
     };
-    return countryInfo;
+    return normalizeCountryInfo(countryInfo);
   }
 
   if (declaredRegion) {
@@ -208,7 +553,7 @@ function resolveTelegramCountryInfo(rawAlert, articleText) {
   if (Number.isFinite(declaredLng)) {
     countryInfo.lng = declaredLng;
   }
-  return countryInfo;
+  return normalizeCountryInfo(countryInfo);
 }
 
 const TYPE_KEYWORDS = {
@@ -308,11 +653,13 @@ const DIRECT_COMBAT_PATTERNS = [
   /\bnuclear (explosion|blast|detonation|plant|reactor|facility)\b/i
 ];
 
-const CONFIRM_WINDOW_HOURS = 18;
+const CONFIRM_WINDOW_HOURS = 6;
 const MAX_CONFIRM_SCAN = 140;
-const MIN_EVENT_SIMILARITY = 0.32;
-const MIN_EVENT_SIMILARITY_WITH_CASUALTY = 0.22;
-const MIN_TITLE_SIMILARITY = 0.58;
+const EVENT_CLUSTER_WINDOW_HOURS = 2;
+const EVENT_CLUSTER_DISTANCE_KM = 50;
+const MIN_EVENT_SIMILARITY = 0.65;
+const MIN_EVENT_SIMILARITY_WITH_CASUALTY = 0.52;
+const MIN_TITLE_SIMILARITY = 0.65;
 const MIN_TITLE_SIMILARITY_WITH_CASUALTY = 0.48;
 const MIN_TITLE_SHARED_TOKENS = 3;
 const DUPLICATE_SCAN_HOURS = 8;
@@ -321,6 +668,90 @@ const DUPLICATE_TITLE_SIMILARITY = 0.82;
 const DUPLICATE_TOKEN_SIMILARITY = 0.72;
 const DEFAULT_MAX_EVENT_AGE_MINUTES_INSIGHT = 180;
 const DEFAULT_MAX_EVENT_AGE_MINUTES_ACTION = 30;
+const CLUSTER_AUDIT_LOG = readBooleanEnv("CLUSTER_AUDIT_LOG", false);
+
+const ACTION_EDITORIAL_PATTERNS = [
+  /\bthrowback\b/i,
+  /\bflashback\b/i,
+  /\banniversary\b/i,
+  /\bdecades? ago\b/i,
+  /\bin\s(19|20)\d{2}\b/i,
+  /\bopinion\b/i,
+  /\banalysis\b/i,
+  /\bexplained\b/i,
+  /\bthe story of\b/i,
+  /\bhow [a-z0-9\s]{3,80} saved\b/i,
+  /\beditorial\b/i,
+  /\blong read\b/i,
+  /\bmagazine\b/i,
+  /\bcommentary\b/i,
+  /\bretrospective\b/i
+];
+
+const DIPLOMATIC_PATTERNS = [
+  /\bmeeting\b/i,
+  /\bsummit\b/i,
+  /\bjoint statement\b/i,
+  /\bcommunique\b/i,
+  /\bdeclaration\b/i,
+  /\btalks?\b/i,
+  /\bnegotiation\b/i,
+  /\bceasefire proposal\b/i
+];
+
+const TERRAIN_EVENT_PATTERNS = [
+  /\bstrike\b/i,
+  /\bairstrike\b/i,
+  /\bexplosion\b/i,
+  /\bdetonation\b/i,
+  /\bdrone\b/i,
+  /\bmissile\b/i,
+  /\bartillery\b/i,
+  /\btroops?\b/i,
+  /\bdeployment\b/i,
+  /\braid\b/i,
+  /\barrest(ed|ation)?\b/i,
+  /\bkilled\b/i,
+  /\bwounded\b/i,
+  /\bborder clash\b/i,
+  /\bfrontline\b/i
+];
+
+const CIVIL_SPACE_KEYWORDS = [
+  "spacex",
+  "falcon 9",
+  "starship",
+  "ariane",
+  "ariane 6",
+  "launch vehicle",
+  "satellite launch",
+  "iss",
+  "international space station",
+  "nasa",
+  "esa",
+  "jaxa",
+  "civil rocket launch",
+  "commercial launch",
+  "space mission"
+];
+
+const MILITARY_SPACE_CONTEXT_KEYWORDS = [
+  "icbm",
+  "ballistic missile",
+  "warhead",
+  "military payload",
+  "nuclear payload",
+  "strategic forces",
+  "defense ministry",
+  "weapon test"
+];
+
+const DIRECTION_PATTERN_MAP = [
+  { key: "north", regex: /\b(north|northern|nord|septentrional)\b/i },
+  { key: "south", regex: /\b(south|southern|sud|meridional)\b/i },
+  { key: "east", regex: /\b(east|eastern|est|oriental)\b/i },
+  { key: "west", regex: /\b(west|western|ouest|occidental)\b/i }
+];
 
 const TOKEN_STOP_WORDS = new Set([
   "the",
@@ -374,6 +805,9 @@ const TOKEN_STOP_WORDS = new Set([
 
 function canonicalType(type) {
   const normalized = lower(type);
+  if (normalized === "espace_civil" || normalized === "space_civil") {
+    return "espace_civil";
+  }
   if (normalized === "politique" || normalized === "militaire" || normalized === "geopolitique") {
     return "geopolitique";
   }
@@ -396,7 +830,7 @@ function isActionableAlert(type, severity, text) {
   const normalizedType = canonicalType(type);
   const normalizedSeverity = lower(severity);
 
-  if (!ACTION_FOCUS_TYPES.has(normalizedType)) {
+  if (!ACTION_FOCUS_TYPES.has(normalizedType) && normalizedType !== "espace_civil") {
     return false;
   }
 
@@ -553,6 +987,61 @@ function tokenIntersectionCount(setA, setB) {
   return intersection;
 }
 
+function getAlertCoordinates(alert) {
+  const cityLat = Number(alert?.city?.lat);
+  const cityLng = Number(alert?.city?.lng);
+  if (Number.isFinite(cityLat) && Number.isFinite(cityLng)) {
+    return { lat: cityLat, lng: cityLng };
+  }
+
+  const lng = Number(alert?.location?.coordinates?.[0]);
+  const lat = Number(alert?.location?.coordinates?.[1]);
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    return { lat, lng };
+  }
+
+  const fallbackLat = Number(alert?.country?.lat);
+  const fallbackLng = Number(alert?.country?.lng);
+  if (Number.isFinite(fallbackLat) && Number.isFinite(fallbackLng)) {
+    return { lat: fallbackLat, lng: fallbackLng };
+  }
+
+  return { lat: 20, lng: 0 };
+}
+
+function haversineDistanceKm(a, b) {
+  const lat1 = Number(a?.lat);
+  const lon1 = Number(a?.lng);
+  const lat2 = Number(b?.lat);
+  const lon2 = Number(b?.lng);
+  if (![lat1, lon1, lat2, lon2].every((value) => Number.isFinite(value))) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const p1 = (lat1 * Math.PI) / 180;
+  const p2 = (lat2 * Math.PI) / 180;
+  const aVal =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(p1) * Math.cos(p2);
+  const c = 2 * Math.atan2(Math.sqrt(aVal), Math.sqrt(1 - aVal));
+  return R * c;
+}
+
+function eventTimestampMs(alert) {
+  const ts = new Date(alert?.occurredAt || alert?.publishedAt || alert?.createdAt || 0).getTime();
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function eventSimilarityScore(baseEvent, candidateEvent) {
+  const titleSimilarity = jaccardSimilarity(baseEvent?.titleTokens, candidateEvent?.titleTokens);
+  const bodySimilarity = jaccardSimilarity(baseEvent?.tokens, candidateEvent?.tokens);
+  const shared = tokenIntersectionCount(baseEvent?.titleTokens, candidateEvent?.titleTokens);
+  const weighted = Math.max(titleSimilarity * 0.68 + bodySimilarity * 0.32, shared >= 3 ? titleSimilarity : 0);
+  return Math.max(0, Math.min(1, Number(weighted.toFixed(4))));
+}
+
 function buildEventSignature(alertLike) {
   const title = String(alertLike?.title || "");
   const summary = String(alertLike?.summary || "");
@@ -580,8 +1069,18 @@ function extractCasualtyCount(text) {
 function classifyIncidentClass(text) {
   const content = lower(text);
 
-  if (/nuclear (explosion|blast|detonation|plant|reactor|facility)|atomic blast|atomic explosion/.test(content)) {
-    return "nuclear";
+  if (isCivilSpaceEvent(content)) {
+    return "space-civil";
+  }
+  if (
+    /nuclear (strike|explosion|blast|detonation)|atomic blast|atomic explosion|detonation nucleaire|explosion nucleaire/.test(
+      content
+    )
+  ) {
+    return "nuclear-attack";
+  }
+  if (/nuclear (weapon|warhead|test|arsenal|doctrine|enrichment|submarine)/.test(content)) {
+    return "nuclear-armament";
   }
   if (/airstrike|air raid|aerial bombardment|drone strike|raid aerien|frappe aerienne/.test(content)) {
     return "air";
@@ -667,30 +1166,48 @@ function computeConfidenceScore(clusterAlerts, sourceFamilyCount) {
   return Math.max(15, Math.min(99, Math.round(score)));
 }
 
-function areLikelySameEvent(baseEvent, candidateEvent) {
+function areLikelySameEvent(baseEvent, candidateEvent, baseAlert = null, candidateAlert = null) {
+  const semanticScore = eventSimilarityScore(baseEvent, candidateEvent);
+
+  if (!isIncidentClassCompatible(baseEvent.incidentClass, candidateEvent.incidentClass)) {
+    return { match: false, score: semanticScore, reason: "incident_class_mismatch" };
+  }
+
+  if (baseAlert && candidateAlert) {
+    const baseTs = eventTimestampMs(baseAlert);
+    const candidateTs = eventTimestampMs(candidateAlert);
+    if (baseTs > 0 && candidateTs > 0) {
+      const diffHours = Math.abs(candidateTs - baseTs) / (1000 * 60 * 60);
+      if (diffHours > EVENT_CLUSTER_WINDOW_HOURS) {
+        return { match: false, score: semanticScore, reason: "outside_time_window" };
+      }
+    }
+
+    const distanceKm = haversineDistanceKm(getAlertCoordinates(baseAlert), getAlertCoordinates(candidateAlert));
+    if (Number.isFinite(distanceKm) && distanceKm > EVENT_CLUSTER_DISTANCE_KM) {
+      return { match: false, score: semanticScore, reason: "outside_geo_radius" };
+    }
+  }
+
   const hasExactTitleMatch =
     Boolean(baseEvent?.normalizedTitle) &&
     Boolean(candidateEvent?.normalizedTitle) &&
     baseEvent.normalizedTitle === candidateEvent.normalizedTitle;
   if (hasExactTitleMatch) {
-    return true;
+    return { match: true, score: 1, reason: "exact_title_match" };
   }
 
   const titleSimilarity = jaccardSimilarity(baseEvent.titleTokens, candidateEvent.titleTokens);
   const titleSharedTokens = tokenIntersectionCount(baseEvent.titleTokens, candidateEvent.titleTokens);
   const hasStrongTitleMatch = titleSimilarity >= MIN_TITLE_SIMILARITY && titleSharedTokens >= MIN_TITLE_SHARED_TOKENS;
 
-  if (hasStrongTitleMatch && isIncidentClassCompatible(baseEvent.incidentClass, candidateEvent.incidentClass)) {
-    return true;
-  }
-
-  if (!isIncidentClassCompatible(baseEvent.incidentClass, candidateEvent.incidentClass)) {
-    return false;
+  if (hasStrongTitleMatch && semanticScore >= MIN_EVENT_SIMILARITY) {
+    return { match: true, score: semanticScore, reason: "strong_title_and_semantic" };
   }
 
   const similarity = jaccardSimilarity(baseEvent.tokens, candidateEvent.tokens);
   if (similarity >= MIN_EVENT_SIMILARITY) {
-    return true;
+    return { match: true, score: semanticScore, reason: "semantic_match" };
   }
 
   const hasSameCasualtyCount =
@@ -698,11 +1215,16 @@ function areLikelySameEvent(baseEvent, candidateEvent) {
     Number.isFinite(candidateEvent.casualtyCount) &&
     baseEvent.casualtyCount === candidateEvent.casualtyCount;
 
-  return (
+  const casualtyMatch =
     hasSameCasualtyCount &&
     (similarity >= MIN_EVENT_SIMILARITY_WITH_CASUALTY ||
-      (titleSimilarity >= MIN_TITLE_SIMILARITY_WITH_CASUALTY && titleSharedTokens >= 2))
-  );
+      (titleSimilarity >= MIN_TITLE_SIMILARITY_WITH_CASUALTY && titleSharedTokens >= 2));
+
+  if (casualtyMatch) {
+    return { match: true, score: semanticScore, reason: "casualty_match" };
+  }
+
+  return { match: false, score: semanticScore, reason: "semantic_below_threshold" };
 }
 
 function isLikelyDuplicateFromSameSource(incomingPayload, existingAlert) {
@@ -746,7 +1268,7 @@ async function findRecentDuplicateAlert(payload) {
       : { "country.name": payload?.country?.name || "Inconnu" };
 
   const candidates = await Alert.find({
-    type: "geopolitique",
+    type: { $in: ["geopolitique", "espace_civil"] },
     ...countryQuery,
     $or: [{ publishedAt: { $gte: sinceDate } }, { createdAt: { $gte: sinceDate } }]
   })
@@ -777,7 +1299,7 @@ async function enrichConfirmationForAlert(alertDoc) {
 
   const candidates = await Alert.find({
     _id: { $ne: baseAlert._id },
-    type: "geopolitique",
+    type: { $in: ["geopolitique", "espace_civil"] },
     ...countryQuery,
     publishedAt: { $gte: sinceDate }
   })
@@ -789,8 +1311,22 @@ async function enrichConfirmationForAlert(alertDoc) {
 
   for (const candidate of candidates) {
     const candidateEvent = buildEventSignature(candidate);
+    const decision = areLikelySameEvent(baseEvent, candidateEvent, baseAlert, candidate);
 
-    if (areLikelySameEvent(baseEvent, candidateEvent)) {
+    if (CLUSTER_AUDIT_LOG) {
+      console.log(
+        "[cluster-audit]",
+        JSON.stringify({
+          anchorId: String(baseAlert?._id || ""),
+          candidateId: String(candidate?._id || ""),
+          match: decision.match,
+          score: decision.score,
+          reason: decision.reason
+        })
+      );
+    }
+
+    if (decision.match) {
       cluster.push(candidate);
     }
   }
@@ -841,22 +1377,26 @@ async function findRelatedAlertsForAnchor(anchorAlert, options = {}) {
   const related = [];
   const seen = new Set();
 
-  const pushUnique = (alert) => {
+  const pushUnique = (alert, similarityScore = null) => {
     const id = String(alert?._id || "");
     if (!id || seen.has(id)) return;
     seen.add(id);
-    related.push(alert);
+    const mapped = similarityScore === null ? alert : { ...alert, similarityScore };
+    related.push(mapped);
   };
 
   if (eventGroupId) {
     const grouped = await Alert.find({
-      type: "geopolitique",
+      type: { $in: ["geopolitique", "espace_civil"] },
       eventGroupId
     })
       .sort({ occurredAt: -1, publishedAt: -1, createdAt: -1, _id: -1 })
       .limit(limit)
       .lean();
-    grouped.forEach(pushUnique);
+    grouped.forEach((candidate) => {
+      const score = eventSimilarityScore(anchorEvent, buildEventSignature(candidate));
+      pushUnique(candidate, score);
+    });
   }
 
   if (related.length < limit) {
@@ -869,7 +1409,7 @@ async function findRelatedAlertsForAnchor(anchorAlert, options = {}) {
 
     const candidates = await Alert.find({
       _id: { $ne: anchorAlert._id },
-      type: "geopolitique",
+      type: { $in: ["geopolitique", "espace_civil"] },
       ...countryQuery,
       publishedAt: { $gte: sinceDate }
     })
@@ -880,15 +1420,16 @@ async function findRelatedAlertsForAnchor(anchorAlert, options = {}) {
     for (const candidate of candidates) {
       if (related.length >= limit) break;
       if (seen.has(String(candidate?._id || ""))) continue;
-      if (areLikelySameEvent(anchorEvent, buildEventSignature(candidate))) {
-        pushUnique(candidate);
+      const decision = areLikelySameEvent(anchorEvent, buildEventSignature(candidate), anchorAlert, candidate);
+      if (decision.match) {
+        pushUnique(candidate, decision.score);
       }
     }
   }
 
   const hasAnchor = seen.has(anchorId);
   if (!hasAnchor) {
-    related.unshift(anchorAlert);
+    related.unshift({ ...anchorAlert, similarityScore: 1 });
   }
 
   return related.slice(0, limit);
@@ -1134,18 +1675,8 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
         .slice(0, 2800);
 
       const articleText = `${title} ${summary}`.trim();
-      let countryInfo = resolveTelegramCountryInfo(rawAlert, articleText);
-      const cityInfo = extractCity(articleText, countryInfo);
-
-      if (cityInfo && (!countryInfo || countryInfo.code === "XX" || countryInfo.name === "Inconnu")) {
-        countryInfo = {
-          name: cityInfo.countryName,
-          code: cityInfo.countryCode,
-          region: cityInfo.region || "Global",
-          lat: cityInfo.lat,
-          lng: cityInfo.lng
-        };
-      }
+      const telegramCountryInfo = resolveTelegramCountryInfo(rawAlert, articleText);
+      const { countryInfo, cityInfo, strategicArea, geoMeta } = resolveGeoSignals(articleText, telegramCountryInfo);
 
       if (!matchesSettingsFilters(articleText, countryInfo, settings)) {
         continue;
@@ -1157,26 +1688,44 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
       }
       const publishedAt = parsedPublishedAt || new Date();
 
-      const canonicalAlertType = canonicalType(String(rawAlert?.type || "geopolitique"));
-      if (canonicalAlertType !== "geopolitique") {
+      const civilSpace = isCivilSpaceEvent(articleText);
+      if (civilSpace && settings?.includeSpaceCivil !== true) {
         continue;
       }
 
+      const canonicalAlertType = civilSpace ? "espace_civil" : canonicalType(String(rawAlert?.type || "geopolitique"));
+      if (canonicalAlertType !== "geopolitique" && canonicalAlertType !== "espace_civil") {
+        continue;
+      }
+
+      const aiCategoryNormalized = String(rawAlert?.ai_category || rawAlert?.aiCategory || "").trim().toLowerCase();
+      const aiEventTypeRaw = String(rawAlert?.ai_event_type || rawAlert?.aiEventType || "").trim().toLowerCase();
+      const aiEventType =
+        aiEventTypeRaw === "terrain_event" || aiEventTypeRaw === "press_return" || aiEventTypeRaw === "diplomatic"
+          ? aiEventTypeRaw
+          : detectAiEventType(articleText, aiCategoryNormalized);
       const severity = normalizeTelegramSeverity(rawAlert?.severity, articleText);
-      const actionable = isActionableAlert(canonicalAlertType, severity, articleText);
+      const actionable =
+        aiEventType === "terrain_event" &&
+        isActionableEvent(articleText, { countryInfo, cityInfo, strategicArea, geoMeta }, aiCategoryNormalized);
+
+      if (String(settings?.alertMode || "insight").trim().toLowerCase() === "action" && !actionable) {
+        continue;
+      }
+
       const sourceName = normalizeTelegramSourceName(rawAlert?.source_channel);
       const sourceUrl = buildTelegramSourceUrl(rawAlert, sourceName, backendBaseUrl);
-
-      const markerLat = Number.isFinite(cityInfo?.lat)
-        ? cityInfo.lat
-        : Number.isFinite(Number(rawAlert?.lat))
-          ? Number(rawAlert?.lat)
-          : countryInfo.lat || 20;
-      const markerLng = Number.isFinite(cityInfo?.lng)
-        ? cityInfo.lng
-        : Number.isFinite(Number(rawAlert?.lng))
-          ? Number(rawAlert?.lng)
-          : countryInfo.lng || 0;
+      const rawLat = Number(rawAlert?.lat);
+      const rawLng = Number(rawAlert?.lng);
+      const marker = computeMarkerCoordinates({
+        cityInfo,
+        strategicArea,
+        countryInfo,
+        rawLat,
+        rawLng,
+        applyDirection: true,
+        directionalHint: geoMeta?.directionalHint || ""
+      });
 
       mapped.push({
         title,
@@ -1187,14 +1736,17 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
         occurredAt: parsePublishedAt(rawAlert?.timestamp) || null,
         occurredAtSource: "telegram",
         type: canonicalAlertType,
+        incidentClass: civilSpace ? "space-civil" : classifyIncidentClass(articleText),
         severity,
         actionable,
+        aiEventType,
+        spaceCivil: civilSpace,
         confirmed: false,
         confidenceScore: clampConfidence(rawAlert?.confidence),
         sourceCount: 1,
         sourceNames: [sourceName],
         aiAnalyzed: Boolean(rawAlert?.ai_analyzed ?? rawAlert?.aiAnalyzed),
-        aiCategory: String(rawAlert?.ai_category || rawAlert?.aiCategory || "").trim().toLowerCase(),
+        aiCategory: aiCategoryNormalized,
         aiSubcategories: normalizeAiList(rawAlert?.ai_subcategories ?? rawAlert?.aiSubcategories),
         aiSeverity: String(rawAlert?.ai_severity || rawAlert?.aiSeverity || "").trim().toLowerCase(),
         aiSeverityScore: Math.max(
@@ -1219,9 +1771,15 @@ async function fetchTelegramAlertPayloads(settings, maxAgeMinutes) {
           lat: Number.isFinite(cityInfo?.lat) ? cityInfo.lat : null,
           lng: Number.isFinite(cityInfo?.lng) ? cityInfo.lng : null
         },
+        locationMeta: {
+          strategicArea: geoMeta?.strategicArea || "",
+          directionalHint: geoMeta?.directionalHint || "",
+          isBorder: Boolean(geoMeta?.isBorder),
+          borderCountries: Array.isArray(geoMeta?.borderCountries) ? geoMeta.borderCountries : []
+        },
         location: {
           type: "Point",
-          coordinates: [markerLng, markerLat]
+          coordinates: [marker.lng, marker.lat]
         }
       });
     }
@@ -1295,32 +1853,33 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
       .trim();
 
     const articleText = `${title} ${summary}`;
-    let countryInfo = extractCountry(articleText);
-    const cityInfo = extractCity(articleText, countryInfo);
-    if (cityInfo && (!countryInfo || countryInfo.code === "XX" || countryInfo.name === "Inconnu")) {
-      countryInfo = {
-        name: cityInfo.countryName,
-        code: cityInfo.countryCode,
-        region: cityInfo.region || "Global",
-        lat: cityInfo.lat,
-        lng: cityInfo.lng
-      };
-    }
+    const { countryInfo, cityInfo, strategicArea, geoMeta } = resolveGeoSignals(articleText);
 
     if (!matchesSettingsFilters(articleText, countryInfo, settings)) {
       continue;
     }
 
-    const type = classifyType(articleText, item.feed.fallbackType);
-    const canonicalAlertType = canonicalType(type);
-    if (canonicalAlertType !== "geopolitique") {
+    const isSpaceCivil = isCivilSpaceEvent(articleText);
+    if (isSpaceCivil && settings?.includeSpaceCivil !== true) {
       continue;
     }
-    if (!isConflictAlert(articleText)) {
+
+    const type = classifyType(articleText, item.feed.fallbackType);
+    const canonicalAlertType = isSpaceCivil ? "espace_civil" : canonicalType(type);
+    if (canonicalAlertType !== "geopolitique" && canonicalAlertType !== "espace_civil") {
+      continue;
+    }
+    if (!isConflictAlert(articleText) && !isSpaceCivil) {
       continue;
     }
     const severity = classifySeverity(articleText);
-    const actionable = isActionableAlert(canonicalAlertType, severity, articleText);
+    const aiEventType = detectAiEventType(articleText);
+    const actionable = isActionableEvent(articleText, { countryInfo, cityInfo, strategicArea, geoMeta });
+
+    if (String(settings?.alertMode || "insight").trim().toLowerCase() === "action" && !actionable) {
+      continue;
+    }
+
     const parsedPublishedAt = parsePublishedAt(item.isoDate || item.pubDate);
     if (parsedPublishedAt && isEventTooOld(parsedPublishedAt, maxAgeMinutes)) {
       continue;
@@ -1328,8 +1887,13 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
     const publishedAt = parsedPublishedAt || new Date();
 
     const sourceName = inferSourceName(item, title);
-    const markerLat = Number.isFinite(cityInfo?.lat) ? cityInfo.lat : countryInfo.lat || 20;
-    const markerLng = Number.isFinite(cityInfo?.lng) ? cityInfo.lng : countryInfo.lng || 0;
+    const marker = computeMarkerCoordinates({
+      cityInfo,
+      strategicArea,
+      countryInfo,
+      applyDirection: true,
+      directionalHint: geoMeta?.directionalHint || ""
+    });
 
     const inferredEventTime = inferOccurredAt(articleText, publishedAt);
 
@@ -1342,8 +1906,11 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
       occurredAt: inferredEventTime.occurredAt || null,
       occurredAtSource: inferredEventTime.occurredAtSource || "unknown",
       type: canonicalAlertType,
+      incidentClass: isSpaceCivil ? "space-civil" : classifyIncidentClass(articleText),
       severity,
       actionable,
+      aiEventType,
+      spaceCivil: isSpaceCivil,
       confirmed: false,
       confidenceScore: 35,
       sourceCount: 1,
@@ -1358,9 +1925,15 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
         lat: Number.isFinite(cityInfo?.lat) ? cityInfo.lat : null,
         lng: Number.isFinite(cityInfo?.lng) ? cityInfo.lng : null
       },
+      locationMeta: {
+        strategicArea: geoMeta?.strategicArea || "",
+        directionalHint: geoMeta?.directionalHint || "",
+        isBorder: Boolean(geoMeta?.isBorder),
+        borderCountries: Array.isArray(geoMeta?.borderCountries) ? geoMeta.borderCountries : []
+      },
       location: {
         type: "Point",
-        coordinates: [markerLng, markerLat]
+        coordinates: [marker.lng, marker.lat]
       }
     };
 
@@ -1385,7 +1958,7 @@ async function detectAndStoreAlerts(settings, reason = "scheduled") {
 async function repairRecentGeolocation(limit = 800) {
   const scopedLimit = Math.min(2000, Math.max(100, Number(limit) || 800));
   const candidates = await Alert.find({
-    type: "geopolitique",
+    type: { $in: ["geopolitique", "espace_civil"] },
     $or: [
       { "country.code": "XX" },
       { "country.name": { $in: ["Inconnu", ""] } },
@@ -1410,25 +1983,19 @@ async function repairRecentGeolocation(limit = 800) {
       continue;
     }
 
-    let countryInfo = extractCountry(articleText);
-    const cityInfo = extractCity(articleText, countryInfo);
+    const { countryInfo, cityInfo, strategicArea, geoMeta } = resolveGeoSignals(articleText);
 
-    if (cityInfo && (!countryInfo || countryInfo.code === "XX" || countryInfo.name === "Inconnu")) {
-      countryInfo = {
-        name: cityInfo.countryName,
-        code: cityInfo.countryCode,
-        region: cityInfo.region || "Global",
-        lat: cityInfo.lat,
-        lng: cityInfo.lng
-      };
-    }
-
-    if (!countryInfo || countryInfo.code === "XX") {
+    if (isUnknownCountryInfo(countryInfo) && !strategicArea) {
       continue;
     }
 
-    const markerLat = Number.isFinite(cityInfo?.lat) ? cityInfo.lat : countryInfo.lat || 20;
-    const markerLng = Number.isFinite(cityInfo?.lng) ? cityInfo.lng : countryInfo.lng || 0;
+    const marker = computeMarkerCoordinates({
+      cityInfo,
+      strategicArea,
+      countryInfo,
+      applyDirection: true,
+      directionalHint: geoMeta?.directionalHint || ""
+    });
 
     const nextCountry = {
       name: countryInfo.name,
@@ -1440,16 +2007,16 @@ async function repairRecentGeolocation(limit = 800) {
       lat: Number.isFinite(cityInfo?.lat) ? cityInfo.lat : null,
       lng: Number.isFinite(cityInfo?.lng) ? cityInfo.lng : null
     };
-    const nextCoords = [markerLng, markerLat];
+    const nextCoords = [marker.lng, marker.lat];
 
     const currentCountryName = String(alert?.country?.name || "");
-    const currentCountryCode = String(alert?.country?.code || "XX").toUpperCase();
+    const currentCountryCode = String(alert?.country?.code ?? "").trim().toUpperCase();
     const currentRegion = String(alert?.country?.region || "Global");
     const currentCoords = Array.isArray(alert?.location?.coordinates) ? alert.location.coordinates : [];
     const currentCityName = String(alert?.city?.name || "");
 
     const shouldUpdate =
-      currentCountryCode !== nextCountry.code ||
+      currentCountryCode !== String(nextCountry.code || "").toUpperCase() ||
       currentCountryName !== nextCountry.name ||
       currentRegion !== nextCountry.region ||
       currentCityName !== nextCity.name ||
@@ -1467,6 +2034,12 @@ async function repairRecentGeolocation(limit = 800) {
         $set: {
           country: nextCountry,
           city: nextCity,
+          locationMeta: {
+            strategicArea: geoMeta?.strategicArea || "",
+            directionalHint: geoMeta?.directionalHint || "",
+            isBorder: Boolean(geoMeta?.isBorder),
+            borderCountries: Array.isArray(geoMeta?.borderCountries) ? geoMeta.borderCountries : []
+          },
           location: { type: "Point", coordinates: nextCoords }
         }
       }
@@ -1483,6 +2056,8 @@ let telegramSyncLastFetchAtMs = 0;
 let telegramSyncCooldownUntilMs = 0;
 let telegramSyncCache = [];
 let telegramSyncCacheAtMs = 0;
+let aiQueueStatusCache = null;
+let aiQueueStatusAtMs = 0;
 
 async function runDetection(reason = "scheduled", options = {}) {
   if (running) {
@@ -1500,6 +2075,70 @@ async function runDetection(reason = "scheduled", options = {}) {
     return await detectAndStoreAlerts(settings, reason);
   } finally {
     running = false;
+  }
+}
+
+async function getAiQueueStatus(force = false) {
+  if (!force && aiQueueStatusCache && Date.now() - aiQueueStatusAtMs < AI_QUEUE_STATUS_CACHE_MS) {
+    return aiQueueStatusCache;
+  }
+
+  const backendBaseUrl = resolveTelegramBackendBaseUrl();
+  if (!backendBaseUrl) {
+    const fallback = {
+      provider: "none",
+      ready: false,
+      queue_length: 0,
+      queue_capacity: 0,
+      processed_last_minute: 0,
+      rate_limit_per_minute: Number(process.env.AI_RATE_LIMIT_PER_MINUTE) || DEFAULT_AI_RATE_LIMIT_PER_MINUTE,
+      saturation_pct: 0,
+      source: "local-fallback",
+      updatedAt: new Date().toISOString()
+    };
+    aiQueueStatusCache = fallback;
+    aiQueueStatusAtMs = Date.now();
+    return fallback;
+  }
+
+  try {
+    const response = await fetch(`${backendBaseUrl}/api/ai/health`, {
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) {
+      throw new Error(`Status code ${response.status}`);
+    }
+    const payload = await response.json();
+    const mapped = {
+      provider: payload?.provider || "groq",
+      ready: Boolean(payload?.ready),
+      queue_length: Number(payload?.queue_length || 0),
+      queue_capacity: Number(payload?.queue_capacity || 0),
+      processed_last_minute: Number(payload?.processed_last_minute || 0),
+      rate_limit_per_minute: Number(payload?.rate_limit_per_minute || DEFAULT_AI_RATE_LIMIT_PER_MINUTE),
+      saturation_pct: Number(payload?.saturation_pct || 0),
+      source: "telegram-backend",
+      updatedAt: new Date().toISOString()
+    };
+    aiQueueStatusCache = mapped;
+    aiQueueStatusAtMs = Date.now();
+    return mapped;
+  } catch (error) {
+    const fallback = {
+      provider: "unknown",
+      ready: false,
+      queue_length: 0,
+      queue_capacity: 0,
+      processed_last_minute: 0,
+      rate_limit_per_minute: Number(process.env.AI_RATE_LIMIT_PER_MINUTE) || DEFAULT_AI_RATE_LIMIT_PER_MINUTE,
+      saturation_pct: 0,
+      source: "error",
+      error: error.message,
+      updatedAt: new Date().toISOString()
+    };
+    aiQueueStatusCache = fallback;
+    aiQueueStatusAtMs = Date.now();
+    return fallback;
   }
 }
 
@@ -1538,6 +2177,7 @@ async function verifyAlertById(alertId, options = {}) {
   const verifiedAlert = await enrichConfirmationForAlert(latestAlert);
   const eventGroupId = String(verifiedAlert?.eventGroupId || "").trim();
   const relatedAlerts = await findRelatedAlertsForAnchor(verifiedAlert || latestAlert, { limit: 20 });
+  const verificationAssessment = computeVerificationAssessment(verifiedAlert || latestAlert, relatedAlerts);
 
   const verifiedAt = new Date().toISOString();
 
@@ -1549,6 +2189,9 @@ async function verifyAlertById(alertId, options = {}) {
     confirmed: Boolean(verifiedAlert?.confirmed),
     confidenceScore: Number(verifiedAlert?.confidenceScore || 0),
     sourceCount: Math.max(1, Number(verifiedAlert?.sourceCount || 1)),
+    verificationStatus: verificationAssessment.status,
+    verificationScore: verificationAssessment.score,
+    verificationJustification: verificationAssessment.justification,
     inserted,
     eventGroupId: eventGroupId || normalizedId,
     verifiedAt
@@ -1557,6 +2200,7 @@ async function verifyAlertById(alertId, options = {}) {
   return {
     alert: verifiedAlert,
     relatedAlerts,
+    verification: verificationAssessment,
     before,
     inserted,
     eventGroupId: eventGroupId || normalizedId,
@@ -1616,6 +2260,7 @@ module.exports = {
   runDetection,
   verifyAlertById,
   findRelatedAlertsForAnchor,
+  getAiQueueStatus,
   startScheduler,
   reschedule,
   getRuntimeState

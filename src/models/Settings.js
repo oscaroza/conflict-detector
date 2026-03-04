@@ -9,6 +9,7 @@ const SettingsSchema = new mongoose.Schema(
     voiceEnabled: { type: Boolean, default: true },
     globalCoverage: { type: Boolean, default: true },
     alertMode: { type: String, enum: ["insight", "action"], default: "insight" },
+    includeSpaceCivil: { type: Boolean, default: false },
     keywordFilters: { type: [String], default: [] },
     countryFilters: { type: [String], default: [] }
   },

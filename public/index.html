@@ -112,7 +112,10 @@
             </summary>
 
             <div class="site-settings-popover panel-shell">
-              <p class="site-settings-title">Paramètres du site</p>
+              <div class="site-settings-head">
+                <p class="site-settings-title">Paramètres du site</p>
+                <button id="settingsHelpBtn" class="btn btn-sm btn-outline-light tone-btn settings-help-btn" type="button" title="Aide interface">?</button>
+              </div>
 
               <div class="site-settings-row">
                 <label class="tiny-label" for="alertModeSelect">Mode</label>
@@ -137,9 +140,21 @@
               <div class="site-settings-buttons">
                 <button id="toggleCoverageBtn" class="btn btn-sm btn-outline-success tone-btn coverage-toggle-btn">Global ON</button>
                 <button id="toggleSmartDigestBtn" class="btn btn-sm btn-outline-light tone-btn sound-toggle-btn">Smart ON</button>
+                <button id="toggleSpaceCivilBtn" class="btn btn-sm btn-outline-light tone-btn sound-toggle-btn">Espace OFF</button>
                 <button id="toggleSoundBtn" class="btn btn-sm btn-outline-light tone-btn sound-toggle-btn">Son ON</button>
                 <button id="toggleVoiceBtn" class="btn btn-sm btn-outline-light tone-btn sound-toggle-btn" title="Voix locale navigateur (fallback)">Voix SYS ON</button>
                 <button id="toggleBrowserNotifBtn" class="btn btn-sm btn-outline-light tone-btn sound-toggle-btn" title="Notifications systeme Safari">Notif Safari OFF</button>
+              </div>
+
+              <div class="ai-load-panel" aria-live="polite">
+                <div class="ai-load-head">
+                  <span>Charge IA</span>
+                  <strong id="aiLoadValue">0%</strong>
+                </div>
+                <div class="ai-load-track">
+                  <div id="aiLoadBar" class="ai-load-fill"></div>
+                </div>
+                <p id="aiLoadMeta" class="ai-load-meta">File IA: --</p>
               </div>
             </div>
           </details>
@@ -198,6 +213,7 @@
                     <select id="typeFilter" class="form-select form-select-sm">
                       <option value="">Tous</option>
                       <option value="geopolitique">Géopolitique</option>
+                      <option value="espace_civil">Espace/Civil</option>
                     </select>
                   </div>
                   <div>
@@ -409,6 +425,62 @@
         </div>
         <div class="verify-modal-actions">
           <button id="verifyRetryBtn" class="btn btn-sm btn-warning" type="button">Relancer la vérification</button>
+        </div>
+      </section>
+    </div>
+    <div id="settingsHelpOverlay" class="verify-overlay" hidden>
+      <section class="verify-modal panel-shell settings-help-modal" role="dialog" aria-modal="true" aria-labelledby="settingsHelpTitle">
+        <div class="verify-modal-head">
+          <p class="verify-kicker">AIDE INTERFACE</p>
+          <h2 id="settingsHelpTitle">Guide rapide Conflict Detector</h2>
+          <button id="settingsHelpCloseBtn" class="btn btn-sm btn-outline-light" type="button">Fermer</button>
+        </div>
+        <div class="settings-help-content">
+          <h3>Commandes principales</h3>
+          <ul>
+            <li><strong>LIVE / Pause:</strong> démarre ou arrête l’ingestion automatique.</li>
+            <li><strong>Vue 3D:</strong> bascule carte 2D / globe 3D.</li>
+            <li><strong>Analyser:</strong> force une détection immédiate.</li>
+            <li><strong>Verification:</strong> lance un cross-check manuel multi-sources.</li>
+          </ul>
+
+          <h3>Icônes carte</h3>
+          <ul>
+            <li>🚀⬆️ lancement missile, 🚀⬇️ impact missile, 🛡 interception.</li>
+            <li>☢ armement nucléaire, 💥☢ attaque/explosion nucléaire.</li>
+            <li>⚓ naval, 🪖 déploiement troupes, ⚔ combat sol, 💻 cyber.</li>
+            <li>Badge ×N sous une icône: nombre de sources du même événement.</li>
+          </ul>
+
+          <h3>Paramètres</h3>
+          <ul>
+            <li><strong>Mode Veille:</strong> flux large (articles + analyses).</li>
+            <li><strong>Mode Action:</strong> événements terrain concrets uniquement.</li>
+            <li><strong>Global:</strong> ingestion mondiale, sinon filtres pays/mots-clés.</li>
+            <li><strong>Smart:</strong> résumé intelligent et priorisation visuelle.</li>
+            <li><strong>Son / Voix / Notif:</strong> effets audio, synthèse vocale, notifications navigateur.</li>
+            <li><strong>Espace:</strong> inclut ou masque les lancements spatiaux civils.</li>
+          </ul>
+
+          <h3>Fonctionnement général</h3>
+          <ul>
+            <li>Les alertes sont détectées via flux RSS + Telegram OSINT.</li>
+            <li>Le clustering fusionne les sources proches (temps, lieu, sémantique).</li>
+            <li>Le DEFCON reflète une pression opérationnelle estimée, pas un niveau officiel gouvernemental.</li>
+            <li>Le Pentagon Pizza Index est un proxy OSINT d’activité anormale.</li>
+          </ul>
+        </div>
+      </section>
+    </div>
+    <div id="equipmentOverlay" class="verify-overlay" hidden>
+      <section class="verify-modal panel-shell equipment-modal" role="dialog" aria-modal="true" aria-labelledby="equipmentModalTitle">
+        <div class="verify-modal-head">
+          <p class="verify-kicker">EQUIPEMENT MILITAIRE</p>
+          <h2 id="equipmentModalTitle">Fiche technique</h2>
+          <button id="equipmentCloseBtn" class="btn btn-sm btn-outline-light" type="button">Fermer</button>
+        </div>
+        <div id="equipmentContent" class="equipment-content">
+          <p class="verify-result-empty">Clique sur un équipement dans une alerte pour afficher sa fiche.</p>
         </div>
       </section>
     </div>

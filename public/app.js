@@ -15,6 +15,8 @@ const state = {
   countryCentroidsByCode: new Map(),
   countryStatusLevels: new Map(),
   countryProfileCache: new Map(),
+  countryConnectivityCache: new Map(),
+  equipmentProfileCache: new Map(),
   selectedCountryKey: null,
   selectedAlertId: null,
   selectedTrackedAssetKey: null,
@@ -111,7 +113,17 @@ const refs = {
   verifyProgressText: document.getElementById("verifyProgressText"),
   verifyResult: document.getElementById("verifyResult"),
   verifyCloseBtn: document.getElementById("verifyCloseBtn"),
-  verifyRetryBtn: document.getElementById("verifyRetryBtn")
+  verifyRetryBtn: document.getElementById("verifyRetryBtn"),
+  settingsHelpBtn: document.getElementById("settingsHelpBtn"),
+  settingsHelpOverlay: document.getElementById("settingsHelpOverlay"),
+  settingsHelpCloseBtn: document.getElementById("settingsHelpCloseBtn"),
+  equipmentOverlay: document.getElementById("equipmentOverlay"),
+  equipmentCloseBtn: document.getElementById("equipmentCloseBtn"),
+  equipmentContent: document.getElementById("equipmentContent"),
+  toggleSpaceCivilBtn: document.getElementById("toggleSpaceCivilBtn"),
+  aiLoadBar: document.getElementById("aiLoadBar"),
+  aiLoadValue: document.getElementById("aiLoadValue"),
+  aiLoadMeta: document.getElementById("aiLoadMeta")
 };
 
 let audioContext = null;
@@ -133,12 +145,15 @@ let activeVoiceFxNodes = [];
 let lastVoiceFallbackNoticeAt = 0;
 let mapSignalExpiryTimer = null;
 let verifyProgressTimer = null;
+let aiLoadRefreshTimer = null;
 const BROWSER_NOTIF_STORAGE_KEY = "cd_browser_notifications_enabled";
 const SMART_DIGEST_STORAGE_KEY = "cd_smart_digest_enabled";
 const INTEL_OVERLAY_HIDDEN_STORAGE_KEY = "cd_intel_overlay_hidden";
 const MOBILE_TAB_STORAGE_KEY = "cd_mobile_tab";
 const MAP_SIGNAL_TTL_MINUTES = 60;
 const MAP_SIGNAL_TTL_MS = MAP_SIGNAL_TTL_MINUTES * 60 * 1000;
+const CONNECTIVITY_REFRESH_MS = 5 * 60 * 1000;
+const AI_QUEUE_REFRESH_MS = 18 * 1000;
 const TRACKED_ASSET_DEFINITIONS = [
   {
     key: "fs-charles-de-gaulle",
@@ -394,6 +409,52 @@ const TRACKED_ASSET_VISUALS = {
     pointAltitude: 0.043
   }
 };
+const EQUIPMENT_DEFINITIONS = [
+  {
+    name: "Charles de Gaulle",
+    aliases: ["charles de gaulle", "fs charles de gaulle", "r91"],
+    type: "Porte-avions"
+  },
+  {
+    name: "F-16",
+    aliases: ["f-16", "f16", "f-16 fighting falcon"],
+    type: "Avion de combat"
+  },
+  {
+    name: "T-90",
+    aliases: ["t-90", "t90", "t-90m"],
+    type: "Char"
+  },
+  {
+    name: "Patriot",
+    aliases: ["patriot", "mim-104 patriot", "patriot battery"],
+    type: "Defense aerienne"
+  },
+  {
+    name: "HIMARS",
+    aliases: ["himars", "m142 himars"],
+    type: "Artillerie roquette"
+  },
+  {
+    name: "Rafale",
+    aliases: ["rafale", "rafale m"],
+    type: "Avion de combat"
+  },
+  {
+    name: "B-52",
+    aliases: ["b-52", "b52 stratofortress", "stratofortress"],
+    type: "Bombardier"
+  },
+  {
+    name: "Su-34",
+    aliases: ["su-34", "su34"],
+    type: "Avion de combat"
+  }
+];
+const EQUIPMENT_RULES = EQUIPMENT_DEFINITIONS.map((entry) => ({
+  ...entry,
+  aliasTokens: (entry.aliases || []).map((alias) => normalizeText(alias)).filter(Boolean)
+}));
 
 const bootStageBlueprint = [
   { id: "ui", label: "Interface utilisateur" },
@@ -427,6 +488,10 @@ function isGlobalCoverageEnabled() {
   return state.settings?.globalCoverage !== false;
 }
 
+function isSpaceCivilEnabled() {
+  return state.settings?.includeSpaceCivil === true;
+}
+
 function updateSoundToggleUI() {
   if (!refs.toggleSoundBtn) return;
   const enabled = isSoundEnabled();
@@ -450,6 +515,13 @@ function updateCoverageToggleUI() {
   const enabled = isGlobalCoverageEnabled();
   refs.toggleCoverageBtn.textContent = enabled ? "Global ON" : "Global OFF";
   refs.toggleCoverageBtn.classList.toggle("is-off", !enabled);
+}
+
+function updateSpaceCivilToggleUI() {
+  if (!refs.toggleSpaceCivilBtn) return;
+  const enabled = isSpaceCivilEnabled();
+  refs.toggleSpaceCivilBtn.textContent = enabled ? "Espace ON" : "Espace OFF";
+  refs.toggleSpaceCivilBtn.classList.toggle("is-off", !enabled);
 }
 
 function getMapMode() {
@@ -1592,6 +1664,9 @@ function normalizeSeverity(value) {
 
 function canonicalType(value) {
   const normalized = String(value || "").toLowerCase();
+  if (normalized === "espace_civil" || normalized === "space_civil") {
+    return "espace_civil";
+  }
   if (normalized === "politique" || normalized === "militaire" || normalized === "geopolitique") {
     return "geopolitique";
   }
@@ -1599,7 +1674,43 @@ function canonicalType(value) {
 }
 
 function typeLabel(value) {
-  return canonicalType(value) === "geopolitique" ? "Geopolitique" : "Autre";
+  const type = canonicalType(value);
+  if (type === "geopolitique") return "Geopolitique";
+  if (type === "espace_civil") return "Espace/Civil";
+  return "Autre";
+}
+
+function isAlertTypeVisible(alert) {
+  const type = canonicalType(alert?.type);
+  if (type === "geopolitique") {
+    // pass
+  } else if (type === "espace_civil") {
+    if (!isSpaceCivilEnabled()) {
+      return false;
+    }
+  } else {
+    return false;
+  }
+
+  const mode = String(state.settings?.alertMode || "insight")
+    .trim()
+    .toLowerCase();
+  if (mode !== "action") {
+    return true;
+  }
+
+  const actionable = alert?.actionable === true;
+  if (!actionable) {
+    return false;
+  }
+
+  const aiType = String(alert?.aiEventType || alert?.ai_event_type || "")
+    .trim()
+    .toLowerCase();
+  if (!aiType || aiType === "terrain_event") {
+    return true;
+  }
+  return false;
 }
 
 function confirmationLabel(alert) {
@@ -1622,20 +1733,34 @@ function sourceCountValue(alert) {
   return 1;
 }
 
-function detectSourceKind(alert) {
-  const sourceName = String(alert?.sourceName || "").trim().toLowerCase();
-  const sourceUrl = String(alert?.sourceUrl || "").trim().toLowerCase();
+function buildTelegramChannelUrl(sourceName) {
+  const raw = String(sourceName || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("http://") || raw.startsWith("https://")) {
+    return raw;
+  }
+  const handle = raw.replace(/^@+/, "").trim();
+  if (!handle) return "";
+  return `https://t.me/${encodeURIComponent(handle)}`;
+}
+
+function detectSourceKindFromValues(sourceName, sourceUrl) {
+  const normalizedName = String(sourceName || "").trim().toLowerCase();
+  const normalizedUrl = String(sourceUrl || "").trim().toLowerCase();
 
   if (
-    sourceName.startsWith("@") ||
-    sourceName.includes("telegram") ||
-    sourceUrl.includes("t.me/") ||
-    sourceUrl.includes("telegram.me/")
+    normalizedName.startsWith("@") ||
+    normalizedName.includes("telegram") ||
+    normalizedUrl.includes("t.me/") ||
+    normalizedUrl.includes("telegram.me/")
   ) {
     return "telegram";
   }
-
   return "media";
+}
+
+function detectSourceKind(alert) {
+  return detectSourceKindFromValues(alert?.sourceName, alert?.sourceUrl);
 }
 
 function sourceKindLabel(alert) {
@@ -1647,6 +1772,92 @@ function sourceBadgeHtml(alert, extraClass = "") {
   const className = kind === "telegram" ? "source-chip-telegram" : "source-chip-media";
   const label = sourceKindLabel(alert);
   return `<span class="meta-chip source-chip ${className} ${extraClass}">${escapeHtml(label)}</span>`;
+}
+
+function collectEventGroupAlerts(alert) {
+  const key = eventGroupKey(alert);
+  if (!key) {
+    return [alert].filter(Boolean);
+  }
+  const grouped = (state.alerts || []).filter((item) => eventGroupKey(item) === key);
+  if (grouped.length === 0) {
+    return [alert].filter(Boolean);
+  }
+  return sortAlertsByEventTimeDesc(grouped);
+}
+
+function collectSourceEntries(alert, relatedAlerts = []) {
+  const bucket = [...collectEventGroupAlerts(alert), ...(Array.isArray(relatedAlerts) ? relatedAlerts : []), alert].filter(Boolean);
+  const entries = [];
+  const seen = new Set();
+
+  const pushEntry = (name, url = "", kind = "") => {
+    const sourceName = String(name || "").trim();
+    if (!sourceName) return;
+    const sourceUrl = String(url || "").trim();
+    const detectedKind = kind || detectSourceKindFromValues(sourceName, sourceUrl);
+    const normalizedUrl = sourceUrl || (detectedKind === "telegram" ? buildTelegramChannelUrl(sourceName) : "");
+    const key = `${sourceName.toLowerCase()}|${normalizedUrl.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    entries.push({
+      name: sourceName,
+      url: normalizedUrl,
+      kind: detectedKind
+    });
+  };
+
+  bucket.forEach((item) => {
+    pushEntry(item?.sourceName, item?.sourceUrl);
+    if (Array.isArray(item?.sourceNames)) {
+      item.sourceNames.forEach((sourceName) => {
+        const kind = detectSourceKindFromValues(sourceName, "");
+        pushEntry(sourceName, kind === "telegram" ? buildTelegramChannelUrl(sourceName) : "", kind);
+      });
+    }
+  });
+
+  return entries;
+}
+
+function collectTelegramSourceEntries(alert, relatedAlerts = []) {
+  return collectSourceEntries(alert, relatedAlerts).filter((entry) => entry.kind === "telegram");
+}
+
+function extractEquipmentMentions(alert, limit = 8) {
+  const text = normalizeText(`${alert?.title || ""} ${aiSummaryValue(alert) || ""} ${alert?.summary || ""}`);
+  if (!text) return [];
+
+  const mentions = [];
+  const seen = new Set();
+
+  EQUIPMENT_RULES.forEach((entry) => {
+    const matched = entry.aliasTokens.some((token) => token && text.includes(token));
+    if (!matched) return;
+    const key = normalizeText(entry.name);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    mentions.push({
+      name: entry.name,
+      type: entry.type || "Equipement militaire"
+    });
+  });
+
+  return mentions.slice(0, Math.max(1, Number(limit) || 8));
+}
+
+function renderEquipmentMentionsHtml(alert) {
+  const mentions = extractEquipmentMentions(alert);
+  if (!mentions.length) return "";
+
+  return `<p class="mb-2"><strong>Equipements detectes:</strong> ${mentions
+    .map(
+      (item) =>
+        `<button class="equipment-link-btn" type="button" data-action="open-equipment" data-name="${escapeHtml(item.name)}">${escapeHtml(
+          item.name
+        )}</button>`
+    )
+    .join(" ")}</p>`;
 }
 
 function capitalize(value) {
@@ -1946,6 +2157,23 @@ function playNotificationSound(severity = "medium") {
     profile.gain * 0.88,
     profile.noise * 0.75
   );
+}
+
+function playVerificationScanSound() {
+  if (!isSoundEnabled()) return;
+  ensureAudio();
+  if (!audioContext) return;
+
+  if (audioContext.state === "suspended") {
+    audioContext.resume().catch(() => {});
+  }
+
+  const start = audioContext.currentTime + 0.01;
+  const chirps = [680, 860, 980];
+  chirps.forEach((frequency, index) => {
+    const burstStart = start + index * 0.06;
+    playRadioBurst(audioContext, burstStart, frequency, 0.075, 0.16, 0.038);
+  });
 }
 
 function getAlertVoiceSeverityLabel(severity) {
@@ -2600,7 +2828,7 @@ function getCurrentFilters() {
 
 function matchesCurrentFilters(alert) {
   const filters = getCurrentFilters();
-  if (canonicalType(alert.type) !== "geopolitique") return false;
+  if (!isAlertTypeVisible(alert)) return false;
 
   if (filters.type && canonicalType(alert.type) !== filters.type) return false;
   if (filters.country && alert.country?.name !== filters.country) return false;
@@ -2626,7 +2854,7 @@ function matchesSearch(alert) {
 }
 
 function getVisibleAlerts() {
-  return state.alerts.filter((alert) => canonicalType(alert.type) === "geopolitique" && matchesSearch(alert));
+  return state.alerts.filter((alert) => isAlertTypeVisible(alert) && matchesSearch(alert));
 }
 
 function includesAny(text, keywords) {
@@ -2635,6 +2863,14 @@ function includesAny(text, keywords) {
 
 function detectIncidentSignal(alert) {
   const text = normalizeText(`${alert?.title || ""} ${alert?.summary || ""}`);
+  const incidentClass = normalizeText(alert?.incidentClass || alert?.incident_class || "");
+
+  if (incidentClass === "nuclear attack" || incidentClass.includes("nuclear attack")) {
+    return "nuclear-attack";
+  }
+  if (incidentClass === "nuclear armament" || incidentClass.includes("nuclear armament")) {
+    return "nuclear-armament";
+  }
 
   const hasNuclearPlant = includesAny(text, [
     "nuclear power plant",
@@ -2672,12 +2908,30 @@ function detectIncidentSignal(alert) {
       "nuclear detonation",
       "atomic explosion",
       "atomic blast",
+      "nuclear strike",
+      "nuclear attack",
       "detonation nucleaire",
       "explosion nucleaire",
       "bombe atomique"
     ])
   ) {
-    return "nuclear";
+    return "nuclear-attack";
+  }
+
+  if (
+    includesAny(text, [
+      "nuclear weapon",
+      "nuclear warhead",
+      "nuclear test",
+      "nuclear arsenal",
+      "nuclear doctrine",
+      "atomic arsenal",
+      "enriched uranium",
+      "nuclear enrichment",
+      "nuclear submarine"
+    ])
+  ) {
+    return "nuclear-armament";
   }
 
   if (
@@ -3163,10 +3417,20 @@ function getSignalVisual(signal) {
         glyph: "☢",
         className: "signal-nuclear-plant"
       },
-      nuclear: {
-        label: "Explosion nucleaire",
+      "nuclear-armament": {
+        label: "Armement nucleaire",
         glyph: "☢",
-        className: "signal-nuclear"
+        className: "signal-nuclear-armament"
+      },
+      "nuclear-attack": {
+        label: "Attaque / explosion nucleaire",
+        glyph: "💥☢",
+        className: "signal-nuclear-attack"
+      },
+      nuclear: {
+        label: "Attaque / explosion nucleaire",
+        glyph: "💥☢",
+        className: "signal-nuclear-attack"
       },
       chemical: {
         label: "Incident chimique / biologique",
@@ -3285,7 +3549,9 @@ function signalColorHex(signal) {
   return (
     {
       "nuclear-plant": "#8eff52",
-      nuclear: "#8eff52",
+      "nuclear-armament": "#ffc66f",
+      "nuclear-attack": "#ff4d62",
+      nuclear: "#ff4d62",
       chemical: "#b2ff66",
       "missile-launch": "#7ecbff",
       "missile-impact": "#ff6f6f",
@@ -3611,6 +3877,79 @@ function getThreatMarkerGlyphSizePx(markerSizePx = 24) {
   return Math.max(8, Math.round(Number(markerSizePx || 24) * 0.48));
 }
 
+function eventGroupKey(alert) {
+  const groupId = String(alert?.eventGroupId || "").trim();
+  if (groupId) return groupId;
+  return String(alert?._id || "").trim();
+}
+
+function gatherAlertSourceNames(alert) {
+  const names = [];
+  if (Array.isArray(alert?.sourceNames)) {
+    alert.sourceNames.forEach((item) => {
+      const value = String(item || "").trim();
+      if (value) names.push(value);
+    });
+  }
+  const primary = String(alert?.sourceName || "").trim();
+  if (primary) {
+    names.push(primary);
+  }
+  return Array.from(new Set(names));
+}
+
+function dedupeAlertsByEventGroup(alerts = []) {
+  const grouped = new Map();
+
+  sortAlertsByEventTimeDesc(alerts).forEach((alert) => {
+    const key = eventGroupKey(alert);
+    if (!key) return;
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        ...alert,
+        _eventGroupKey: key,
+        _eventSourceNames: gatherAlertSourceNames(alert),
+        _eventSourceCount: Math.max(1, sourceCountValue(alert)),
+        _eventMembers: [String(alert?._id || "").trim()].filter(Boolean)
+      });
+      return;
+    }
+
+    const existing = grouped.get(key);
+    const existingTs = getAlertEventTimestamp(existing);
+    const incomingTs = getAlertEventTimestamp(alert);
+    const mergedSources = new Set([...(existing._eventSourceNames || []), ...gatherAlertSourceNames(alert)]);
+    const mergedMembers = new Set([...(existing._eventMembers || []), String(alert?._id || "").trim()]);
+    const mergedCount = Math.max(existing._eventSourceCount || 1, sourceCountValue(alert), mergedSources.size || 1);
+
+    if (incomingTs > existingTs) {
+      grouped.set(key, {
+        ...alert,
+        _eventGroupKey: key,
+        _eventSourceNames: Array.from(mergedSources),
+        _eventSourceCount: mergedCount,
+        _eventMembers: Array.from(mergedMembers).filter(Boolean)
+      });
+    } else {
+      existing._eventSourceNames = Array.from(mergedSources);
+      existing._eventSourceCount = mergedCount;
+      existing._eventMembers = Array.from(mergedMembers).filter(Boolean);
+    }
+  });
+
+  return sortAlertsByEventTimeDesc(Array.from(grouped.values()));
+}
+
+function countUniqueEvents(alerts = []) {
+  const keys = new Set();
+  (alerts || []).forEach((alert) => {
+    const key = eventGroupKey(alert);
+    if (key) keys.add(key);
+  });
+  return keys.size;
+}
+
 function buildAlertMarkerPlacements(alerts) {
   const source = Array.isArray(alerts) ? alerts : [];
   if (!source.length) {
@@ -3682,12 +4021,21 @@ function createMarker(alert, options = {}) {
   const signalVisual = getSignalVisual(signal);
   const severity = normalizeSeverity(alert.severity);
   const groupSize = Math.max(1, Number(options?.groupSize || 1));
+  const eventSourceCount = Math.max(
+    1,
+    Number(options?.sourceCount || alert?._eventSourceCount || sourceCountValue(alert) || 1)
+  );
   const markerSizePx = Math.max(12, Math.round(Number(options?.markerSizePx || getThreatMarkerSizePx(groupSize))));
   const glyphSizePx = Math.max(8, Math.round(Number(options?.glyphSizePx || getThreatMarkerGlyphSizePx(markerSizePx))));
   const iconSizePx = markerSizePx + 2;
   const iconAnchorPx = Math.round(iconSizePx / 2);
   const shouldPulse = severity === "critical" || severity === "high";
-  const markerTitle = groupSize > 1 ? `${signalVisual.label} (${groupSize} evenements)` : signalVisual.label;
+  const markerTitle =
+    eventSourceCount > 1
+      ? `${signalVisual.label} (${eventSourceCount} sources)`
+      : groupSize > 1
+        ? `${signalVisual.label} (${groupSize} evenements)`
+        : signalVisual.label;
   const markerClasses = [
     "threat-marker",
     shouldPulse ? "is-unread" : "is-read",
@@ -3698,7 +4046,9 @@ function createMarker(alert, options = {}) {
   const marker = L.marker(latLng, {
     icon: L.divIcon({
       className: "",
-      html: `<div class="${markerClasses}" style="--threat-marker-size:${markerSizePx}px;--threat-marker-glyph-size:${glyphSizePx}px;" title="${escapeHtml(markerTitle)}"><span class="threat-marker__glyph">${signalVisual.glyph}</span></div>`,
+      html: `<div class="${markerClasses}" style="--threat-marker-size:${markerSizePx}px;--threat-marker-glyph-size:${glyphSizePx}px;" title="${escapeHtml(markerTitle)}"><span class="threat-marker__glyph">${signalVisual.glyph}</span>${
+        eventSourceCount > 1 ? `<span class="threat-marker__source-badge">×${eventSourceCount}</span>` : ""
+      }</div>`,
       iconSize: [iconSizePx, iconSizePx],
       iconAnchor: [iconAnchorPx, iconAnchorPx]
     })
@@ -3829,13 +4179,14 @@ function renderTrackedAssetDetails(track) {
 
 function renderMapMarkers() {
   const visibleAlerts = getVisibleAlerts();
-  const activeMapSignals = filterActiveMapSignals(visibleAlerts);
+  const uniqueVisibleAlerts = dedupeAlertsByEventGroup(visibleAlerts);
+  const activeMapSignals = filterActiveMapSignals(uniqueVisibleAlerts);
   const citySignals = activeMapSignals.filter((alert) => hasCityName(alert));
   const noCitySignalsCount = Math.max(0, activeMapSignals.length - citySignals.length);
   const trackedAssets = buildTrackedAssetTracks(activeMapSignals);
-  recomputeCountryStatusLevels();
-  updateCountryHeadlineCounters();
-  const allCountrySummaries = buildCountrySummaries(visibleAlerts);
+  recomputeCountryStatusLevels(uniqueVisibleAlerts);
+  updateCountryHeadlineCounters(activeMapSignals);
+  const allCountrySummaries = buildCountrySummaries(uniqueVisibleAlerts);
   const activeCountrySummaries = buildCountrySummaries(activeMapSignals);
   const activeCountryByKey = new Map(activeCountrySummaries.map((summary) => [summary.key, summary]));
   const countrySummaries = allCountrySummaries.map((summary) => {
@@ -3892,7 +4243,8 @@ function renderMapMarkers() {
       latLng: placement.latLng,
       markerSizePx: placement.markerSizePx,
       glyphSizePx: placement.glyphSizePx,
-      groupSize: placement.groupSize
+      groupSize: placement.groupSize,
+      sourceCount: placement.alert?._eventSourceCount || sourceCountValue(placement.alert)
     });
     state.markersLayer.addLayer(marker);
   });
@@ -3908,18 +4260,76 @@ function renderMapMarkers() {
   });
 
   if (refs.mapOverlayMetric) {
-    refs.mapOverlayMetric.textContent = `${renderedAlerts.length}/${citySignals.length} points villes | ${noCitySignalsCount} sans ville (${noCitySignalGroups} logos pays) | ${renderedAssets.length} assets suivis | ${countryLegends.length} pays tension/actifs`;
+    refs.mapOverlayMetric.textContent = `${activeMapSignals.length} events uniques actifs | ${renderedAlerts.length}/${citySignals.length} points villes | ${noCitySignalsCount} sans ville (${noCitySignalGroups} logos pays) | ${renderedAssets.length} assets suivis | ${countryLegends.length} pays tension/actifs`;
   }
 
   scheduleMapSignalExpiryRefresh(activeMapSignals);
 }
 
-function renderAlertDetails(alert) {
+function getDetailRelatedAlerts(alert) {
+  const alertId = String(alert?._id || "").trim();
+  if (!alertId) return [];
+  if (state.relatedAlertsByAnchorId.has(alertId)) {
+    return state.relatedAlertsByAnchorId.get(alertId) || [];
+  }
+  return collectEventGroupAlerts(alert).filter((item) => String(item?._id || "") !== alertId);
+}
+
+async function ensureDetailRelatedAlerts(alert) {
+  if (!alert?._id || sourceCountValue(alert) <= 1) {
+    return;
+  }
+  const id = String(alert._id);
+  if (state.relatedAlertsByAnchorId.has(id)) {
+    return;
+  }
+  try {
+    await fetchRelatedAlerts(id);
+    if (String(state.selectedAlertId || "") === id) {
+      const latest = state.alerts.find((item) => String(item?._id || "") === id) || alert;
+      renderAlertDetails(latest, { skipRelatedHydration: true });
+    }
+  } catch (_) {
+    // Ignore related source fetch failures in detail panel.
+  }
+}
+
+function renderLinkedSourcesHtml(alert, relatedAlerts = []) {
+  const entries = collectSourceEntries(alert, relatedAlerts);
+  if (!entries.length) {
+    return "<p class=\"mb-2\"><strong>Sources liées:</strong> Non disponible</p>";
+  }
+
+  return `<p class="mb-2"><strong>Sources liées:</strong> ${entries
+    .map((entry) =>
+      entry.url
+        ? `<a href="${escapeHtml(entry.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(entry.name)}</a>`
+        : escapeHtml(entry.name)
+    )
+    .join(" | ")}</p>`;
+}
+
+function renderTelegramSourcesHtml(alert, relatedAlerts = []) {
+  const entries = collectTelegramSourceEntries(alert, relatedAlerts);
+  if (!entries.length) {
+    return "";
+  }
+  return `<p class="mb-2"><strong>Source Telegram:</strong> ${entries
+    .map((entry) => {
+      const label = `📨 ${entry.name}`;
+      return entry.url
+        ? `<a href="${escapeHtml(entry.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
+        : escapeHtml(label);
+    })
+    .join(" | ")}</p>`;
+}
+
+function renderAlertDetails(alert, options = {}) {
   ensureIntelOverlayVisible();
   const signalVisual = getSignalVisual(detectIncidentSignal(alert));
   const confidence = confidenceScoreValue(alert);
-  const sourceCount = sourceCountValue(alert);
-  const sourcesList = Array.isArray(alert?.sourceNames) && alert.sourceNames.length > 0 ? alert.sourceNames : [alert.sourceName];
+  const sourceCount = Math.max(1, Number(alert?._eventSourceCount || sourceCountValue(alert) || 1));
+  const relatedAlerts = getDetailRelatedAlerts(alert);
   const sourceName = alert?.sourceName || "Inconnue";
   const aiAnalyzed = aiAnalyzedValue(alert);
   const aiCategory = aiCategoryValue(alert);
@@ -3959,27 +4369,37 @@ function renderAlertDetails(alert) {
     <p class="mb-2"><strong>Source:</strong> ${sourceBadgeHtml(alert, "source-chip-inline")} <span class="source-name-inline">${escapeHtml(
     sourceName
   )}</span></p>
+    ${renderTelegramSourcesHtml(alert, relatedAlerts)}
     <p class="mb-2"><strong>Ville:</strong> ${escapeHtml(alert.city?.name || "Non précisée")}</p>
     <p class="mb-2"><strong>Validation:</strong> ${escapeHtml(confirmationLabel(alert))} | <strong>Confiance:</strong> ${confidence}% | <strong>Sources croisées:</strong> ${sourceCount}</p>
-    <p class="mb-2"><strong>Sources cluster:</strong> ${escapeHtml(sourcesList.join(", "))}</p>
+    ${renderLinkedSourcesHtml(alert, relatedAlerts)}
+    ${renderEquipmentMentionsHtml(alert)}
     <p class="mb-1"><strong>Heure de l'acte:</strong> ${escapeHtml(formatAlertEventDateLong(alert))}</p>
     <p class="mb-2"><strong>Heure publication:</strong> ${escapeHtml(formatDate(getAlertPublicationValue(alert)))}</p>
-    <a href="${escapeHtml(alert.sourceUrl)}" class="btn btn-sm btn-outline-warning" target="_blank" rel="noopener noreferrer">
+    ${
+      alert?.sourceUrl
+        ? `<a href="${escapeHtml(alert.sourceUrl)}" class="btn btn-sm btn-outline-warning" target="_blank" rel="noopener noreferrer">
       Ouvrir l'article officiel
-    </a>
+    </a>`
+        : ""
+    }
   `;
+
+  if (!options.skipRelatedHydration) {
+    ensureDetailRelatedAlerts(alert).catch(() => {});
+  }
 }
 
 function getTickerSourceAlerts() {
   const dedicated = sortAlertsByEventTimeDesc(
-    (state.tickerAlerts || []).filter((alert) => canonicalType(alert?.type) === "geopolitique")
+    (state.tickerAlerts || []).filter((alert) => isAlertTypeVisible(alert))
   );
   if (dedicated.length > 0) {
     return dedicated;
   }
 
   return sortAlertsByEventTimeDesc(
-    (state.alerts || []).filter((alert) => canonicalType(alert?.type) === "geopolitique")
+    (state.alerts || []).filter((alert) => isAlertTypeVisible(alert))
   );
 }
 
@@ -4184,6 +4604,11 @@ function renderRelatedAlertsPanel(anchorAlertId, relatedAlerts, options = {}) {
     .map((alert) => {
       const sourceName = alert?.sourceName || "Source inconnue";
       const signalVisual = getSignalVisual(detectIncidentSignal(alert));
+      const similarityScore = Number(alert?.similarityScore);
+      const similarityText =
+        Number.isFinite(similarityScore) && similarityScore >= 0
+          ? `${Math.round(Math.max(0, Math.min(1, similarityScore)) * 100)}%`
+          : "";
       return `<button class="related-alert-row" data-action="open-related-detail" data-id="${escapeHtml(
         anchorAlertId
       )}" data-related-id="${escapeHtml(alert._id)}">
@@ -4192,6 +4617,7 @@ function renderRelatedAlertsPanel(anchorAlertId, relatedAlerts, options = {}) {
           ${sourceBadgeHtml(alert, "source-chip-inline")}
           <span>${escapeHtml(sourceName)}</span>
           <span>${escapeHtml(signalVisual.label)}</span>
+          ${similarityText ? `<span>Similarite ${escapeHtml(similarityText)}</span>` : ""}
           <span>${escapeHtml(formatAlertEventTime(alert, { allowPublicationFallback: true }))}</span>
         </span>
       </button>`;
@@ -4240,6 +4666,91 @@ function closeVerificationOverlay() {
   refs.verifyOverlay.setAttribute("aria-hidden", "true");
 }
 
+function openSettingsHelpOverlay() {
+  if (!refs.settingsHelpOverlay) return;
+  refs.settingsHelpOverlay.hidden = false;
+  refs.settingsHelpOverlay.removeAttribute("aria-hidden");
+}
+
+function closeSettingsHelpOverlay() {
+  if (!refs.settingsHelpOverlay) return;
+  refs.settingsHelpOverlay.hidden = true;
+  refs.settingsHelpOverlay.setAttribute("aria-hidden", "true");
+}
+
+function closeEquipmentOverlay() {
+  if (!refs.equipmentOverlay) return;
+  refs.equipmentOverlay.hidden = true;
+  refs.equipmentOverlay.setAttribute("aria-hidden", "true");
+}
+
+async function fetchEquipmentProfileByName(name) {
+  const key = normalizeText(name);
+  if (!key) return null;
+  if (state.equipmentProfileCache.has(key)) {
+    return state.equipmentProfileCache.get(key);
+  }
+  const payload = await api(`/api/equipment-profile?name=${encodeURIComponent(name)}`);
+  state.equipmentProfileCache.set(key, payload);
+  return payload;
+}
+
+function renderEquipmentProfileHtml(profile) {
+  const imageUrl = String(profile?.imageUrl || "").trim();
+  const users = Array.isArray(profile?.userCountries) ? profile.userCountries.filter(Boolean) : [];
+  const specs = profile?.specs || {};
+  const summary = String(profile?.summary || "").trim();
+  const status = String(profile?.status || "Donnee non disponible").trim();
+  const wikiUrl = String(profile?.wikiUrl || "").trim();
+
+  return `
+    <article class="equipment-profile-card">
+      <div class="equipment-profile-head">
+        ${
+          imageUrl
+            ? `<img class="equipment-profile-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(profile?.name || "Equipement")}" loading="lazy" />`
+            : `<div class="equipment-profile-image placeholder">Aucune image</div>`
+        }
+        <div class="equipment-profile-meta">
+          <p><strong>Nom:</strong> ${escapeHtml(profile?.name || "Inconnu")}</p>
+          <p><strong>Type:</strong> ${escapeHtml(profile?.type || "Equipement militaire")}</p>
+          <p><strong>Pays d'origine:</strong> ${escapeHtml(profile?.originCountry || "Donnee non disponible")}</p>
+          <p><strong>Pays utilisateurs:</strong> ${escapeHtml(users.length ? users.join(", ") : "Donnee non disponible")}</p>
+          <p><strong>Statut:</strong> ${escapeHtml(status)}</p>
+          ${wikiUrl ? `<a href="${escapeHtml(wikiUrl)}" target="_blank" rel="noopener noreferrer">Ouvrir la source Wikipedia</a>` : ""}
+        </div>
+      </div>
+      ${summary ? `<p class="equipment-profile-summary">${escapeHtml(summary)}</p>` : ""}
+      <div class="equipment-profile-grid">
+        <div class="equipment-spec-item"><strong>Vitesse</strong><span>${escapeHtml(specs.speed || "Donnee non disponible")}</span></div>
+        <div class="equipment-spec-item"><strong>Portee</strong><span>${escapeHtml(specs.range || "Donnee non disponible")}</span></div>
+        <div class="equipment-spec-item"><strong>Armement</strong><span>${escapeHtml(specs.armament || "Donnee non disponible")}</span></div>
+        <div class="equipment-spec-item"><strong>Mise en service</strong><span>${escapeHtml(specs.introduced || "Donnee non disponible")}</span></div>
+      </div>
+    </article>
+  `;
+}
+
+async function openEquipmentProfile(name) {
+  const equipmentName = String(name || "").trim();
+  if (!equipmentName || !refs.equipmentOverlay || !refs.equipmentContent) {
+    return;
+  }
+
+  refs.equipmentOverlay.hidden = false;
+  refs.equipmentOverlay.removeAttribute("aria-hidden");
+  refs.equipmentContent.innerHTML = '<p class="verify-result-empty">Chargement de la fiche equipement...</p>';
+
+  try {
+    const profile = await fetchEquipmentProfileByName(equipmentName);
+    refs.equipmentContent.innerHTML = renderEquipmentProfileHtml(profile);
+  } catch (error) {
+    refs.equipmentContent.innerHTML = `<p class="verify-result-empty">Impossible de charger la fiche: ${escapeHtml(
+      error.message || "Erreur"
+    )}</p>`;
+  }
+}
+
 function renderVerificationResult(payload, errorMessage = "") {
   if (!refs.verifyResult) return;
 
@@ -4268,23 +4779,30 @@ function renderVerificationResult(payload, errorMessage = "") {
   const beforeSourceCount = Math.max(1, Number(payload?.before?.sourceCount || 1));
   const beforeStatus = payload?.before?.confirmed ? "CONFIRMED" : "UNCONFIRMED";
   const verifiedAt = formatDate(payload?.verifiedAt);
+  const verificationStatus = String(payload?.verification?.status || "").trim();
+  const verificationScore = Number(payload?.verification?.score);
+  const verificationJustification = String(payload?.verification?.justification || "").trim();
 
   refs.verifyResult.innerHTML = `
     <p class="verify-line"><strong>Etat:</strong> <span class="verify-value ${statusClass}">${escapeHtml(statusLabel)}</span></p>
+    ${
+      verificationStatus
+        ? `<p class="verify-line"><strong>Verdict IA:</strong> <span class="verify-value">${escapeHtml(
+            verificationStatus
+          )}${Number.isFinite(verificationScore) ? ` (${escapeHtml(String(verificationScore))}/10)` : ""}</span></p>`
+        : ""
+    }
     <p class="verify-line"><strong>Confiance:</strong> <span class="verify-value">${beforeConfidence}% → ${confidence}%</span></p>
     <p class="verify-line"><strong>Sources croisées:</strong> <span class="verify-value">${beforeSourceCount} → ${sourceCount}</span></p>
     <p class="verify-line"><strong>Status précédent:</strong> <span class="verify-value">${escapeHtml(beforeStatus)}</span></p>
     <p class="verify-line"><strong>Nouvelles alertes scannées:</strong> <span class="verify-value">${inserted}</span></p>
+    ${verificationJustification ? `<p class="verify-line">${escapeHtml(verificationJustification)}</p>` : ""}
     <p class="verify-line"><strong>Vérifié à:</strong> <span class="verify-value">${escapeHtml(verifiedAt)}</span></p>
   `;
 }
 
 function buildVerificationVoiceMessage(alert) {
-  const title = String(alert?.title || "événement")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
-  return `Verification asked on ${title}. Cross-check in progress across Telegram and news sources.`;
+  return "Manual cross-check started. Verification in progress across Telegram and media sources.";
 }
 
 function beginVerificationProgressAnimation() {
@@ -4367,6 +4885,7 @@ async function verifyAlert(alertId) {
 
   openVerificationOverlay(alert);
   beginVerificationProgressAnimation();
+  playVerificationScanSound();
 
   if (isVoiceEnabled()) {
     speakAlertMessage({
@@ -4984,11 +5503,12 @@ function levelFromCountrySnapshot(snapshot) {
   return 1;
 }
 
-function recomputeCountryStatusLevels() {
+function recomputeCountryStatusLevels(alertsInput = state.alerts) {
   const snapshots = new Map();
   const nowTs = Date.now();
+  const sourceAlerts = dedupeAlertsByEventGroup(alertsInput);
 
-  state.alerts.forEach((alert) => {
+  sourceAlerts.forEach((alert) => {
     const signal = computeCountryAlertSignal(alert, nowTs);
     if (!signal) return;
 
@@ -5018,9 +5538,10 @@ function recomputeCountryStatusLevels() {
   state.countryStatusLevels = levels;
 }
 
-function updateCountryHeadlineCounters() {
+function updateCountryHeadlineCounters(activeAlerts = []) {
   let activeCountries = 0;
   let tensionCountries = 0;
+  const uniqueActiveEvents = countUniqueEvents(activeAlerts);
 
   state.countryStatusLevels.forEach((level) => {
     if (level >= 3) {
@@ -5033,10 +5554,13 @@ function updateCountryHeadlineCounters() {
     }
   });
 
-  refs.totalAlertsCount.textContent = String(activeCountries);
+  refs.totalAlertsCount.textContent = String(uniqueActiveEvents);
   refs.criticalAlertsCount.textContent = String(tensionCountries);
 
-  updateDefconIndicator(getVisibleAlerts(), activeCountries, tensionCountries);
+  const defconPool = dedupeAlertsByEventGroup(
+    getVisibleAlerts().filter((alert) => canonicalType(alert?.type) === "geopolitique")
+  );
+  updateDefconIndicator(defconPool, activeCountries, tensionCountries);
   updatePentagonPizzaIndicator();
 }
 
@@ -5545,6 +6069,80 @@ function formatPopulation(value) {
   return amount.toLocaleString("fr-FR");
 }
 
+function connectivityStatusLabel(value) {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (normalized === "NORMAL") return "NORMAL";
+  if (normalized === "DEGRADE" || normalized === "DÉGRADÉ") return "DEGRADE";
+  if (normalized === "COUPURE PARTIELLE") return "COUPURE PARTIELLE";
+  if (normalized === "COUPURE TOTALE") return "COUPURE TOTALE";
+  return "Données indisponibles";
+}
+
+function connectivityStatusClass(value) {
+  const normalized = connectivityStatusLabel(value);
+  if (normalized === "NORMAL") return "connectivity-ok";
+  if (normalized === "DEGRADE") return "connectivity-warning";
+  if (normalized === "COUPURE PARTIELLE") return "connectivity-critical";
+  if (normalized === "COUPURE TOTALE") return "connectivity-critical";
+  return "connectivity-na";
+}
+
+async function fetchCountryConnectivity(code) {
+  const normalizedCode = String(code || "").trim().toUpperCase();
+  if (!normalizedCode || normalizedCode === "XX") {
+    return null;
+  }
+
+  const cacheKey = `code:${normalizedCode}`;
+  const cached = state.countryConnectivityCache.get(cacheKey);
+  if (cached && Date.now() - Number(cached?.at || 0) < CONNECTIVITY_REFRESH_MS) {
+    return cached.payload || null;
+  }
+
+  try {
+    const payload = await api(`/api/country-connectivity?code=${encodeURIComponent(normalizedCode)}`);
+    state.countryConnectivityCache.set(cacheKey, { at: Date.now(), payload });
+    return payload;
+  } catch (_) {
+    const fallback = {
+      code: normalizedCode,
+      valuePercent: null,
+      status: "Données indisponibles",
+      updatedAt: new Date().toISOString()
+    };
+    state.countryConnectivityCache.set(cacheKey, { at: Date.now(), payload: fallback });
+    return fallback;
+  }
+}
+
+function renderConnectivityHtml(connectivity) {
+  if (!connectivity || !Number.isFinite(Number(connectivity?.valuePercent))) {
+    return `
+      <div class="country-connectivity">
+        <h4 class="country-events-title">Connectivite Internet</h4>
+        <p class="mb-1"><strong>Statut:</strong> <span class="connectivity-na">Données indisponibles</span></p>
+      </div>
+    `;
+  }
+
+  const percent = Math.max(0, Math.min(100, Math.round(Number(connectivity.valuePercent))));
+  const status = connectivityStatusLabel(connectivity?.status);
+  const statusClass = connectivityStatusClass(status);
+  const updatedAt = formatDate(connectivity?.updatedAt);
+
+  return `
+    <div class="country-connectivity">
+      <h4 class="country-events-title">Connectivite Internet</h4>
+      <div class="country-connectivity-bar">
+        <div class="country-connectivity-bar-fill ${statusClass}" style="width:${percent}%"></div>
+      </div>
+      <p class="mb-1"><strong>Niveau trafic:</strong> ${percent}% du niveau normal</p>
+      <p class="mb-1"><strong>Statut:</strong> <span class="${statusClass}">${escapeHtml(status)}</span></p>
+      <p class="mb-2"><strong>Derniere mise a jour:</strong> ${escapeHtml(updatedAt)}</p>
+    </div>
+  `;
+}
+
 async function renderCountryDetails(summary) {
   const key = summary?.key || `${summary?.country?.name || "country"}-${Date.now()}`;
   state.selectedCountryKey = key;
@@ -5566,7 +6164,10 @@ async function renderCountryDetails(summary) {
     <p class="mb-0 small text-secondary">Chargement du profil pays...</p>
   `;
 
-  const profile = await fetchCountryProfile(summary);
+  const [profile, connectivity] = await Promise.all([
+    fetchCountryProfile(summary),
+    fetchCountryConnectivity(summary?.country?.code)
+  ]);
   if (state.selectedCountryKey !== key) {
     return;
   }
@@ -5592,6 +6193,7 @@ async function renderCountryDetails(summary) {
     }</p>
     <p class="mb-1"><strong>Population:</strong> ${escapeHtml(population)}</p>
     <p class="mb-2"><strong>Président / dirigeant:</strong> ${escapeHtml(leader)}</p>
+    ${renderConnectivityHtml(connectivity)}
     <div class="country-events">
       <h4 class="country-events-title">Dernières alertes</h4>
       ${latestAlerts
@@ -5630,6 +6232,9 @@ async function loadAlerts() {
   const mode = state.settings?.alertMode || "insight";
   if (mode === "action") {
     query.set("mode", "action");
+  }
+  if (isSpaceCivilEnabled()) {
+    query.set("includeSpaceCivil", "true");
   }
 
   const payload = await api(`/api/alerts?${query.toString()}&limit=120`);
@@ -5683,6 +6288,9 @@ async function loadTickerAlerts() {
   const mode = state.settings?.alertMode || "insight";
   if (mode === "action") {
     query.set("mode", "action");
+  }
+  if (isSpaceCivilEnabled()) {
+    query.set("includeSpaceCivil", "true");
   }
 
   const payload = await api(`/api/alerts?${query.toString()}`);
@@ -5752,6 +6360,7 @@ function applySettingsToControls() {
   updateSoundToggleUI();
   updateVoiceToggleUI();
   updateCoverageToggleUI();
+  updateSpaceCivilToggleUI();
 
   Array.from(refs.settingsCountryFilter.options).forEach((option) => {
     option.selected = (state.settings.countryFilters || []).includes(option.value);
@@ -5768,6 +6377,52 @@ function updateDetectionStatus() {
   refs.detectionStatus.textContent = paused ? `PAUSED | ${modeLabel}` : `LIVE | ${modeLabel}`;
   refs.detectionStatus.className = `status-pill ${paused ? "paused" : "live"}`;
   refs.togglePauseBtn.textContent = paused ? "Reprendre" : "Pause";
+}
+
+function renderAiQueueStatus(payload = null) {
+  if (!refs.aiLoadBar || !refs.aiLoadValue || !refs.aiLoadMeta) {
+    return;
+  }
+
+  const saturation = Math.max(0, Math.min(100, Number(payload?.saturation_pct || 0)));
+  const queueLength = Math.max(0, Number(payload?.queue_length || 0));
+  const queueCapacity = Math.max(0, Number(payload?.queue_capacity || 0));
+  const perMinute = Math.max(0, Number(payload?.processed_last_minute || 0));
+  const ready = Boolean(payload?.ready);
+  const provider = String(payload?.provider || "n/a").toUpperCase();
+
+  refs.aiLoadBar.style.width = `${Math.round(saturation)}%`;
+  refs.aiLoadValue.textContent = `${Math.round(saturation)}%`;
+  refs.aiLoadMeta.textContent = `File IA: ${queueLength}/${queueCapacity || "--"} | ${perMinute}/min | ${provider} ${
+    ready ? "READY" : "OFF"
+  }`;
+}
+
+async function loadAiQueueStatus() {
+  try {
+    const payload = await api("/api/ai/queue-status");
+    renderAiQueueStatus(payload);
+  } catch (_) {
+    renderAiQueueStatus({
+      saturation_pct: 0,
+      queue_length: 0,
+      queue_capacity: 0,
+      processed_last_minute: 0,
+      provider: "n/a",
+      ready: false
+    });
+  }
+}
+
+function scheduleAiQueueRefresh() {
+  if (aiLoadRefreshTimer) {
+    clearInterval(aiLoadRefreshTimer);
+    aiLoadRefreshTimer = null;
+  }
+  loadAiQueueStatus().catch(() => {});
+  aiLoadRefreshTimer = setInterval(() => {
+    loadAiQueueStatus().catch(() => {});
+  }, AI_QUEUE_REFRESH_MS);
 }
 
 function getUiRefreshIntervalSeconds() {
@@ -5832,6 +6487,8 @@ async function loadSettings() {
   state.settings = await api("/api/settings");
   applySettingsToControls();
   updateVoiceToggleUI();
+  updateSpaceCivilToggleUI();
+  scheduleAiQueueRefresh();
   scheduleAutoRefresh();
 }
 
@@ -5946,6 +6603,26 @@ async function toggleCoverage() {
   );
 
   await Promise.all([loadAlerts(), loadStats(), loadTickerAlerts(), loadCountryOptions(), loadRegionOptions()]);
+}
+
+async function toggleSpaceCivil() {
+  if (!state.settings) return;
+
+  const nextValue = !isSpaceCivilEnabled();
+  state.settings = await api("/api/settings", {
+    method: "PATCH",
+    body: JSON.stringify({
+      includeSpaceCivil: nextValue
+    })
+  });
+
+  updateSpaceCivilToggleUI();
+  showToast(
+    "Flux spatial civil",
+    nextValue ? "Les evenements spatiaux civils sont affiches." : "Les evenements spatiaux civils sont masques."
+  );
+
+  await Promise.all([loadAlerts(), loadStats(), loadTickerAlerts()]);
 }
 
 async function updateAlertMode() {
@@ -6091,6 +6768,18 @@ function bindEvents() {
     });
   }
 
+  if (refs.toggleSpaceCivilBtn) {
+    refs.toggleSpaceCivilBtn.addEventListener("click", () => {
+      toggleSpaceCivil().catch((error) => showToast("Erreur", error.message));
+    });
+  }
+
+  if (refs.settingsHelpBtn) {
+    refs.settingsHelpBtn.addEventListener("click", () => {
+      openSettingsHelpOverlay();
+    });
+  }
+
   refs.alertModeSelect.addEventListener("change", () => {
     updateAlertMode().catch((error) => showToast("Erreur", error.message));
   });
@@ -6123,9 +6812,45 @@ function bindEvents() {
     });
   }
 
+  if (refs.settingsHelpCloseBtn) {
+    refs.settingsHelpCloseBtn.addEventListener("click", () => {
+      closeSettingsHelpOverlay();
+    });
+  }
+
+  if (refs.settingsHelpOverlay) {
+    refs.settingsHelpOverlay.addEventListener("click", (event) => {
+      if (event.target === refs.settingsHelpOverlay) {
+        closeSettingsHelpOverlay();
+      }
+    });
+  }
+
+  if (refs.equipmentCloseBtn) {
+    refs.equipmentCloseBtn.addEventListener("click", () => {
+      closeEquipmentOverlay();
+    });
+  }
+
+  if (refs.equipmentOverlay) {
+    refs.equipmentOverlay.addEventListener("click", (event) => {
+      if (event.target === refs.equipmentOverlay) {
+        closeEquipmentOverlay();
+      }
+    });
+  }
+
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && refs.verifyOverlay && !refs.verifyOverlay.hidden) {
       closeVerificationOverlay();
+      return;
+    }
+    if (event.key === "Escape" && refs.settingsHelpOverlay && !refs.settingsHelpOverlay.hidden) {
+      closeSettingsHelpOverlay();
+      return;
+    }
+    if (event.key === "Escape" && refs.equipmentOverlay && !refs.equipmentOverlay.hidden) {
+      closeEquipmentOverlay();
     }
   });
 
@@ -6183,6 +6908,17 @@ function bindEvents() {
     }
   });
 
+  if (refs.alertDetails) {
+    refs.alertDetails.addEventListener("click", (event) => {
+      const button = event.target.closest('button[data-action="open-equipment"]');
+      if (!button) {
+        return;
+      }
+      const name = button.dataset.name || button.textContent || "";
+      openEquipmentProfile(name).catch((error) => showToast("Equipement", error.message));
+    });
+  }
+
   document.body.addEventListener(
     "click",
     () => {
@@ -6217,6 +6953,10 @@ function bindEvents() {
   });
 
   window.addEventListener("beforeunload", () => {
+    if (aiLoadRefreshTimer) {
+      clearInterval(aiLoadRefreshTimer);
+      aiLoadRefreshTimer = null;
+    }
     stopVoicePlayback();
   });
 
@@ -6227,7 +6967,14 @@ function bindEvents() {
 
 async function loadStats() {
   const mode = state.settings?.alertMode === "action" ? "action" : "";
-  const stats = await api(mode ? `/api/stats?mode=${mode}` : "/api/stats");
+  const query = new URLSearchParams();
+  if (mode) {
+    query.set("mode", mode);
+  }
+  if (isSpaceCivilEnabled()) {
+    query.set("includeSpaceCivil", "true");
+  }
+  const stats = await api(query.toString() ? `/api/stats?${query.toString()}` : "/api/stats");
 
   renderCharts(stats);
   renderRiskMix(stats);
@@ -6330,7 +7077,7 @@ function connectEventStream() {
     try {
       const payload = JSON.parse(event.data);
       const alert = payload.alert;
-      if (canonicalType(alert?.type) !== "geopolitique") {
+      if (!isAlertTypeVisible(alert)) {
         return;
       }
       const alreadyExists = state.alerts.some((existing) => existing._id === alert._id);
@@ -6394,6 +7141,15 @@ function connectEventStream() {
 
   state.eventSource.addEventListener("alert-updated", (event) => {
     const payload = JSON.parse(event.data);
+    if (!isAlertTypeVisible(payload?.alert)) {
+      state.alerts = state.alerts.filter((alert) => alert._id !== payload?.alert?._id);
+      state.tickerAlerts = state.tickerAlerts.filter((alert) => alert._id !== payload?.alert?._id);
+      renderAlertsList();
+      renderMapMarkers();
+      renderTicker();
+      renderKeywordsWidget();
+      return;
+    }
     state.alerts = sortAlertsByEventTimeDesc(
       state.alerts.map((alert) => (alert._id === payload.alert._id ? payload.alert : alert))
     );
@@ -6461,6 +7217,9 @@ function connectEventStream() {
       if (typeof payload.globalCoverage === "boolean") {
         state.settings.globalCoverage = payload.globalCoverage;
       }
+      if (typeof payload.includeSpaceCivil === "boolean") {
+        state.settings.includeSpaceCivil = payload.includeSpaceCivil;
+      }
       if (payload.alertMode) {
         state.settings.alertMode = payload.alertMode;
         refs.alertModeSelect.value = payload.alertMode;
@@ -6469,7 +7228,10 @@ function connectEventStream() {
       updateSoundToggleUI();
       updateVoiceToggleUI();
       updateCoverageToggleUI();
+      updateSpaceCivilToggleUI();
       scheduleAutoRefresh();
+      loadAlerts().catch(() => {});
+      loadStats().catch(() => {});
       loadTickerAlerts().catch(() => {});
     }
   });

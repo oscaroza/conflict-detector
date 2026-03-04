@@ -13,6 +13,7 @@ const AlertSchema = new mongoose.Schema(
       type: String,
       enum: [
         "geopolitique",
+        "espace_civil",
         "sport",
         "economie",
         "technologie",
@@ -52,6 +53,19 @@ const AlertSchema = new mongoose.Schema(
       }
     },
     actionable: { type: Boolean, default: false },
+    incidentClass: { type: String, default: "conflict" },
+    aiEventType: {
+      type: String,
+      enum: ["terrain_event", "press_return", "diplomatic", ""],
+      default: ""
+    },
+    spaceCivil: { type: Boolean, default: false },
+    locationMeta: {
+      strategicArea: { type: String, default: "" },
+      directionalHint: { type: String, default: "" },
+      isBorder: { type: Boolean, default: false },
+      borderCountries: { type: [String], default: [] }
+    },
     read: { type: Boolean, default: false },
     deletedAt: { type: Date, default: null },
     confirmed: { type: Boolean, default: false },
@@ -80,6 +94,8 @@ AlertSchema.index({ occurredAt: -1, publishedAt: -1, createdAt: -1 });
 AlertSchema.index({ deletedAt: 1, occurredAt: -1, publishedAt: -1, createdAt: -1 });
 AlertSchema.index({ type: 1, severity: 1 });
 AlertSchema.index({ actionable: 1, createdAt: -1 });
+AlertSchema.index({ aiEventType: 1, createdAt: -1 });
+AlertSchema.index({ spaceCivil: 1, createdAt: -1 });
 AlertSchema.index({ type: 1, publishedAt: -1, createdAt: -1 });
 AlertSchema.index({ "country.name": 1 });
 AlertSchema.index({ "city.name": 1 });

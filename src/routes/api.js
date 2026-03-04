@@ -4,18 +4,21 @@ const Settings = require("../models/Settings");
 const streamService = require("../services/streamService");
 const feedService = require("../services/feedService");
 const voiceService = require("../services/voiceService");
+const { getCountryConnectivity } = require("../services/connectivityService");
+const { getEquipmentProfile } = require("../services/equipmentProfileService");
 const { getCountryProfile } = require("../utils/countryProfile");
 
 const router = express.Router();
 
-const CONFLICT_TYPES = ["geopolitique", "politique", "militaire"];
+const CONFLICT_TYPES = ["geopolitique", "politique", "militaire", "espace_civil"];
 const TYPE_FILTER_GROUPS = {
-  geopolitique: CONFLICT_TYPES,
-  politique: CONFLICT_TYPES,
-  militaire: CONFLICT_TYPES
+  geopolitique: ["geopolitique", "politique", "militaire"],
+  politique: ["geopolitique", "politique", "militaire"],
+  militaire: ["geopolitique", "politique", "militaire"],
+  espace_civil: ["espace_civil"]
 };
 
-const ACTION_TYPES = CONFLICT_TYPES;
+const ACTION_TYPES = ["geopolitique", "politique", "militaire"];
 
 function buildAlertQuery(queryParams) {
   // Always scope API results to geopolitical conflict alerts.
@@ -24,11 +27,23 @@ function buildAlertQuery(queryParams) {
     type: { $in: CONFLICT_TYPES }
   };
 
-  if (queryParams.type) {
-    const normalizedType = String(queryParams.type).trim().toLowerCase();
-    if (TYPE_FILTER_GROUPS[normalizedType]) {
-      query.type = { $in: TYPE_FILTER_GROUPS[normalizedType] };
+  const includeSpaceCivil =
+    String(queryParams.includeSpaceCivil || "")
+      .trim()
+      .toLowerCase() === "true";
+  if (!includeSpaceCivil) {
+    query.spaceCivil = { $ne: true };
+  }
+
+  const normalizedType = String(queryParams.type || "").trim().toLowerCase();
+  if (normalizedType && TYPE_FILTER_GROUPS[normalizedType]) {
+    const selectedTypes = TYPE_FILTER_GROUPS[normalizedType].slice();
+    if (includeSpaceCivil && normalizedType !== "espace_civil") {
+      selectedTypes.push("espace_civil");
     }
+    query.type = { $in: Array.from(new Set(selectedTypes)) };
+  } else if (includeSpaceCivil) {
+    query.type = { $in: CONFLICT_TYPES };
   }
   if (queryParams.country) {
     query["country.name"] = queryParams.country;
@@ -54,15 +69,13 @@ function buildAlertQuery(queryParams) {
 
   const mode = String(queryParams.mode || "").trim().toLowerCase();
   if (mode === "action") {
-    query.$or = [
-      { actionable: true },
-      {
-        type: { $in: ACTION_TYPES },
-        severity: { $in: ["high", "critical"] }
-      }
-    ];
-
     query.type = { $in: ACTION_TYPES };
+    query.actionable = true;
+    query.$and = (query.$and || []).concat([
+      {
+        $or: [{ aiEventType: "terrain_event" }, { aiEventType: "" }, { aiEventType: { $exists: false } }]
+      }
+    ]);
   }
 
   return query;
@@ -222,6 +235,46 @@ router.get("/country-profile", (req, res) => {
   return res.json(profile);
 });
 
+router.get("/country-connectivity", async (req, res, next) => {
+  try {
+    const code = String(req.query.code || "").trim().toUpperCase();
+    if (!code) {
+      return res.status(400).json({ error: "Parametre code requis (ISO2)." });
+    }
+
+    const connectivity = await getCountryConnectivity(code);
+    return res.json(connectivity);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/equipment-profile", async (req, res, next) => {
+  try {
+    const name = String(req.query.name || "").trim();
+    if (!name) {
+      return res.status(400).json({ error: "Parametre name requis." });
+    }
+
+    const profile = await getEquipmentProfile(name);
+    if (!profile) {
+      return res.status(404).json({ error: "Equipement introuvable" });
+    }
+    return res.json(profile);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/ai/queue-status", async (req, res, next) => {
+  try {
+    const payload = await feedService.getAiQueueStatus();
+    return res.json(payload);
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.get("/stats", async (req, res, next) => {
   try {
     const query = buildAlertQuery(req.query);
@@ -306,6 +359,10 @@ router.patch("/settings", async (req, res, next) => {
       settings.globalCoverage = req.body.globalCoverage;
     }
 
+    if (typeof req.body.includeSpaceCivil === "boolean") {
+      settings.includeSpaceCivil = req.body.includeSpaceCivil;
+    }
+
     if (typeof req.body.alertMode === "string") {
       const mode = req.body.alertMode.trim().toLowerCase();
       if (mode === "insight" || mode === "action") {
@@ -334,6 +391,7 @@ router.patch("/settings", async (req, res, next) => {
       soundEnabled: settings.soundEnabled,
       voiceEnabled: settings.voiceEnabled,
       globalCoverage: settings.globalCoverage,
+      includeSpaceCivil: settings.includeSpaceCivil,
       alertMode: settings.alertMode
     });
 

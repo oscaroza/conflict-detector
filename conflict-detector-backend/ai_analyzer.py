@@ -4,7 +4,8 @@ import os
 import re
 import threading
 import time
-from collections import OrderedDict
+import logging
+from collections import OrderedDict, deque
 from typing import Any, Dict, Optional
 
 try:
@@ -39,6 +40,15 @@ _CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _MODEL_STATE_LOCK = threading.Lock()
 _DISABLED_MODELS = set()
 _RATE_LIMITED_UNTIL_MONOTONIC = 0.0
+_AI_RATE_LIMIT_PER_MINUTE = _safe_int_env("AI_RATE_LIMIT_PER_MINUTE", default=10, minimum=1, maximum=120)
+_AI_QUEUE_MAX_ITEMS = _safe_int_env("AI_QUEUE_MAX_ITEMS", default=600, minimum=50, maximum=5000)
+_AI_QUEUE: Optional[asyncio.Queue] = None
+_AI_WORKER: Optional[asyncio.Task] = None
+_AI_QUEUE_LOCK = asyncio.Lock()
+_AI_RATE_WINDOW = deque(maxlen=5000)
+_AI_PROCESSED_WINDOW = deque(maxlen=5000)
+_AI_PENDING_COUNT = 0
+_LOGGER = logging.getLogger("ai_analyzer")
 
 _ALLOWED_CATEGORIES = {
     "missile",
@@ -65,10 +75,17 @@ _SEVERITY_MAP = {
     "low": "faible",
 }
 
+_EVENT_TYPE_MAP = {
+    "terrain_event": "terrain_event",
+    "press_return": "press_return",
+    "diplomatic": "diplomatic",
+}
+
 
 def _neutral_result(error: str = "") -> Dict[str, Any]:
     return {
         "category": "autre",
+        "event_type": "press_return",
         "subcategories": [],
         "severity": "moyenne",
         "severity_score": 0.0,
@@ -203,12 +220,14 @@ def _normalize_result(payload: Dict[str, Any]) -> Dict[str, Any]:
         category = "autre"
 
     severity = _SEVERITY_MAP.get(str(payload.get("severity") or "").strip().lower(), "moyenne")
+    event_type = _EVENT_TYPE_MAP.get(str(payload.get("event_type") or "").strip().lower(), "press_return")
     summary = " ".join(str(payload.get("summary") or "").split()).strip()
     if len(summary) > 500:
         summary = summary[:500].strip()
 
     return {
         "category": category,
+        "event_type": event_type,
         "subcategories": _as_str_list(payload.get("subcategories")),
         "severity": severity,
         "severity_score": _clamp_score(payload.get("severity_score")),
@@ -275,13 +294,17 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
     safe_source = str(source or "").strip()[:280]
 
     system_prompt = (
-        "You are a geopolitical conflict event classifier. "
+        "You are a geopolitical conflict event classifier and triage assistant. "
         "Return ONLY valid JSON with keys: "
-        "category, subcategories, severity, severity_score, countries, actors, summary, reliability_score, is_conflict_related. "
+        "category, event_type, subcategories, severity, severity_score, countries, actors, summary, reliability_score, is_conflict_related. "
         "Allowed category values: missile, drone, frappe_aerienne, artillerie, conflit_terrestre, cyberattaque, diplomatie, terrorisme, nucleaire, autre. "
+        "Allowed event_type values: terrain_event, press_return, diplomatic. "
         "Allowed severity values: critique, haute, moyenne, faible. "
         "severity_score and reliability_score must be floats between 0.0 and 1.0. "
-        "summary must be factual and max 2 short sentences."
+        "summary must be factual and max 2 short sentences. "
+        "terrain_event means direct field act (strike, explosion, troop movement, confirmed arrest/death). "
+        "press_return means article/opinion/retrospective/explainer not direct ground act. "
+        "diplomatic means declarations/meetings/communiques."
     )
     user_payload = {
         "title": safe_title,
@@ -333,8 +356,69 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
     return _set_model_in_result(_neutral_result(last_error), AI_MODEL)
 
 
+async def _rate_limited_wait() -> None:
+    now = time.monotonic()
+    while _AI_RATE_WINDOW and now - _AI_RATE_WINDOW[0] > 60:
+        _AI_RATE_WINDOW.popleft()
+
+    if len(_AI_RATE_WINDOW) < _AI_RATE_LIMIT_PER_MINUTE:
+        _AI_RATE_WINDOW.append(now)
+        return
+
+    sleep_for = max(0.05, 60 - (now - _AI_RATE_WINDOW[0]))
+    await asyncio.sleep(sleep_for)
+    now = time.monotonic()
+    while _AI_RATE_WINDOW and now - _AI_RATE_WINDOW[0] > 60:
+        _AI_RATE_WINDOW.popleft()
+    _AI_RATE_WINDOW.append(now)
+
+
+async def _ai_worker_loop() -> None:
+    global _AI_PENDING_COUNT
+    if _AI_QUEUE is None:
+        return
+
+    while True:
+        title, description, source, fut = await _AI_QUEUE.get()
+        try:
+            await _rate_limited_wait()
+            result = await asyncio.to_thread(analyze_event, title, description, source)
+            _AI_PROCESSED_WINDOW.append(time.monotonic())
+            if not fut.done():
+                fut.set_result(result)
+        except Exception as exc:
+            if not fut.done():
+                fut.set_result(_neutral_result(f"ai_worker_error:{exc}"))
+            _LOGGER.warning("ai_worker_error", exc_info=True)
+        finally:
+            _AI_PENDING_COUNT = max(0, _AI_PENDING_COUNT - 1)
+            _AI_QUEUE.task_done()
+
+
+async def _ensure_ai_worker() -> None:
+    global _AI_QUEUE, _AI_WORKER
+    async with _AI_QUEUE_LOCK:
+        if _AI_QUEUE is None:
+            _AI_QUEUE = asyncio.Queue(maxsize=_AI_QUEUE_MAX_ITEMS)
+        if _AI_WORKER is None or _AI_WORKER.done():
+            _AI_WORKER = asyncio.create_task(_ai_worker_loop())
+
+
 async def analyze_event_async(title: str, description: str, source: str) -> Dict[str, Any]:
-    return await asyncio.to_thread(analyze_event, title, description, source)
+    global _AI_PENDING_COUNT
+    await _ensure_ai_worker()
+    if _AI_QUEUE is None:
+        return _neutral_result("ai_queue_not_initialized")
+
+    if _AI_QUEUE.full():
+        _LOGGER.warning("ai_queue_saturated queue=%s", _AI_QUEUE.qsize())
+        return _neutral_result("ai_queue_full")
+
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+    _AI_PENDING_COUNT += 1
+    await _AI_QUEUE.put((title, description, source, fut))
+    return await fut
 
 
 def ai_health() -> Dict[str, Any]:
@@ -344,6 +428,14 @@ def ai_health() -> Dict[str, Any]:
         cache_size = len(_CACHE)
     with _MODEL_STATE_LOCK:
         disabled_models = sorted(_DISABLED_MODELS)
+    queue_length = _AI_QUEUE.qsize() if _AI_QUEUE is not None else 0
+    queue_capacity = _AI_QUEUE_MAX_ITEMS
+    now = time.monotonic()
+    while _AI_PROCESSED_WINDOW and now - _AI_PROCESSED_WINDOW[0] > 60:
+        _AI_PROCESSED_WINDOW.popleft()
+    saturation_pct = 0.0
+    if queue_capacity > 0:
+        saturation_pct = min(100.0, round((queue_length / queue_capacity) * 100.0, 2))
     return {
         "provider": "groq",
         "model": AI_MODEL,
@@ -354,5 +446,11 @@ def ai_health() -> Dict[str, Any]:
         "api_key_configured": key_configured,
         "dependency_available": dependency_available,
         "cache_items": cache_size,
+        "queue_length": queue_length,
+        "queue_capacity": queue_capacity,
+        "pending_count": _AI_PENDING_COUNT,
+        "processed_last_minute": len(_AI_PROCESSED_WINDOW),
+        "rate_limit_per_minute": _AI_RATE_LIMIT_PER_MINUTE,
+        "saturation_pct": saturation_pct,
         "ready": key_configured and dependency_available,
     }

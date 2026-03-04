@@ -185,6 +185,7 @@ def _apply_ai_enrichment(payload: Dict[str, Any], ai_result: Dict[str, Any]) -> 
 
     enriched["ai_analyzed"] = bool(ai.get("ai_analyzed"))
     enriched["ai_category"] = str(ai.get("category") or "autre")
+    enriched["ai_event_type"] = str(ai.get("event_type") or "press_return")
     enriched["ai_subcategories"] = list(ai.get("subcategories") or [])
     enriched["ai_severity"] = str(ai.get("severity") or "moyenne")
     enriched["ai_severity_score"] = float(ai.get("severity_score") or 0.0)

@@ -613,6 +613,21 @@ h1 {
   color: #d9e1ef;
 }
 
+.site-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.settings-help-btn {
+  min-width: 32px;
+  min-height: 28px;
+  padding: 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.82rem;
+}
+
 .site-settings-row {
   display: grid;
   gap: 0.22rem;
@@ -644,6 +659,43 @@ h1 {
 
 .site-settings-buttons .btn {
   width: 100%;
+}
+
+.ai-load-panel {
+  border: 1px solid var(--line-soft);
+  background: rgba(4, 8, 14, 0.88);
+  padding: 0.36rem;
+  display: grid;
+  gap: 0.24rem;
+}
+
+.ai-load-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.62rem;
+  color: #dbe5f6;
+}
+
+.ai-load-track {
+  height: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(0, 0, 0, 0.44);
+}
+
+.ai-load-fill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, rgba(53, 239, 159, 0.92), rgba(255, 210, 74, 0.95), rgba(255, 80, 94, 0.95));
+  transition: width 0.28s ease;
+}
+
+.ai-load-meta {
+  margin: 0;
+  color: #97a9c6;
+  font-size: 0.58rem;
+  font-family: "IBM Plex Mono", monospace;
 }
 
 .latest-strip {
@@ -1542,6 +1594,119 @@ canvas {
   font-family: "IBM Plex Mono", monospace;
 }
 
+.settings-help-modal {
+  width: min(980px, calc(100vw - 1.2rem));
+}
+
+.settings-help-content {
+  margin-top: 0.5rem;
+  display: grid;
+  gap: 0.46rem;
+}
+
+.settings-help-content h3 {
+  margin: 0;
+  color: #ffd887;
+  font-size: 0.82rem;
+  font-family: "IBM Plex Mono", monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.75px;
+}
+
+.settings-help-content ul {
+  margin: 0;
+  padding-left: 1rem;
+  color: #d9e4f8;
+  font-size: 0.78rem;
+  line-height: 1.42;
+}
+
+.equipment-modal {
+  width: min(860px, calc(100vw - 1.2rem));
+}
+
+.equipment-content {
+  margin-top: 0.45rem;
+  display: grid;
+  gap: 0.44rem;
+}
+
+.equipment-profile-head {
+  display: grid;
+  grid-template-columns: minmax(180px, 230px) 1fr;
+  gap: 0.55rem;
+}
+
+.equipment-profile-image {
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border: 1px solid var(--line-soft);
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.equipment-profile-image.placeholder {
+  min-height: 160px;
+  display: grid;
+  place-items: center;
+  font-family: "IBM Plex Mono", monospace;
+  color: #96a7c2;
+}
+
+.equipment-profile-meta p {
+  margin: 0.12rem 0;
+  font-size: 0.78rem;
+}
+
+.equipment-profile-summary {
+  border: 1px solid var(--line-soft);
+  background: rgba(5, 9, 14, 0.82);
+  padding: 0.42rem;
+  font-size: 0.78rem;
+}
+
+.equipment-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.34rem;
+}
+
+.equipment-spec-item {
+  border: 1px solid var(--line-soft);
+  background: rgba(7, 11, 18, 0.85);
+  padding: 0.34rem;
+}
+
+.equipment-spec-item strong {
+  display: block;
+  font-size: 0.58rem;
+  letter-spacing: 0.6px;
+  color: #97acc8;
+  font-family: "IBM Plex Mono", monospace;
+  text-transform: uppercase;
+  margin-bottom: 0.16rem;
+}
+
+.equipment-link {
+  color: #7ec6ff;
+  text-decoration: underline;
+}
+
+.equipment-link-btn {
+  border: 1px solid rgba(126, 198, 255, 0.48);
+  background: rgba(15, 26, 38, 0.82);
+  color: #9ad8ff;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.68rem;
+  padding: 0.04rem 0.26rem;
+  cursor: pointer;
+}
+
+.equipment-link-btn:hover {
+  border-color: rgba(255, 210, 74, 0.62);
+  color: #ffe7a7;
+}
+
 .toast-host {
   position: fixed;
   right: 0.8rem;
@@ -1684,6 +1849,56 @@ canvas {
 
 .country-event-item a:hover {
   text-decoration: underline;
+}
+
+.country-connectivity {
+  margin-top: 0.42rem;
+  padding: 0.38rem 0.44rem;
+  border: 1px solid var(--line-soft);
+  background: rgba(6, 10, 16, 0.8);
+}
+
+.country-connectivity-bar {
+  width: 100%;
+  height: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  margin-bottom: 0.3rem;
+}
+
+.country-connectivity-bar-fill {
+  height: 100%;
+  width: 0;
+  transition: width 0.25s ease-out;
+  background: #7f8da0;
+}
+
+.connectivity-ok {
+  color: #6af0ad;
+}
+
+.connectivity-warning {
+  color: #ffd779;
+}
+
+.connectivity-critical {
+  color: #ff7b88;
+}
+
+.connectivity-na {
+  color: #91a2b8;
+}
+
+.country-connectivity-bar-fill.connectivity-ok {
+  background: linear-gradient(90deg, rgba(72, 214, 146, 0.95), rgba(53, 239, 159, 0.78));
+}
+
+.country-connectivity-bar-fill.connectivity-warning {
+  background: linear-gradient(90deg, rgba(255, 192, 73, 0.95), rgba(255, 211, 82, 0.78));
+}
+
+.country-connectivity-bar-fill.connectivity-critical {
+  background: linear-gradient(90deg, rgba(255, 92, 103, 0.95), rgba(255, 71, 86, 0.8));
 }
 
 .country-marker {
@@ -1980,6 +2195,7 @@ canvas {
 }
 
 .threat-marker {
+  position: relative;
   width: var(--threat-marker-size, 24px);
   height: var(--threat-marker-size, 24px);
   border-radius: 50%;
@@ -1994,6 +2210,25 @@ canvas {
   font-size: var(--threat-marker-glyph-size, 12px);
   line-height: 1;
   filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.55));
+}
+
+.threat-marker__source-badge {
+  position: absolute;
+  left: 50%;
+  bottom: calc(-11px - min(4px, var(--threat-marker-size, 24px) * 0.08));
+  transform: translateX(-50%);
+  min-width: 24px;
+  height: 14px;
+  padding: 0 0.25rem;
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  background: rgba(5, 9, 14, 0.96);
+  color: #edf5ff;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.54rem;
+  line-height: 12px;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.58);
 }
 
 .threat-marker.is-unread {
@@ -2063,6 +2298,14 @@ canvas {
 .threat-marker.signal-nuclear .threat-marker__glyph,
 .threat-marker.signal-nuclear-plant .threat-marker__glyph {
   color: #8eff52;
+}
+
+.threat-marker.signal-nuclear-armament .threat-marker__glyph {
+  color: #ffd26f;
+}
+
+.threat-marker.signal-nuclear-attack .threat-marker__glyph {
+  color: #ff6d6d;
 }
 
 .threat-marker.signal-chemical .threat-marker__glyph {

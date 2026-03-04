@@ -157,7 +157,8 @@ function buildPatterns() {
           code,
           region: country.region || "Global",
           lat: Array.isArray(country.latlng) ? country.latlng[0] : 20,
-          lng: Array.isArray(country.latlng) ? country.latlng[1] : 0
+          lng: Array.isArray(country.latlng) ? country.latlng[1] : 0,
+          area: Number.isFinite(Number(country?.area)) ? Number(country.area) : 0
         }
       });
     }
@@ -180,7 +181,8 @@ function extractCountry(text) {
       code: "XX",
       region: "Global",
       lat: 20,
-      lng: 0
+      lng: 0,
+      area: 0
     };
   }
 
@@ -238,8 +240,37 @@ function extractCountry(text) {
     code: "XX",
     region: "Global",
     lat: 20,
-    lng: 0
+    lng: 0,
+    area: 0
   };
 }
 
-module.exports = { extractCountry };
+function extractCountryMentions(text, limit = 6) {
+  const normalized = normalizeText(text);
+  if (!normalized) {
+    return [];
+  }
+
+  const mentions = [];
+  const seenCodes = new Set();
+
+  for (const pattern of COUNTRY_PATTERNS) {
+    if (!pattern.regex.test(normalized)) {
+      continue;
+    }
+    const code = String(pattern?.country?.code || "").toUpperCase();
+    if (!code || code === "XX" || seenCodes.has(code)) {
+      continue;
+    }
+
+    seenCodes.add(code);
+    mentions.push(pattern.country);
+    if (mentions.length >= Math.max(2, Number(limit) || 6)) {
+      break;
+    }
+  }
+
+  return mentions;
+}
+
+module.exports = { extractCountry, extractCountryMentions };

@@ -146,6 +146,7 @@ async def _migrate_alerts_schema(conn: aiosqlite.Connection) -> None:
     await _ensure_column(conn, existing_columns, "source_url", "TEXT NOT NULL DEFAULT ''")
     await _ensure_column(conn, existing_columns, "ai_analyzed", "INTEGER NOT NULL DEFAULT 0")
     await _ensure_column(conn, existing_columns, "ai_category", "TEXT NOT NULL DEFAULT 'autre'")
+    await _ensure_column(conn, existing_columns, "ai_event_type", "TEXT NOT NULL DEFAULT 'press_return'")
     await _ensure_column(conn, existing_columns, "ai_subcategories", "TEXT NOT NULL DEFAULT '[]'")
     await _ensure_column(conn, existing_columns, "ai_severity", "TEXT NOT NULL DEFAULT 'moyenne'")
     await _ensure_column(conn, existing_columns, "ai_severity_score", "REAL NOT NULL DEFAULT 0.0")
@@ -273,9 +274,9 @@ async def insert_alert(alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                     timestamp, title, type, country, region, lat, lng,
                     severity, confidence, source_channel, original_text, score,
                     source_type, source_ref, source_url,
-                    ai_analyzed, ai_category, ai_subcategories, ai_severity, ai_severity_score,
+                    ai_analyzed, ai_category, ai_event_type, ai_subcategories, ai_severity, ai_severity_score,
                     ai_countries, ai_actors, ai_summary, ai_reliability_score, ai_is_conflict_related
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_ts.isoformat(),
@@ -295,6 +296,7 @@ async def insert_alert(alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                     str(alert.get("source_url") or "")[:1200],
                     1 if bool(alert.get("ai_analyzed")) else 0,
                     str(alert.get("ai_category") or "autre")[:80],
+                    str(alert.get("ai_event_type") or "press_return")[:40],
                     _json_list_dump(alert.get("ai_subcategories")),
                     str(alert.get("ai_severity") or "moyenne")[:32],
                     max(0.0, min(1.0, _safe_float(alert.get("ai_severity_score"), 0.0))),
