@@ -40,14 +40,15 @@ _CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _MODEL_STATE_LOCK = threading.Lock()
 _DISABLED_MODELS = set()
 _RATE_LIMITED_UNTIL_MONOTONIC = 0.0
-_AI_RATE_LIMIT_PER_MINUTE = _safe_int_env("AI_RATE_LIMIT_PER_MINUTE", default=10, minimum=1, maximum=120)
+_AI_RATE_LIMIT_PER_MINUTE = _safe_int_env("AI_RATE_LIMIT_PER_MINUTE", default=5, minimum=1, maximum=120)
 _AI_QUEUE_MAX_ITEMS = _safe_int_env("AI_QUEUE_MAX_ITEMS", default=600, minimum=50, maximum=5000)
-_AI_QUEUE: Optional[asyncio.Queue] = None
+_AI_QUEUE: Optional[asyncio.PriorityQueue] = None
 _AI_WORKER: Optional[asyncio.Task] = None
 _AI_QUEUE_LOCK = asyncio.Lock()
 _AI_RATE_WINDOW = deque(maxlen=5000)
 _AI_PROCESSED_WINDOW = deque(maxlen=5000)
 _AI_PENDING_COUNT = 0
+_AI_ENQUEUE_SEQUENCE = 0
 _LOGGER = logging.getLogger("ai_analyzer")
 
 _ALLOWED_CATEGORIES = {
@@ -125,6 +126,23 @@ def _as_str_list(value: Any) -> list:
     if not raw:
         return []
     return [item.strip() for item in re.split(r"[,\n;]+", raw) if item.strip()]
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed != parsed:
+        return default
+    return parsed
+
+
+def _priority_from_score(priority_score: Any) -> float:
+    # PriorityQueue pops the smallest value first. Negative score means higher score first.
+    score = _safe_float(priority_score, default=0.0)
+    score = max(-9999.0, min(9999.0, score))
+    return -score
 
 
 def _extract_json_object(raw: str) -> Dict[str, Any]:
@@ -381,20 +399,17 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
 
 
 async def _rate_limited_wait() -> None:
-    now = time.monotonic()
-    while _AI_RATE_WINDOW and now - _AI_RATE_WINDOW[0] > 60:
-        _AI_RATE_WINDOW.popleft()
+    while True:
+        now = time.monotonic()
+        while _AI_RATE_WINDOW and now - _AI_RATE_WINDOW[0] > 60:
+            _AI_RATE_WINDOW.popleft()
 
-    if len(_AI_RATE_WINDOW) < _AI_RATE_LIMIT_PER_MINUTE:
-        _AI_RATE_WINDOW.append(now)
-        return
+        if len(_AI_RATE_WINDOW) < _AI_RATE_LIMIT_PER_MINUTE:
+            _AI_RATE_WINDOW.append(now)
+            return
 
-    sleep_for = max(0.05, 60 - (now - _AI_RATE_WINDOW[0]))
-    await asyncio.sleep(sleep_for)
-    now = time.monotonic()
-    while _AI_RATE_WINDOW and now - _AI_RATE_WINDOW[0] > 60:
-        _AI_RATE_WINDOW.popleft()
-    _AI_RATE_WINDOW.append(now)
+        sleep_for = max(0.05, 60 - (now - _AI_RATE_WINDOW[0]))
+        await asyncio.sleep(sleep_for)
 
 
 async def _ai_worker_loop() -> None:
@@ -403,7 +418,7 @@ async def _ai_worker_loop() -> None:
         return
 
     while True:
-        title, description, source, fut = await _AI_QUEUE.get()
+        _priority, _sequence, title, description, source, fut = await _AI_QUEUE.get()
         try:
             await _rate_limited_wait()
             result = await asyncio.to_thread(analyze_event, title, description, source)
@@ -423,13 +438,18 @@ async def _ensure_ai_worker() -> None:
     global _AI_QUEUE, _AI_WORKER
     async with _AI_QUEUE_LOCK:
         if _AI_QUEUE is None:
-            _AI_QUEUE = asyncio.Queue(maxsize=_AI_QUEUE_MAX_ITEMS)
+            _AI_QUEUE = asyncio.PriorityQueue(maxsize=_AI_QUEUE_MAX_ITEMS)
         if _AI_WORKER is None or _AI_WORKER.done():
             _AI_WORKER = asyncio.create_task(_ai_worker_loop())
 
 
-async def analyze_event_async(title: str, description: str, source: str) -> Dict[str, Any]:
-    global _AI_PENDING_COUNT
+async def analyze_event_async(
+    title: str,
+    description: str,
+    source: str,
+    priority_score: float = 0.0,
+) -> Dict[str, Any]:
+    global _AI_PENDING_COUNT, _AI_ENQUEUE_SEQUENCE
     await _ensure_ai_worker()
     if _AI_QUEUE is None:
         return _neutral_result("ai_queue_not_initialized")
@@ -440,8 +460,11 @@ async def analyze_event_async(title: str, description: str, source: str) -> Dict
 
     loop = asyncio.get_running_loop()
     fut: asyncio.Future = loop.create_future()
+    enqueue_sequence = _AI_ENQUEUE_SEQUENCE
+    _AI_ENQUEUE_SEQUENCE += 1
+    queue_priority = _priority_from_score(priority_score)
     _AI_PENDING_COUNT += 1
-    await _AI_QUEUE.put((title, description, source, fut))
+    await _AI_QUEUE.put((queue_priority, enqueue_sequence, title, description, source, fut))
     return await fut
 
 
@@ -472,6 +495,7 @@ def ai_health() -> Dict[str, Any]:
         "cache_items": cache_size,
         "queue_length": queue_length,
         "queue_capacity": queue_capacity,
+        "queue_mode": "priority_by_score_desc",
         "pending_count": _AI_PENDING_COUNT,
         "processed_last_minute": len(_AI_PROCESSED_WINDOW),
         "rate_limit_per_minute": _AI_RATE_LIMIT_PER_MINUTE,

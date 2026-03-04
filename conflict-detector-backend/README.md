@@ -45,6 +45,7 @@ TELEGRAM_API_ID=123456
 TELEGRAM_API_HASH=abcdef123456...
 TELEGRAM_SESSION_STRING=
 TELEGRAM_BACKFILL_LIMIT=180
+TELEGRAM_BACKFILL_STARTUP_MAX=30
 TELEGRAM_ENABLE_POLLING=1
 TELEGRAM_POLL_SECONDS=30
 TELEGRAM_POLL_LIMIT=6
@@ -64,6 +65,8 @@ GROQ_MODEL_FALLBACKS=llama-3.1-8b-instant
 GROQ_TIMEOUT_SECONDS=16
 GROQ_RATE_LIMIT_COOLDOWN_SECONDS=25
 AI_CACHE_MAX_ITEMS=2000
+AI_RATE_LIMIT_PER_MINUTE=5
+AI_QUEUE_MAX_ITEMS=600
 ```
 
 ## 2) Premier lancement (auth Telegram)
@@ -174,6 +177,7 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
    - `TELEGRAM_API_HASH`
    - `TELEGRAM_SESSION_STRING` (obligatoire en pratique sur Render)
    - `TELEGRAM_BACKFILL_LIMIT` (optionnel, ex. `180`)
+   - `TELEGRAM_BACKFILL_STARTUP_MAX` (optionnel, 20-30 recommande, defaut `30`)
    - `TELEGRAM_ENABLE_POLLING` (`1` par defaut)
    - `TELEGRAM_POLL_SECONDS` (optionnel, ex. `30`)
    - `TELEGRAM_POLL_LIMIT` (optionnel, ex. `6`)
@@ -193,6 +197,8 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
    - `GROQ_TIMEOUT_SECONDS` (optionnel, ex. `16`)
    - `GROQ_RATE_LIMIT_COOLDOWN_SECONDS` (optionnel, ex. `25`)
    - `AI_CACHE_MAX_ITEMS` (optionnel, ex. `2000`)
+   - `AI_RATE_LIMIT_PER_MINUTE` (optionnel, defaut `5`)
+   - `AI_QUEUE_MAX_ITEMS` (optionnel, defaut `600`)
 
 ## 5) Comportement du pipeline
 
@@ -204,6 +210,9 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 - Polling complementaire:
   - scan periodique des derniers messages par canal (configurable)
   - utile si certains updates temps reel Telegram ne remontent pas
+- Backfill Telegram au demarrage:
+  - limite par canal `TELEGRAM_BACKFILL_LIMIT` (defaut `180`)
+  - plafond global demarrage `TELEGRAM_BACKFILL_STARTUP_MAX` (defaut `30`) pour eviter les pics
 - Scoring mots-clés:
   - `score >= ALERT_SCORE_THRESHOLD` (defaut `8`) => alerte acceptee
   - sinon rejet
@@ -213,8 +222,10 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 - Stockage:
   - conservation des 500 dernières alertes
 - Enrichissement IA (si `GROQ_API_KEY` configuré):
+  - file d'attente prioritaire (score eleve traite en premier)
+  - debit max `AI_RATE_LIMIT_PER_MINUTE` (defaut `5` appels/min)
   - catégorie, sous-catégories, sévérité affinée, score de sévérité, acteurs, pays, résumé factuel, fiabilité, flag conflit
-  - fallback neutre si quota/timeouts/erreurs (`ai_analyzed=false`)
+  - fallback keywords intelligent si quota/timeouts/erreurs (`ai_analyzed=false`)
   - cache par source (`source_ref`) + cache mémoire pour éviter les ré-analyses
 - Logs structurés:
   - `alert_accepted`, `alert_rejected`, `alert_skipped_duplicate`

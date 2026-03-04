@@ -187,12 +187,247 @@ def _map_ai_severity_to_pipeline(value: str, fallback: str) -> str:
     }.get(normalized, fallback)
 
 
-async def _analyze_with_cache(cache_key: str, title: str, description: str, source: str) -> Dict[str, Any]:
+_FALLBACK_CATEGORY_TERMS: Dict[str, List[str]] = {
+    "nucleaire": [
+        "nuclear",
+        "nuke",
+        "radioactive",
+        "radiation",
+        "warhead",
+        "icbm",
+    ],
+    "missile": [
+        "missile",
+        "ballistic",
+        "rocket",
+        "cruise missile",
+        "launcher",
+        "intercepted",
+    ],
+    "drone": [
+        "drone",
+        "uav",
+        "kamikaze drone",
+        "loitering munition",
+        "shahed",
+    ],
+    "frappe_aerienne": [
+        "airstrike",
+        "air strike",
+        "bombing",
+        "fighter jet",
+        "jet strike",
+        "strike",
+    ],
+    "artillerie": [
+        "artillery",
+        "shelling",
+        "mortar",
+        "howitzer",
+        "barrage",
+    ],
+    "conflit_terrestre": [
+        "troops",
+        "infantry",
+        "ground assault",
+        "tank",
+        "armored",
+        "battle",
+        "clash",
+        "frontline",
+        "incursion",
+    ],
+    "cyberattaque": [
+        "cyberattack",
+        "cyber attack",
+        "ddos",
+        "ransomware",
+        "hacked",
+        "malware",
+    ],
+    "terrorisme": [
+        "terror",
+        "terrorist",
+        "suicide bombing",
+        "hostage",
+        "isil",
+        "isis",
+    ],
+    "diplomatie": [
+        "condemn",
+        "protest",
+        "sanction",
+        "summit",
+        "meeting",
+        "ceasefire talks",
+        "communique",
+        "statement",
+    ],
+}
+
+_FALLBACK_TERRAIN_TERMS = [
+    "strike",
+    "attacked",
+    "bombed",
+    "launched",
+    "explosion",
+    "detonation",
+    "clash",
+    "troops",
+    "deployed",
+]
+_FALLBACK_DIPLO_TERMS = [
+    "condemn",
+    "condemns",
+    "protest",
+    "protests",
+    "statement",
+    "announced",
+    "announces",
+    "meeting",
+    "summit",
+    "talks",
+    "sanctions",
+]
+_FALLBACK_PRESS_TERMS = [
+    "analysis",
+    "opinion",
+    "explainer",
+    "throwback",
+    "history",
+    "retrospective",
+    "anniversary",
+    "years ago",
+]
+
+
+def _normalize_lookup_text(value: str) -> str:
+    return f" {re.sub(r'[^a-z0-9]+', ' ', str(value or '').lower()).strip()} "
+
+
+def _find_matched_terms(normalized_text: str, terms: List[str]) -> List[str]:
+    matches: List[str] = []
+    seen = set()
+    for term in terms:
+        normalized_term = re.sub(r"[^a-z0-9]+", " ", str(term or "").lower()).strip()
+        if not normalized_term or normalized_term in seen:
+            continue
+        if f" {normalized_term} " in normalized_text:
+            matches.append(normalized_term)
+            seen.add(normalized_term)
+    return matches
+
+
+def _fallback_ai_severity(base_severity: str) -> Dict[str, Any]:
+    severity_map = {
+        "critique": ("critique", 0.92),
+        "haute": ("haute", 0.76),
+        "moyen": ("moyenne", 0.54),
+        "faible": ("faible", 0.30),
+    }
+    normalized = str(base_severity or "").strip().lower()
+    severity, score = severity_map.get(normalized, ("moyenne", 0.50))
+    return {"severity": severity, "severity_score": score}
+
+
+def _build_keyword_fallback_ai(payload: Dict[str, Any]) -> Dict[str, Any]:
+    source_text = " ".join(
+        [
+            str(payload.get("title") or ""),
+            str(payload.get("summary") or ""),
+            str(payload.get("original_text") or ""),
+        ]
+    ).strip()
+    normalized_text = _normalize_lookup_text(source_text)
+
+    category_scores: Dict[str, int] = {}
+    category_matches: Dict[str, List[str]] = {}
+    for category, terms in _FALLBACK_CATEGORY_TERMS.items():
+        matched = _find_matched_terms(normalized_text, terms)
+        if matched:
+            category_scores[category] = len(matched)
+            category_matches[category] = matched
+
+    chosen_category = "autre"
+    if category_scores:
+        chosen_category = max(
+            category_scores.items(),
+            key=lambda item: (item[1], item[0] != "diplomatie"),
+        )[0]
+    elif _find_matched_terms(normalized_text, _FALLBACK_DIPLO_TERMS):
+        chosen_category = "diplomatie"
+
+    terrain_hits = _find_matched_terms(normalized_text, _FALLBACK_TERRAIN_TERMS)
+    diplomatic_hits = _find_matched_terms(normalized_text, _FALLBACK_DIPLO_TERMS)
+    press_hits = _find_matched_terms(normalized_text, _FALLBACK_PRESS_TERMS)
+
+    if terrain_hits:
+        event_type = "terrain_event"
+    elif diplomatic_hits:
+        event_type = "diplomatic"
+    elif press_hits:
+        event_type = "press_return"
+    elif chosen_category == "diplomatie":
+        event_type = "diplomatic"
+    elif chosen_category == "autre":
+        event_type = "press_return"
+    else:
+        event_type = "terrain_event"
+
+    fallback_severity = _fallback_ai_severity(str(payload.get("severity") or "moyen"))
+    confidence_raw = int(payload.get("confidence") or 0)
+    reliability_score = max(0.0, min(1.0, round(confidence_raw / 100.0, 4)))
+
+    country = str(payload.get("country") or "").strip()
+    region = str(payload.get("region") or "").strip()
+    location_of_event = region if region and region.lower() != "global" else country
+    if not location_of_event or location_of_event.lower() == "inconnu":
+        location_of_event = ""
+
+    summary_seed = str(payload.get("summary") or payload.get("title") or "").strip()
+    if len(summary_seed) > 260:
+        summary_seed = f"{summary_seed[:257].rstrip()}..."
+
+    subcategories = category_matches.get(chosen_category, [])[:4]
+    if not subcategories:
+        subcategories = (terrain_hits or diplomatic_hits or press_hits)[:4]
+
+    return {
+        "category": chosen_category,
+        "event_type": event_type,
+        "actor": "",
+        "actor_action": "",
+        "target": "",
+        "location_of_event": location_of_event,
+        "context": "",
+        "subcategories": subcategories,
+        "severity": fallback_severity["severity"],
+        "severity_score": fallback_severity["severity_score"],
+        "countries": [country] if country and country.lower() != "inconnu" else [],
+        "actors": [],
+        "summary": summary_seed,
+        "reliability_score": reliability_score,
+        "is_conflict_related": chosen_category != "autre" and event_type != "press_return",
+    }
+
+
+async def _analyze_with_cache(
+    cache_key: str,
+    title: str,
+    description: str,
+    source: str,
+    priority_score: float = 0.0,
+) -> Dict[str, Any]:
     cached = get_cached_analysis(cache_key)
     if cached is not None:
         return cached
 
-    analyzed = await analyze_event_async(title=title, description=description, source=source)
+    analyzed = await analyze_event_async(
+        title=title,
+        description=description,
+        source=source,
+        priority_score=priority_score,
+    )
     set_cached_analysis(cache_key, analyzed)
     return analyzed
 
@@ -226,6 +461,23 @@ def _apply_ai_enrichment(payload: Dict[str, Any], ai_result: Dict[str, Any]) -> 
         confidence = int(enriched.get("confidence") or 0)
         reliability = int(round(max(0.0, min(1.0, enriched["ai_reliability_score"])) * 100))
         enriched["confidence"] = max(0, min(100, int(round(confidence * 0.65 + reliability * 0.35))))
+    else:
+        fallback = _build_keyword_fallback_ai(enriched)
+        enriched["ai_category"] = fallback["category"]
+        enriched["ai_event_type"] = fallback["event_type"]
+        enriched["event_actor"] = fallback["actor"]
+        enriched["event_actor_action"] = fallback["actor_action"]
+        enriched["event_target"] = fallback["target"]
+        enriched["event_location"] = fallback["location_of_event"]
+        enriched["event_context"] = fallback["context"]
+        enriched["ai_subcategories"] = fallback["subcategories"]
+        enriched["ai_severity"] = fallback["severity"]
+        enriched["ai_severity_score"] = float(fallback["severity_score"])
+        enriched["ai_countries"] = fallback["countries"]
+        enriched["ai_actors"] = fallback["actors"]
+        enriched["ai_summary"] = fallback["summary"]
+        enriched["ai_reliability_score"] = float(fallback["reliability_score"])
+        enriched["ai_is_conflict_related"] = bool(fallback["is_conflict_related"])
 
     return enriched
 
@@ -259,6 +511,7 @@ async def process_telegram_message(message: Dict[str, Any]) -> None:
             title=title,
             description=text,
             source=source_channel,
+            priority_score=float(analysis.score),
         )
         alert_payload = {
             "timestamp": message.get("timestamp"),
@@ -343,6 +596,7 @@ async def process_rss_item(item: Dict[str, Any]) -> None:
             title=title or _build_title(combined_text),
             description=description or combined_text,
             source=source_name,
+            priority_score=float(analysis.score),
         )
 
         alert_payload = {
@@ -526,6 +780,7 @@ async def startup() -> None:
     poll_seconds = 0
     poll_limit = 0
     backfill_limit = 0
+    backfill_startup_max = 0
 
     if os.getenv("TELEGRAM_API_ID") and os.getenv("TELEGRAM_API_HASH"):
         telegram_enabled = True
@@ -543,6 +798,7 @@ async def startup() -> None:
             poll_seconds = app.state.scraper._poll_seconds
             poll_limit = app.state.scraper._poll_limit
             backfill_limit = app.state.scraper._backfill_limit
+            backfill_startup_max = app.state.scraper._backfill_startup_max
     else:
         telegram_status = "disabled_missing_credentials"
 
@@ -563,6 +819,7 @@ async def startup() -> None:
         duplicate_window_seconds=DUPLICATE_WINDOW_SECONDS,
         similarity_threshold=SIMILARITY_THRESHOLD,
         backfill_limit=backfill_limit,
+        backfill_startup_max=backfill_startup_max,
         polling_enabled=polling_enabled,
         poll_seconds=poll_seconds,
         poll_limit=poll_limit,

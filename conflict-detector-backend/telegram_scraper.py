@@ -31,6 +31,15 @@ DEFAULT_CHANNELS: List[str] = [
 ]
 
 
+def _safe_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = str(os.getenv(name, str(default))).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
 def _normalize_channel(value: str) -> Optional[str]:
     raw = str(value or "").strip()
     if not raw:
@@ -106,10 +115,27 @@ class TelegramScraper:
         self.session_string = os.getenv("TELEGRAM_SESSION_STRING", "").strip()
         self._stop = asyncio.Event()
         self.client: Optional[TelegramClient] = None
-        self._unauthorized_sleep = int(os.getenv("TELEGRAM_UNAUTHORIZED_RETRY_SECONDS", "300"))
-        self._backfill_limit = max(0, int(os.getenv("TELEGRAM_BACKFILL_LIMIT", "180")))
-        self._poll_seconds = max(15, int(os.getenv("TELEGRAM_POLL_SECONDS", "30")))
-        self._poll_limit = max(1, min(30, int(os.getenv("TELEGRAM_POLL_LIMIT", "6"))))
+        self._unauthorized_sleep = _safe_int_env(
+            "TELEGRAM_UNAUTHORIZED_RETRY_SECONDS",
+            default=300,
+            minimum=30,
+            maximum=3600,
+        )
+        self._backfill_limit = _safe_int_env(
+            "TELEGRAM_BACKFILL_LIMIT",
+            default=180,
+            minimum=0,
+            maximum=500,
+        )
+        # Hard cap at startup to avoid flooding IA with hundreds of alerts.
+        self._backfill_startup_max = _safe_int_env(
+            "TELEGRAM_BACKFILL_STARTUP_MAX",
+            default=30,
+            minimum=0,
+            maximum=30,
+        )
+        self._poll_seconds = _safe_int_env("TELEGRAM_POLL_SECONDS", default=30, minimum=15, maximum=600)
+        self._poll_limit = _safe_int_env("TELEGRAM_POLL_LIMIT", default=6, minimum=1, maximum=30)
         self._enable_polling = str(os.getenv("TELEGRAM_ENABLE_POLLING", "1")).strip().lower() not in {
             "0",
             "false",
@@ -368,15 +394,22 @@ class TelegramScraper:
                     pass
 
     async def _run_backfill(self, channels: Optional[List[Dict[str, Any]]] = None) -> None:
-        if self.client is None or self._backfill_limit <= 0:
+        if self.client is None or self._backfill_limit <= 0 or self._backfill_startup_max <= 0:
             return
         if channels is None:
             channels = self._watched_channels
 
-        logger.info("telegram_backfill_started per_channel_limit=%s", self._backfill_limit)
+        logger.info(
+            "telegram_backfill_started per_channel_limit=%s startup_total_cap=%s",
+            self._backfill_limit,
+            self._backfill_startup_max,
+        )
         total_messages = 0
 
         for channel_info in channels:
+            remaining_capacity = self._backfill_startup_max - total_messages
+            if remaining_capacity <= 0:
+                break
             accepted = 0
             skipped_empty = 0
 
@@ -387,7 +420,11 @@ class TelegramScraper:
                 source_key = _normalize_channel(source_channel) or source_channel
                 max_seen = int(self._last_seen_ids.get(source_key, 0))
 
-                async for msg in self.client.iter_messages(entity, limit=self._backfill_limit):
+                per_channel_limit = max(0, min(self._backfill_limit, remaining_capacity))
+                if per_channel_limit <= 0:
+                    continue
+
+                async for msg in self.client.iter_messages(entity, limit=per_channel_limit):
                     text = (msg.raw_text or "").strip()
                     if not text:
                         skipped_empty += 1
@@ -408,6 +445,8 @@ class TelegramScraper:
                     accepted += 1
                     total_messages += 1
                     max_seen = max(max_seen, int(msg.id or 0))
+                    if total_messages >= self._backfill_startup_max:
+                        break
 
                 if max_seen > 0:
                     self._last_seen_ids[source_key] = max_seen
@@ -436,7 +475,11 @@ class TelegramScraper:
                     exc,
                 )
 
-        logger.info("telegram_backfill_complete processed=%s", total_messages)
+        logger.info(
+            "telegram_backfill_complete processed=%s reached_startup_cap=%s",
+            total_messages,
+            total_messages >= self._backfill_startup_max,
+        )
 
     async def _run_poll_loop(self) -> None:
         if self.client is None or not self._enable_polling:
