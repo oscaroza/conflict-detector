@@ -137,7 +137,7 @@ const BROWSER_NOTIF_STORAGE_KEY = "cd_browser_notifications_enabled";
 const SMART_DIGEST_STORAGE_KEY = "cd_smart_digest_enabled";
 const INTEL_OVERLAY_HIDDEN_STORAGE_KEY = "cd_intel_overlay_hidden";
 const MOBILE_TAB_STORAGE_KEY = "cd_mobile_tab";
-const MAP_SIGNAL_TTL_MINUTES = 30;
+const MAP_SIGNAL_TTL_MINUTES = 60;
 const MAP_SIGNAL_TTL_MS = MAP_SIGNAL_TTL_MINUTES * 60 * 1000;
 const TRACKED_ASSET_DEFINITIONS = [
   {
@@ -3560,7 +3560,7 @@ function renderMapMarkers() {
   const trackedAssets = buildTrackedAssetTracks(activeMapSignals);
   recomputeCountryStatusLevels();
   updateCountryHeadlineCounters();
-  const countrySummaries = buildCountrySummaries(visibleAlerts);
+  const countrySummaries = buildCountrySummaries(activeMapSignals);
 
   if (getMapMode() === "3d") {
     if (state.markersLayer) {
@@ -3575,7 +3575,7 @@ function renderMapMarkers() {
     if (!state.globe) {
       initializeGlobe();
     }
-    renderGlobeMarkers(activeMapSignals, visibleAlerts, trackedAssets);
+    renderGlobeMarkers(activeMapSignals, activeMapSignals, trackedAssets);
     scheduleMapSignalExpiryRefresh(activeMapSignals);
     return;
   }
