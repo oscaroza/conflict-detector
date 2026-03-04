@@ -1550,13 +1550,35 @@ function getAlertEventTimestamp(alert) {
   return getAlertPublicationTimestamp(alert);
 }
 
+function getAlertCreatedTimestamp(alert) {
+  const createdTs = new Date(alert?.createdAt || 0).getTime();
+  if (Number.isFinite(createdTs) && createdTs > 0) {
+    return createdTs;
+  }
+  return getAlertPublicationTimestamp(alert);
+}
+
+function getAlertMapOriginTimestamp(alert) {
+  const groupedOriginTs = Number(alert?._eventOriginCreatedTs || 0);
+  if (Number.isFinite(groupedOriginTs) && groupedOriginTs > 0) {
+    return groupedOriginTs;
+  }
+
+  const createdTs = getAlertCreatedTimestamp(alert);
+  if (Number.isFinite(createdTs) && createdTs > 0) {
+    return createdTs;
+  }
+
+  return getAlertEventTimestamp(alert);
+}
+
 function isActiveMapSignal(alert, nowMs = Date.now()) {
-  const eventTs = getAlertEventTimestamp(alert);
-  if (!Number.isFinite(eventTs) || eventTs <= 0) {
+  const signalOriginTs = getAlertMapOriginTimestamp(alert);
+  if (!Number.isFinite(signalOriginTs) || signalOriginTs <= 0) {
     return false;
   }
 
-  const ageMs = nowMs - eventTs;
+  const ageMs = nowMs - signalOriginTs;
   if (!Number.isFinite(ageMs)) {
     return false;
   }
@@ -1607,12 +1629,12 @@ function scheduleMapSignalExpiryRefresh(alerts = []) {
   let nearestExpiryDelayMs = null;
 
   alerts.forEach((alert) => {
-    const eventTs = getAlertEventTimestamp(alert);
-    if (!Number.isFinite(eventTs) || eventTs <= 0) {
+    const signalOriginTs = getAlertMapOriginTimestamp(alert);
+    if (!Number.isFinite(signalOriginTs) || signalOriginTs <= 0) {
       return;
     }
 
-    const remainingMs = eventTs + MAP_SIGNAL_TTL_MS - now;
+    const remainingMs = signalOriginTs + MAP_SIGNAL_TTL_MS - now;
     if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
       return;
     }
@@ -3683,41 +3705,106 @@ function hasCityName(alert) {
   return Boolean(String(alert?.city?.name || "").trim());
 }
 
+function getAlertLocationCoordinates(alert) {
+  const hasLocationCoords =
+    alert?.location &&
+    alert.location.coordinates &&
+    Number.isFinite(alert.location.coordinates[0]) &&
+    Number.isFinite(alert.location.coordinates[1]);
+
+  if (!hasLocationCoords) {
+    return null;
+  }
+
+  const lat = Number(alert.location.coordinates[1]);
+  const lng = Number(alert.location.coordinates[0]);
+  if (!isValidLatLng(lat, lng)) {
+    return null;
+  }
+
+  return [lat, lng];
+}
+
+function haversineDistanceKm(latA, lngA, latB, lngB) {
+  if (![latA, lngA, latB, lngB].every((value) => Number.isFinite(value))) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const earthRadiusKm = 6371;
+  const dLat = ((latB - latA) * Math.PI) / 180;
+  const dLng = ((lngB - lngA) * Math.PI) / 180;
+  const p1 = (latA * Math.PI) / 180;
+  const p2 = (latB * Math.PI) / 180;
+  const aVal = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.sin(dLng / 2) * Math.sin(dLng / 2) * Math.cos(p1) * Math.cos(p2);
+  const c = 2 * Math.atan2(Math.sqrt(aVal), Math.sqrt(1 - aVal));
+  return earthRadiusKm * c;
+}
+
+function alertPlacementBasis(alert) {
+  const locationMetaBasis = String(alert?.locationMeta?.placementBasis || alert?.location_meta?.placement_basis || "").trim();
+  if (locationMetaBasis) {
+    return locationMetaBasis.toLowerCase();
+  }
+
+  const rolesBasis = String(eventRolesValue(alert)?.placementBasis || "").trim();
+  return rolesBasis ? rolesBasis.toLowerCase() : "";
+}
+
+function isCountryLevelNoPrecisionAlert(alert) {
+  if (!alert) return false;
+  if (hasCityName(alert)) {
+    return false;
+  }
+
+  const basis = alertPlacementBasis(alert);
+  if (basis && ["speaker_country", "target_country", "text_country_fallback", "geo_fallback", "unknown_center"].includes(basis)) {
+    return true;
+  }
+
+  const locationCoords = getAlertLocationCoordinates(alert);
+  if (!locationCoords) {
+    return true;
+  }
+
+  const [lat, lng] = locationCoords;
+  if (isFallbackMarkerPoint(lat, lng)) {
+    return true;
+  }
+
+  const countryCentroid = getCountryCentroid(alert?.country?.name, alert?.country?.code);
+  if (!countryCentroid) {
+    return false;
+  }
+
+  const distanceKm = haversineDistanceKm(lat, lng, countryCentroid[0], countryCentroid[1]);
+  return Number.isFinite(distanceKm) && distanceKm <= 55;
+}
+
+function hasPreciseMapLocation(alert) {
+  return !isCountryLevelNoPrecisionAlert(alert);
+}
+
 function buildNoCitySignalItems(alerts = []) {
-  const grouped = new Map();
+  const noPrecisionAlerts = sortAlertsByEventTimeDesc((alerts || []).filter((alert) => isCountryLevelNoPrecisionAlert(alert)));
+  if (!noPrecisionAlerts.length) {
+    return [];
+  }
 
-  (alerts || []).forEach((alert) => {
-    if (hasCityName(alert)) {
-      return;
+  const latestAlert = noPrecisionAlerts[0];
+  const latestAt = getAlertEventTimestamp(latestAlert);
+  const signal = detectIncidentSignal(latestAlert);
+  const signalVisual = getSignalVisual(signal);
+
+  return [
+    {
+      key: String(signalVisual?.className || signal || "signal-conflict"),
+      signal,
+      signalVisual,
+      count: noPrecisionAlerts.length,
+      latestAlert,
+      latestAt
     }
-
-    const signal = detectIncidentSignal(alert);
-    const signalVisual = getSignalVisual(signal);
-    const key = String(signalVisual?.className || signal || "signal-conflict");
-    const eventTs = getAlertEventTimestamp(alert);
-
-    if (!grouped.has(key)) {
-      grouped.set(key, {
-        key,
-        signal,
-        signalVisual,
-        count: 0,
-        latestAlert: null,
-        latestAt: 0
-      });
-    }
-
-    const entry = grouped.get(key);
-    entry.count += 1;
-    if (!entry.latestAlert || eventTs >= entry.latestAt) {
-      entry.latestAlert = alert;
-      entry.latestAt = eventTs;
-    }
-  });
-
-  return Array.from(grouped.values())
-    .sort((a, b) => Number(b.latestAt || 0) - Number(a.latestAt || 0))
-    .slice(0, 12);
+  ];
 }
 
 function detectTrackedAssets(alert) {
@@ -3830,18 +3917,13 @@ function getAlertLatLng(alert) {
     return [cityLat, cityLng];
   }
 
-  const hasLocationCoords =
-    alert?.location &&
-    alert.location.coordinates &&
-    Number.isFinite(alert.location.coordinates[0]) &&
-    Number.isFinite(alert.location.coordinates[1]);
-
+  const locationCoords = getAlertLocationCoordinates(alert);
   let locationLat = null;
   let locationLng = null;
 
-  if (hasLocationCoords) {
-    locationLat = Number(alert.location.coordinates[1]);
-    locationLng = Number(alert.location.coordinates[0]);
+  if (locationCoords) {
+    locationLat = Number(locationCoords[0]);
+    locationLng = Number(locationCoords[1]);
     if (!isFallbackMarkerPoint(locationLat, locationLng)) {
       return [locationLat, locationLng];
     }
@@ -4013,7 +4095,8 @@ function dedupeAlertsByEventGroup(alerts = []) {
         _eventGroupKey: key,
         _eventSourceNames: gatherAlertSourceNames(alert),
         _eventSourceCount: Math.max(1, sourceCountValue(alert)),
-        _eventMembers: [String(alert?._id || "").trim()].filter(Boolean)
+        _eventMembers: [String(alert?._id || "").trim()].filter(Boolean),
+        _eventOriginCreatedTs: getAlertCreatedTimestamp(alert)
       });
       return;
     }
@@ -4024,6 +4107,12 @@ function dedupeAlertsByEventGroup(alerts = []) {
     const mergedSources = new Set([...(existing._eventSourceNames || []), ...gatherAlertSourceNames(alert)]);
     const mergedMembers = new Set([...(existing._eventMembers || []), String(alert?._id || "").trim()]);
     const mergedCount = Math.max(existing._eventSourceCount || 1, sourceCountValue(alert), mergedSources.size || 1);
+    const existingOriginTs = Number(existing?._eventOriginCreatedTs || 0);
+    const incomingOriginTs = getAlertCreatedTimestamp(alert);
+    const mergedOriginTs =
+      existingOriginTs > 0 && incomingOriginTs > 0
+        ? Math.min(existingOriginTs, incomingOriginTs)
+        : Math.max(existingOriginTs, incomingOriginTs);
 
     if (incomingTs > existingTs) {
       grouped.set(key, {
@@ -4031,12 +4120,14 @@ function dedupeAlertsByEventGroup(alerts = []) {
         _eventGroupKey: key,
         _eventSourceNames: Array.from(mergedSources),
         _eventSourceCount: mergedCount,
-        _eventMembers: Array.from(mergedMembers).filter(Boolean)
+        _eventMembers: Array.from(mergedMembers).filter(Boolean),
+        _eventOriginCreatedTs: mergedOriginTs
       });
     } else {
       existing._eventSourceNames = Array.from(mergedSources);
       existing._eventSourceCount = mergedCount;
       existing._eventMembers = Array.from(mergedMembers).filter(Boolean);
+      existing._eventOriginCreatedTs = mergedOriginTs;
     }
   });
 
@@ -4285,9 +4376,10 @@ function renderMapMarkers() {
   const visibleAlerts = getVisibleAlerts();
   const uniqueVisibleAlerts = dedupeAlertsByEventGroup(visibleAlerts);
   const activeMapSignals = filterActiveMapSignals(uniqueVisibleAlerts);
-  const citySignals = activeMapSignals.filter((alert) => hasCityName(alert));
-  const noCitySignalsCount = Math.max(0, activeMapSignals.length - citySignals.length);
-  const trackedAssets = buildTrackedAssetTracks(activeMapSignals);
+  const preciseSignals = activeMapSignals.filter((alert) => hasPreciseMapLocation(alert));
+  const countryLevelSignals = activeMapSignals.filter((alert) => !hasPreciseMapLocation(alert));
+  const noPrecisionSignalsCount = countryLevelSignals.length;
+  const trackedAssets = buildTrackedAssetTracks(preciseSignals);
   recomputeCountryStatusLevels(uniqueVisibleAlerts);
   updateCountryHeadlineCounters(activeMapSignals);
   const allCountrySummaries = buildCountrySummaries(uniqueVisibleAlerts);
@@ -4314,7 +4406,7 @@ function renderMapMarkers() {
     if (!state.globe) {
       initializeGlobe();
     }
-    renderGlobeMarkers(activeMapSignals, visibleAlerts, trackedAssets);
+    renderGlobeMarkers(preciseSignals, visibleAlerts, trackedAssets);
     scheduleMapSignalExpiryRefresh(activeMapSignals);
     return;
   }
@@ -4327,7 +4419,7 @@ function renderMapMarkers() {
   state.assetMarkersLayer?.clearLayers();
   state.countryLegendLayer?.clearLayers();
 
-  const renderedAlerts = selectAlertsForCurrentZoom(citySignals);
+  const renderedAlerts = selectAlertsForCurrentZoom(preciseSignals);
   const renderedAssets = selectTrackedAssetsForCurrentZoom(trackedAssets);
   const priorityCountrySummaries = sortCountrySummariesForLegend(countrySummaries).filter((summary) => {
     const hasNoCitySignals = Array.isArray(summary?.noCitySignalItems) && summary.noCitySignalItems.length > 0;
@@ -4335,7 +4427,7 @@ function renderMapMarkers() {
   });
   const currentZoom = Number(state.map?.getZoom?.() || 2);
   const countryLegends = priorityCountrySummaries;
-  const noCitySignalGroups = countryLegends.reduce(
+  const noPrecisionCountries = countryLegends.reduce(
     (total, summary) => total + Math.max(0, Number(summary?.noCitySignalItems?.length || 0)),
     0
   );
@@ -4364,7 +4456,7 @@ function renderMapMarkers() {
   });
 
   if (refs.mapOverlayMetric) {
-    refs.mapOverlayMetric.textContent = `${activeMapSignals.length} events uniques actifs | ${renderedAlerts.length}/${citySignals.length} points villes | ${noCitySignalsCount} sans ville (${noCitySignalGroups} logos pays) | ${renderedAssets.length} assets suivis | ${countryLegends.length} pays tension/actifs`;
+    refs.mapOverlayMetric.textContent = `${activeMapSignals.length} events uniques actifs | ${renderedAlerts.length}/${preciseSignals.length} points precis | ${noPrecisionSignalsCount} sans position precise (${noPrecisionCountries} badges pays) | ${renderedAssets.length} assets suivis | ${countryLegends.length} pays tension/actifs`;
   }
 
   scheduleMapSignalExpiryRefresh(activeMapSignals);
@@ -6092,6 +6184,10 @@ function createCountryLegendMarker(summary, options = {}) {
     : buildNoCitySignalItems(summary?.alerts || []);
   const maxSignalsByZoom = zoom < 2.6 ? 2 : zoom < 3.2 ? 4 : zoom < 4 ? 6 : 12;
   const noCitySignalItems = noCitySignalItemsSource.slice(0, maxSignalsByZoom);
+  const totalNoCitySignals = noCitySignalItems.reduce(
+    (total, item) => total + Math.max(1, Number(item?.count || 1)),
+    0
+  );
   const signalsRows = showNoCitySignals && noCitySignalItems.length ? Math.ceil(noCitySignalItems.length / 6) : 0;
   const markerHeight = displayConfig.baseMarkerHeight + (signalsRows > 0 ? 6 + signalsRows * 22 : 0);
   const markerWidth = displayConfig.markerWidth;
@@ -6109,19 +6205,23 @@ function createCountryLegendMarker(summary, options = {}) {
     `--country-arrow-display:${displayConfig.showArrow ? "inline" : "none"}`
   ].join(";");
   const noCitySignalsHtml = showNoCitySignals && noCitySignalItems.length
-    ? `<div class="country-callout-signals">${noCitySignalItems
+    ? `<div class="country-callout-signals country-callout-signals--always">${noCitySignalItems
         .map((item) => {
           const signalLabel = item?.signalVisual?.label || "Signal";
           const signalGlyph = item?.signalVisual?.glyph || "⚠";
           const count = Math.max(1, Number(item?.count || 1));
-          const latestAt = item?.latestAlert ? formatAlertEventTime(item.latestAlert, { allowPublicationFallback: true }) : "Heure inconnue";
+          const latestAt = item?.latestAlert
+            ? formatAlertEventTime(item.latestAlert, { allowPublicationFallback: true })
+            : "Heure inconnue";
           const color = signalColorHex(item?.signal);
 
-          return `<span class="country-signal-chip ${escapeHtml(item?.signalVisual?.className || "signal-conflict")}" title="${escapeHtml(
-            `${signalLabel} (${count}) - ${latestAt}`
+          return `<span class="country-signal-chip country-signal-chip--country ${escapeHtml(
+            item?.signalVisual?.className || "signal-conflict"
+          )}" title="${escapeHtml(
+            `${signalLabel} | ${count} alerte(s) sans position precise | Dernier acte: ${latestAt}`
           )}">
               <span class="country-signal-chip__glyph" style="color:${escapeHtml(color)}">${escapeHtml(signalGlyph)}</span>
-              ${count > 1 ? `<span class="country-signal-chip__count">${count}</span>` : ""}
+              ${count > 1 ? `<span class="country-signal-chip__count">×${count}</span>` : ""}
             </span>`;
         })
         .join("")}</div>`
@@ -6142,7 +6242,7 @@ function createCountryLegendMarker(summary, options = {}) {
 
   marker.bindPopup(`
     <strong>${escapeHtml(summary.country.name || "Inconnu")}</strong><br>
-    Statut: ${escapeHtml(countryStatusLabel(summary.status))} | ${summary.alerts.length} alertes | ${noCitySignalItems.length} signal(s) sans ville
+    Statut: ${escapeHtml(countryStatusLabel(summary.status))} | ${summary.alerts.length} alertes | ${totalNoCitySignals} sans position precise
   `);
 
   marker.on("click", () => {
@@ -6394,7 +6494,9 @@ async function loadAlerts() {
   }
 
   if (!state.selectedAlertId && state.selectedTrackedAssetKey) {
-    const selectedTrack = buildTrackedAssetTracks(filterActiveMapSignals(getVisibleAlerts())).find(
+    const selectedTrack = buildTrackedAssetTracks(
+      filterActiveMapSignals(getVisibleAlerts()).filter((alert) => hasPreciseMapLocation(alert))
+    ).find(
       (track) => track.key === state.selectedTrackedAssetKey
     );
     if (selectedTrack) {
@@ -7254,7 +7356,9 @@ function connectEventStream() {
       }
 
       if (state.selectedTrackedAssetKey) {
-        const selectedTrack = buildTrackedAssetTracks(filterActiveMapSignals(getVisibleAlerts())).find(
+        const selectedTrack = buildTrackedAssetTracks(
+          filterActiveMapSignals(getVisibleAlerts()).filter((alert) => hasPreciseMapLocation(alert))
+        ).find(
           (track) => track.key === state.selectedTrackedAssetKey
         );
         if (selectedTrack) {

@@ -1997,9 +1997,17 @@ canvas {
   padding-left: 0.1rem;
 }
 
+.country-callout-signals--always {
+  display: flex;
+}
+
 @media (hover: hover) and (pointer: fine) {
   .country-callout-signals {
     display: none;
+  }
+
+  .country-callout-signals.country-callout-signals--always {
+    display: flex;
   }
 
   .country-callout-wrap:hover .country-callout-signals,
@@ -2033,6 +2041,20 @@ canvas {
   font-size: 0.5rem;
   color: #dbe6f6;
   letter-spacing: 0.2px;
+}
+
+.country-signal-chip--country {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 0.3rem;
+  border-color: rgba(255, 255, 255, 0.42);
+  background: rgba(10, 15, 23, 0.96);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.52), 0 0 10px rgba(0, 0, 0, 0.34);
+}
+
+.country-signal-chip--country .country-signal-chip__count {
+  font-size: 0.52rem;
+  color: #eff6ff;
 }
 
 .country-callout__arrow {
