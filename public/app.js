@@ -5338,8 +5338,17 @@ function sortCountrySummariesForLegend(summaries) {
   return [...(summaries || [])].sort((a, b) => countryLegendPriority(b) - countryLegendPriority(a));
 }
 
-function getCountryLegendNameMaxLenForZoom(zoom) {
+function getCountryLegendNameMaxLenForZoom(zoom, options = {}) {
   const z = Number.isFinite(zoom) ? zoom : 2;
+  const isPriority = Boolean(options?.isPriority);
+  if (isPriority) {
+    if (z < 2.2) return 8;
+    if (z < 2.8) return 10;
+    if (z < 3.6) return 14;
+    if (z < 4.4) return 18;
+    if (z < 5.2) return 24;
+    return 30;
+  }
   if (z < 2.2) return 5;
   if (z < 2.8) return 7;
   if (z < 3.6) return 10;
@@ -5348,10 +5357,11 @@ function getCountryLegendNameMaxLenForZoom(zoom) {
   return 28;
 }
 
-function getCountryLegendDisplayConfig(zoom) {
+function getCountryLegendDisplayConfig(zoom, options = {}) {
   const z = Number.isFinite(zoom) ? zoom : 2;
+  const isPriority = Boolean(options?.isPriority);
   const normalized = Math.max(0, Math.min(1, (z - 2.2) / 3.8));
-  return {
+  const base = {
     showArrow: z >= 2.9,
     showNoCitySignals: z >= 4.6,
     fontSizeRem: 0.37 + normalized * 0.28,
@@ -5365,6 +5375,21 @@ function getCountryLegendDisplayConfig(zoom) {
     padRightRem: 0.2 + normalized * 0.22,
     markerWidth: Math.round(88 + normalized * 156),
     baseMarkerHeight: Math.round(18 + normalized * 12)
+  };
+
+  if (!isPriority) {
+    return base;
+  }
+
+  return {
+    ...base,
+    showArrow: true,
+    fontSizeRem: Math.max(0.5, base.fontSizeRem + 0.1),
+    flagSizeRem: Math.max(0.66, base.flagSizeRem + 0.08),
+    arrowSizeRem: Math.max(0.66, base.arrowSizeRem + 0.06),
+    nameMaxWidthPx: Math.max(88, base.nameMaxWidthPx + 28),
+    markerWidth: Math.max(122, base.markerWidth + 26),
+    padRightRem: base.padRightRem + 0.08
   };
 }
 
@@ -5403,10 +5428,12 @@ function createCountryLegendMarker(summary, options = {}) {
   const statusClass = countryStatusClass(summary.status);
   const countryName = summary?.country?.name || "Inconnu";
   const zoom = Number(options?.zoom);
-  const displayConfig = getCountryLegendDisplayConfig(zoom);
+  const isPriorityCountry = summary?.status === "critical" || summary?.status === "tension";
+  const displayConfig = getCountryLegendDisplayConfig(zoom, { isPriority: isPriorityCountry });
   const showNoCitySignals = displayConfig.showNoCitySignals;
-  const nameMaxLen = getCountryLegendNameMaxLenForZoom(zoom);
+  const nameMaxLen = getCountryLegendNameMaxLenForZoom(zoom, { isPriority: isPriorityCountry });
   const compactName = compactCountryName(countryName, nameMaxLen);
+  const priorityClass = isPriorityCountry ? "priority-country" : "";
   const flag = countryCodeToFlagEmoji(summary?.country?.code);
   const noCitySignalItems = Array.isArray(summary?.noCitySignalItems)
     ? summary.noCitySignalItems
@@ -5450,7 +5477,7 @@ function createCountryLegendMarker(summary, options = {}) {
     icon: L.divIcon({
       className: "",
       html: `<div class="country-callout-wrap" style="${calloutStyle}">
-        <div class="country-callout ${statusClass}" title="${escapeHtml(countryName)}"><span class="country-callout__arrow">➤</span><span class="country-callout__flag">${escapeHtml(flag)}</span><span class="country-callout__name">${escapeHtml(compactName)}</span></div>
+        <div class="country-callout ${statusClass} ${priorityClass}" title="${escapeHtml(countryName)}"><span class="country-callout__arrow">➤</span><span class="country-callout__flag">${escapeHtml(flag)}</span><span class="country-callout__name">${escapeHtml(compactName)}</span></div>
         ${noCitySignalsHtml}
       </div>`,
       iconSize: [markerWidth, markerHeight],
