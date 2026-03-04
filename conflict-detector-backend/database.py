@@ -334,6 +334,71 @@ async def insert_alert(alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             await conn.close()
 
 
+async def update_alert_ai_fields(alert_id: int, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    safe_id = _safe_int(alert_id, 0)
+    if safe_id <= 0:
+        return None
+
+    async with _write_lock:
+        conn = await _connect()
+        try:
+            cursor = await conn.execute(
+                """
+                UPDATE alerts
+                SET
+                    severity = ?,
+                    confidence = ?,
+                    ai_analyzed = ?,
+                    ai_category = ?,
+                    ai_event_type = ?,
+                    ai_subcategories = ?,
+                    ai_severity = ?,
+                    ai_severity_score = ?,
+                    ai_countries = ?,
+                    ai_actors = ?,
+                    ai_summary = ?,
+                    ai_reliability_score = ?,
+                    ai_is_conflict_related = ?,
+                    event_actor = ?,
+                    event_actor_action = ?,
+                    event_target = ?,
+                    event_location = ?,
+                    event_context = ?
+                WHERE id = ?
+                """,
+                (
+                    str(payload.get("severity") or "moyen")[:32],
+                    max(0, min(100, _safe_int(payload.get("confidence"), 0))),
+                    1 if bool(payload.get("ai_analyzed")) else 0,
+                    str(payload.get("ai_category") or "autre")[:80],
+                    str(payload.get("ai_event_type") or "press_return")[:40],
+                    _json_list_dump(payload.get("ai_subcategories")),
+                    str(payload.get("ai_severity") or "moyenne")[:32],
+                    max(0.0, min(1.0, _safe_float(payload.get("ai_severity_score"), 0.0))),
+                    _json_list_dump(payload.get("ai_countries")),
+                    _json_list_dump(payload.get("ai_actors")),
+                    str(payload.get("ai_summary") or "")[:1200],
+                    max(0.0, min(1.0, _safe_float(payload.get("ai_reliability_score"), 0.0))),
+                    1 if bool(payload.get("ai_is_conflict_related")) else 0,
+                    str(payload.get("event_actor") or "")[:120],
+                    str(payload.get("event_actor_action") or "")[:120],
+                    str(payload.get("event_target") or "")[:160],
+                    str(payload.get("event_location") or "")[:220],
+                    str(payload.get("event_context") or "")[:300],
+                    safe_id,
+                ),
+            )
+            await cursor.close()
+
+            await conn.commit()
+            fetch = await conn.execute("SELECT * FROM alerts WHERE id = ? LIMIT 1", (safe_id,))
+            row = await fetch.fetchone()
+            await fetch.close()
+            return _row_to_dict(row)
+        finally:
+            await conn.close()
+
+
 async def get_alert_by_source_ref(source_ref: str) -> Optional[Dict[str, Any]]:
     normalized = str(source_ref or "").strip()
     if not normalized:

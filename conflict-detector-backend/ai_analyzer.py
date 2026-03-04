@@ -6,7 +6,7 @@ import threading
 import time
 import logging
 from collections import OrderedDict, deque
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 try:
     from groq import Groq
@@ -42,6 +42,7 @@ _DISABLED_MODELS = set()
 _RATE_LIMITED_UNTIL_MONOTONIC = 0.0
 _AI_RATE_LIMIT_PER_MINUTE = _safe_int_env("AI_RATE_LIMIT_PER_MINUTE", default=5, minimum=1, maximum=120)
 _AI_QUEUE_MAX_ITEMS = _safe_int_env("AI_QUEUE_MAX_ITEMS", default=600, minimum=50, maximum=5000)
+_AI_RETRY_DELAY_SECONDS = _safe_int_env("AI_RETRY_DELAY_SECONDS", default=60, minimum=5, maximum=900)
 _AI_QUEUE: Optional[asyncio.PriorityQueue] = None
 _AI_WORKER: Optional[asyncio.Task] = None
 _AI_QUEUE_LOCK = asyncio.Lock()
@@ -49,6 +50,8 @@ _AI_RATE_WINDOW = deque(maxlen=5000)
 _AI_PROCESSED_WINDOW = deque(maxlen=5000)
 _AI_PENDING_COUNT = 0
 _AI_ENQUEUE_SEQUENCE = 0
+_AI_LAST_CALL_MONOTONIC = 0.0
+_AI_WORKER_COUNT = 1
 _LOGGER = logging.getLogger("ai_analyzer")
 
 _ALLOWED_CATEGORIES = {
@@ -104,6 +107,8 @@ def _neutral_result(error: str = "") -> Dict[str, Any]:
         "ai_provider": "groq",
         "ai_model": AI_MODEL,
         "ai_error": str(error or "").strip(),
+        "ai_retryable": False,
+        "ai_retry_in_seconds": 0,
     }
 
 
@@ -318,9 +323,6 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
     client = _get_client()
     if client is None:
         return _neutral_result("missing_groq_api_key")
-    cooldown_left = _cooldown_remaining_seconds()
-    if cooldown_left > 0:
-        return _neutral_result(f"groq_rate_limit_cooldown_active:{cooldown_left}s")
 
     safe_title = str(title or "").strip()[:280]
     safe_description = str(description or "").strip()[:5000]
@@ -360,7 +362,10 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
     if not model_candidates:
         return _neutral_result("no_available_groq_models")
 
+    rate_limited_models = set()
+
     for model_name in model_candidates:
+        model_hit_rate_limit = False
         for force_json_mode in (True, False):
             request_payload = {
                 "model": model_name,
@@ -391,25 +396,97 @@ def analyze_event(title: str, description: str, source: str) -> Dict[str, Any]:
                 if _is_decommissioned_error(error_message):
                     _mark_model_disabled(model_name)
                 if _is_rate_limit_error(error_message):
-                    _set_rate_limit_cooldown()
+                    model_hit_rate_limit = True
+                    rate_limited_models.add(model_name)
+                    last_error = f"model={model_name} rate_limit={error_message}"
+                    # Immediate fallback to next model (no wait).
+                    break
                 last_error = f"model={model_name} json_mode={force_json_mode} error={error_message}"
                 continue
+        if model_hit_rate_limit:
+            continue
 
+    if model_candidates and len(rate_limited_models) == len(model_candidates):
+        retryable = _neutral_result("all_models_rate_limited")
+        retryable["ai_retryable"] = True
+        retryable["ai_retry_in_seconds"] = int(_AI_RETRY_DELAY_SECONDS)
+        return _set_model_in_result(retryable, AI_MODEL)
     return _set_model_in_result(_neutral_result(last_error), AI_MODEL)
 
 
 async def _rate_limited_wait() -> None:
-    while True:
-        now = time.monotonic()
-        while _AI_RATE_WINDOW and now - _AI_RATE_WINDOW[0] > 60:
-            _AI_RATE_WINDOW.popleft()
+    global _AI_LAST_CALL_MONOTONIC
+    min_interval = 60.0 / float(max(1, _AI_RATE_LIMIT_PER_MINUTE))
+    now = time.monotonic()
+    wait_for = 0.0
+    if _AI_LAST_CALL_MONOTONIC > 0:
+        wait_for = (_AI_LAST_CALL_MONOTONIC + min_interval) - now
+    if wait_for > 0:
+        await asyncio.sleep(wait_for)
+    now = time.monotonic()
+    _AI_LAST_CALL_MONOTONIC = now
+    _AI_RATE_WINDOW.append(now)
 
-        if len(_AI_RATE_WINDOW) < _AI_RATE_LIMIT_PER_MINUTE:
-            _AI_RATE_WINDOW.append(now)
+
+def _next_sequence() -> int:
+    global _AI_ENQUEUE_SEQUENCE
+    sequence = _AI_ENQUEUE_SEQUENCE
+    _AI_ENQUEUE_SEQUENCE += 1
+    return sequence
+
+
+def _queue_entry(
+    priority_score: float,
+    title: str,
+    description: str,
+    source: str,
+    fut: asyncio.Future,
+    retry_count: int = 0,
+) -> Tuple[float, int, str, str, str, asyncio.Future, int]:
+    return (
+        _priority_from_score(priority_score),
+        _next_sequence(),
+        title,
+        description,
+        source,
+        fut,
+        max(0, int(retry_count)),
+    )
+
+
+async def _requeue_after_delay(
+    priority_score: float,
+    title: str,
+    description: str,
+    source: str,
+    fut: asyncio.Future,
+    retry_count: int,
+    delay_seconds: int,
+) -> None:
+    global _AI_PENDING_COUNT
+    try:
+        await asyncio.sleep(max(1, int(delay_seconds)))
+        await _ensure_ai_worker()
+        if _AI_QUEUE is None:
+            if not fut.done():
+                fut.set_result(_neutral_result("ai_queue_not_initialized_after_retry"))
+            _AI_PENDING_COUNT = max(0, _AI_PENDING_COUNT - 1)
             return
-
-        sleep_for = max(0.05, 60 - (now - _AI_RATE_WINDOW[0]))
-        await asyncio.sleep(sleep_for)
+        await _AI_QUEUE.put(
+            _queue_entry(
+                priority_score=priority_score,
+                title=title,
+                description=description,
+                source=source,
+                fut=fut,
+                retry_count=retry_count,
+            )
+        )
+    except Exception as exc:
+        if not fut.done():
+            fut.set_result(_neutral_result(f"ai_retry_requeue_error:{exc}"))
+        _AI_PENDING_COUNT = max(0, _AI_PENDING_COUNT - 1)
+        _LOGGER.warning("ai_retry_requeue_error", exc_info=True)
 
 
 async def _ai_worker_loop() -> None:
@@ -418,19 +495,43 @@ async def _ai_worker_loop() -> None:
         return
 
     while True:
-        _priority, _sequence, title, description, source, fut = await _AI_QUEUE.get()
+        _priority, _sequence, title, description, source, fut, retry_count = await _AI_QUEUE.get()
+        requeued = False
         try:
             await _rate_limited_wait()
             result = await asyncio.to_thread(analyze_event, title, description, source)
-            _AI_PROCESSED_WINDOW.append(time.monotonic())
-            if not fut.done():
-                fut.set_result(result)
+            if result.get("ai_retryable"):
+                retry_delay = max(1, int(result.get("ai_retry_in_seconds") or _AI_RETRY_DELAY_SECONDS))
+                next_retry_count = int(retry_count) + 1
+                _LOGGER.warning(
+                    "ai_retry_scheduled retry_in_seconds=%s retry_count=%s source=%s",
+                    retry_delay,
+                    next_retry_count,
+                    str(source or "")[:80],
+                )
+                asyncio.create_task(
+                    _requeue_after_delay(
+                        priority_score=-float(_priority),
+                        title=title,
+                        description=description,
+                        source=source,
+                        fut=fut,
+                        retry_count=next_retry_count,
+                        delay_seconds=retry_delay,
+                    )
+                )
+                requeued = True
+            else:
+                _AI_PROCESSED_WINDOW.append(time.monotonic())
+                if not fut.done():
+                    fut.set_result(result)
         except Exception as exc:
             if not fut.done():
                 fut.set_result(_neutral_result(f"ai_worker_error:{exc}"))
             _LOGGER.warning("ai_worker_error", exc_info=True)
         finally:
-            _AI_PENDING_COUNT = max(0, _AI_PENDING_COUNT - 1)
+            if not requeued:
+                _AI_PENDING_COUNT = max(0, _AI_PENDING_COUNT - 1)
             _AI_QUEUE.task_done()
 
 
@@ -443,28 +544,48 @@ async def _ensure_ai_worker() -> None:
             _AI_WORKER = asyncio.create_task(_ai_worker_loop())
 
 
+async def enqueue_event_analysis(
+    title: str,
+    description: str,
+    source: str,
+    priority_score: float = 0.0,
+) -> asyncio.Future:
+    global _AI_PENDING_COUNT
+    await _ensure_ai_worker()
+    if _AI_QUEUE is None:
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        fut.set_result(_neutral_result("ai_queue_not_initialized"))
+        return fut
+
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+    _AI_PENDING_COUNT += 1
+    await _AI_QUEUE.put(
+        _queue_entry(
+            priority_score=float(priority_score),
+            title=title,
+            description=description,
+            source=source,
+            fut=fut,
+            retry_count=0,
+        )
+    )
+    return fut
+
+
 async def analyze_event_async(
     title: str,
     description: str,
     source: str,
     priority_score: float = 0.0,
 ) -> Dict[str, Any]:
-    global _AI_PENDING_COUNT, _AI_ENQUEUE_SEQUENCE
-    await _ensure_ai_worker()
-    if _AI_QUEUE is None:
-        return _neutral_result("ai_queue_not_initialized")
-
-    if _AI_QUEUE.full():
-        _LOGGER.warning("ai_queue_saturated queue=%s", _AI_QUEUE.qsize())
-        return _neutral_result("ai_queue_full")
-
-    loop = asyncio.get_running_loop()
-    fut: asyncio.Future = loop.create_future()
-    enqueue_sequence = _AI_ENQUEUE_SEQUENCE
-    _AI_ENQUEUE_SEQUENCE += 1
-    queue_priority = _priority_from_score(priority_score)
-    _AI_PENDING_COUNT += 1
-    await _AI_QUEUE.put((queue_priority, enqueue_sequence, title, description, source, fut))
+    fut = await enqueue_event_analysis(
+        title=title,
+        description=description,
+        source=source,
+        priority_score=priority_score,
+    )
     return await fut
 
 
@@ -496,9 +617,11 @@ def ai_health() -> Dict[str, Any]:
         "queue_length": queue_length,
         "queue_capacity": queue_capacity,
         "queue_mode": "priority_by_score_desc",
+        "worker_count": _AI_WORKER_COUNT,
         "pending_count": _AI_PENDING_COUNT,
         "processed_last_minute": len(_AI_PROCESSED_WINDOW),
         "rate_limit_per_minute": _AI_RATE_LIMIT_PER_MINUTE,
+        "retry_delay_seconds": _AI_RETRY_DELAY_SECONDS,
         "saturation_pct": saturation_pct,
         "ready": key_configured and dependency_available,
     }

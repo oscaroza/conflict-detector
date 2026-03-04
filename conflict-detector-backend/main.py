@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from ai_analyzer import (
     ai_health as get_ai_health,
     analyze_event_async,
+    enqueue_event_analysis,
     get_cached_analysis,
     set_cached_analysis,
 )
@@ -25,6 +26,7 @@ from database import (
     get_alerts_since,
     init_db,
     insert_alert,
+    update_alert_ai_fields,
 )
 from defcon import build_activity_snapshot, calculate_defcon
 from keyword_filter import ALERT_SCORE_THRESHOLD, analyze_message
@@ -533,6 +535,87 @@ async def _analyze_with_cache(
     return analyzed
 
 
+def _pending_ai_result(error: str = "queued_for_ai_analysis") -> Dict[str, Any]:
+    return {
+        "category": "autre",
+        "event_type": "press_return",
+        "actor": "",
+        "actor_action": "",
+        "target": "",
+        "location_of_event": "",
+        "context": "",
+        "subcategories": [],
+        "severity": "moyenne",
+        "severity_score": 0.0,
+        "countries": [],
+        "actors": [],
+        "summary": "",
+        "reliability_score": 0.0,
+        "is_conflict_related": False,
+        "ai_analyzed": False,
+        "ai_provider": "groq",
+        "ai_model": str(get_ai_health().get("model") or ""),
+        "ai_error": str(error or "").strip(),
+    }
+
+
+def _track_background_task(task: asyncio.Task) -> None:
+    tasks: Set[asyncio.Task] = getattr(app.state, "background_tasks", set())
+    tasks.add(task)
+
+    def _cleanup(done_task: asyncio.Task) -> None:
+        tasks.discard(done_task)
+
+    task.add_done_callback(_cleanup)
+    app.state.background_tasks = tasks
+
+
+async def _apply_async_ai_enrichment(
+    *,
+    alert_id: int,
+    base_alert: Dict[str, Any],
+    cache_key: str,
+    title: str,
+    description: str,
+    source: str,
+    priority_score: float,
+) -> None:
+    try:
+        cached = get_cached_analysis(cache_key)
+        if cached is not None:
+            ai_result = cached
+        else:
+            ai_future = await enqueue_event_analysis(
+                title=title,
+                description=description,
+                source=source,
+                priority_score=priority_score,
+            )
+            ai_result = await ai_future
+            set_cached_analysis(cache_key, ai_result)
+
+        enriched_payload = _apply_ai_enrichment(base_alert, ai_result)
+        updated = await update_alert_ai_fields(alert_id=alert_id, payload=enriched_payload)
+        if updated is None:
+            return
+
+        ws_manager: WebSocketManager = app.state.ws_manager
+        await ws_manager.broadcast({"type": "alert_updated", "alert": updated})
+        sse_manager: SSEManager = app.state.sse_manager
+        await sse_manager.broadcast("alert-updated", {"alert": updated})
+        log_event(
+            "alert_ai_enriched",
+            alert_id=updated["id"],
+            source=str(updated.get("source_channel") or ""),
+            ai_analyzed=bool(updated.get("ai_analyzed")),
+            ai_category=updated.get("ai_category"),
+            ai_model=ai_result.get("ai_model"),
+            ai_error=str(ai_result.get("ai_error") or "")[:220],
+        )
+    except Exception:
+        logger.warning("alert_ai_enrichment_failed", exc_info=True)
+
+
 def _apply_ai_enrichment(payload: Dict[str, Any], ai_result: Dict[str, Any]) -> Dict[str, Any]:
     enriched = dict(payload)
     ai = dict(ai_result or {})
@@ -607,13 +690,9 @@ async def process_telegram_message(message: Dict[str, Any]) -> None:
 
         location = resolve_location(text)
         title = _build_title(text)
-        ai_result = await _analyze_with_cache(
-            cache_key=source_ref or f"telegram:{source_channel}:{message.get('timestamp')}",
-            title=title,
-            description=text,
-            source=source_channel,
-            priority_score=float(analysis.score),
-        )
+        cache_key = source_ref or f"telegram:{source_channel}:{message.get('timestamp')}"
+        cached_ai_result = get_cached_analysis(cache_key)
+        ai_result = cached_ai_result if cached_ai_result is not None else _pending_ai_result()
         alert_payload = {
             "timestamp": message.get("timestamp"),
             "title": title,
@@ -647,6 +726,21 @@ async def process_telegram_message(message: Dict[str, Any]) -> None:
         await ws_manager.broadcast({"type": "new_alert", "alert": inserted})
         sse_manager: SSEManager = app.state.sse_manager
         await sse_manager.broadcast("new-alert", {"alert": inserted})
+
+        if cached_ai_result is None:
+            task = asyncio.create_task(
+                _apply_async_ai_enrichment(
+                    alert_id=int(inserted["id"]),
+                    base_alert=dict(inserted),
+                    cache_key=cache_key,
+                    title=title,
+                    description=text,
+                    source=source_channel,
+                    priority_score=float(analysis.score),
+                )
+            )
+            _track_background_task(task)
+
         log_event(
             "alert_accepted",
             alert_id=inserted["id"],
@@ -703,17 +797,15 @@ async def process_rss_item(item: Dict[str, Any]) -> None:
             return
 
         location = resolve_location(combined_text)
-        ai_result = await _analyze_with_cache(
-            cache_key=source_ref or f"rss:{source_url or title}",
-            title=title or _build_title(combined_text),
-            description=description or combined_text,
-            source=source_name,
-            priority_score=float(analysis.score),
-        )
+        ai_title = title or _build_title(combined_text)
+        ai_description = description or combined_text
+        cache_key = source_ref or f"rss:{source_url or title}"
+        cached_ai_result = get_cached_analysis(cache_key)
+        ai_result = cached_ai_result if cached_ai_result is not None else _pending_ai_result()
 
         alert_payload = {
             "timestamp": item.get("timestamp"),
-            "title": title or _build_title(combined_text),
+            "title": ai_title,
             "summary": description[:1200],
             "type": "geopolitique",
             "country": location["country"],
@@ -739,6 +831,21 @@ async def process_rss_item(item: Dict[str, Any]) -> None:
         await ws_manager.broadcast({"type": "new_alert", "alert": inserted})
         sse_manager: SSEManager = app.state.sse_manager
         await sse_manager.broadcast("new-alert", {"alert": inserted})
+
+        if cached_ai_result is None:
+            task = asyncio.create_task(
+                _apply_async_ai_enrichment(
+                    alert_id=int(inserted["id"]),
+                    base_alert=dict(inserted),
+                    cache_key=cache_key,
+                    title=ai_title,
+                    description=ai_description,
+                    source=source_name,
+                    priority_score=float(analysis.score),
+                )
+            )
+            _track_background_task(task)
+
         log_event(
             "rss_alert_accepted",
             alert_id=inserted["id"],
@@ -885,6 +992,7 @@ async def startup() -> None:
     app.state.scraper_task = None
     app.state.rss_scraper = RSSScraper(on_item=process_rss_item)
     app.state.rss_task = None
+    app.state.background_tasks = set()
 
     telegram_status = "disabled"
     telegram_channels = 0
@@ -947,6 +1055,7 @@ async def shutdown() -> None:
     scraper_task: Optional[asyncio.Task] = getattr(app.state, "scraper_task", None)
     rss_scraper: Optional[RSSScraper] = getattr(app.state, "rss_scraper", None)
     rss_task: Optional[asyncio.Task] = getattr(app.state, "rss_task", None)
+    background_tasks: Set[asyncio.Task] = getattr(app.state, "background_tasks", set())
 
     if scraper is not None:
         await scraper.stop()
@@ -964,5 +1073,15 @@ async def shutdown() -> None:
         try:
             await rss_task
         except asyncio.CancelledError:
+            pass
+
+    for task in list(background_tasks):
+        task.cancel()
+    for task in list(background_tasks):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
             pass
     log_event("shutdown_complete")

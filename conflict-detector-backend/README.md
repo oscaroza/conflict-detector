@@ -67,6 +67,7 @@ GROQ_RATE_LIMIT_COOLDOWN_SECONDS=25
 AI_CACHE_MAX_ITEMS=2000
 AI_RATE_LIMIT_PER_MINUTE=5
 AI_QUEUE_MAX_ITEMS=600
+AI_RETRY_DELAY_SECONDS=60
 ```
 
 ## 2) Premier lancement (auth Telegram)
@@ -199,6 +200,7 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
    - `AI_CACHE_MAX_ITEMS` (optionnel, ex. `2000`)
    - `AI_RATE_LIMIT_PER_MINUTE` (optionnel, defaut `5`)
    - `AI_QUEUE_MAX_ITEMS` (optionnel, defaut `600`)
+   - `AI_RETRY_DELAY_SECONDS` (optionnel, defaut `60`)
 
 ## 5) Comportement du pipeline
 
@@ -225,8 +227,11 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 - Stockage:
   - conservation des 500 dernières alertes
 - Enrichissement IA (si `GROQ_API_KEY` configuré):
-  - file d'attente prioritaire (score eleve traite en premier)
-  - debit max `AI_RATE_LIMIT_PER_MINUTE` (defaut `5` appels/min)
+  - file d'attente unique, prioritaire (score eleve traite en premier)
+  - 1 seul worker IA (jamais 2 appels Groq en parallele)
+  - debit max `AI_RATE_LIMIT_PER_MINUTE` (defaut `5` appels/min, cadence regulee)
+  - si tous les modeles sont en 429: retry automatique en file apres `AI_RETRY_DELAY_SECONDS`
+  - les alertes sont sauvegardees d'abord, puis enrichies IA en arriere-plan
   - catégorie, sous-catégories, sévérité affinée, score de sévérité, acteurs, pays, résumé factuel, fiabilité, flag conflit
   - fallback keywords intelligent si quota/timeouts/erreurs (`ai_analyzed=false`)
   - cache par source (`source_ref`) + cache mémoire pour éviter les ré-analyses
