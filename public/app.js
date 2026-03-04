@@ -3594,7 +3594,8 @@ function renderMapMarkers() {
     const hasNoCitySignals = Array.isArray(summary?.noCitySignalItems) && summary.noCitySignalItems.length > 0;
     return summary?.status === "critical" || summary?.status === "tension" || hasNoCitySignals;
   });
-  const countryLegends = priorityCountrySummaries.length ? priorityCountrySummaries.slice(0, 280) : [];
+  const currentZoom = Number(state.map?.getZoom?.() || 2);
+  const countryLegends = selectCountryLegendsForCurrentZoom(priorityCountrySummaries);
   const noCitySignalGroups = countryLegends.reduce(
     (total, summary) => total + Math.max(0, Number(summary?.noCitySignalItems?.length || 0)),
     0
@@ -3611,7 +3612,7 @@ function renderMapMarkers() {
   });
 
   countryLegends.forEach((summary) => {
-    const legendMarker = createCountryLegendMarker(summary);
+    const legendMarker = createCountryLegendMarker(summary, { zoom: currentZoom });
     state.countryLegendLayer?.addLayer(legendMarker);
   });
 
@@ -5064,6 +5065,107 @@ function getCountryLegendLimitForZoom(zoom) {
   return 7;
 }
 
+function getCountryLegendNameMaxLenForZoom(zoom) {
+  if (!Number.isFinite(zoom)) return 22;
+  if (zoom < 2.8) return 14;
+  if (zoom < 3.6) return 18;
+  if (zoom < 4.6) return 22;
+  return 28;
+}
+
+function getCountryLegendMinSpacingPxForZoom(zoom) {
+  if (!Number.isFinite(zoom)) return 170;
+  if (zoom < 2.8) return 205;
+  if (zoom < 3.6) return 178;
+  if (zoom < 4.6) return 146;
+  if (zoom < 5.6) return 118;
+  return 96;
+}
+
+function selectCountryLegendsForCurrentZoom(countrySummaries) {
+  const source = Array.isArray(countrySummaries) ? countrySummaries : [];
+  if (!source.length) {
+    return [];
+  }
+
+  const zoom = Number(state.map?.getZoom?.() || 2);
+  const maxLegends = getCountryLegendLimitForZoom(zoom);
+  if (!Number.isFinite(maxLegends) || maxLegends <= 0) {
+    return [];
+  }
+
+  const map = state.map;
+  if (!map?.latLngToContainerPoint) {
+    return source.slice(0, maxLegends);
+  }
+
+  const maxCandidates = Math.min(source.length, Math.max(maxLegends * 10, maxLegends));
+  const minSpacingPx = getCountryLegendMinSpacingPxForZoom(zoom);
+  const minSpacingSq = minSpacingPx * minSpacingPx;
+  const placedPoints = [];
+  const selected = [];
+  const selectedIndexes = new Set();
+
+  const canPlaceWithSpacing = (point, spacingSq) => {
+    for (let i = 0; i < placedPoints.length; i += 1) {
+      const existing = placedPoints[i];
+      const dx = point.x - existing.x;
+      const dy = point.y - existing.y;
+      if (dx * dx + dy * dy < spacingSq) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const placeSummaryIfPossible = (summary, index, spacingSq) => {
+    const [lat, lng] = summary?.center || [null, null];
+    if (!isValidLatLng(lat, lng)) {
+      return false;
+    }
+
+    let point;
+    try {
+      point = map.latLngToContainerPoint([lat, lng]);
+    } catch (error) {
+      return false;
+    }
+
+    if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
+      return false;
+    }
+
+    if (!canPlaceWithSpacing(point, spacingSq)) {
+      return false;
+    }
+
+    selected.push(summary);
+    selectedIndexes.add(index);
+    placedPoints.push({ x: point.x, y: point.y });
+    return true;
+  };
+
+  for (let i = 0; i < maxCandidates && selected.length < maxLegends; i += 1) {
+    placeSummaryIfPossible(source[i], i, minSpacingSq);
+  }
+
+  if (selected.length < maxLegends) {
+    const relaxedSpacingSq = Math.max(56 * 56, Math.floor(minSpacingSq * 0.58));
+    for (let i = 0; i < maxCandidates && selected.length < maxLegends; i += 1) {
+      if (selectedIndexes.has(i)) {
+        continue;
+      }
+      placeSummaryIfPossible(source[i], i, relaxedSpacingSq);
+    }
+  }
+
+  if (!selected.length) {
+    return source.slice(0, maxLegends);
+  }
+
+  return selected;
+}
+
 function buildGlobeCountryLegendItems(countrySummaries) {
   const sorted = sortCountrySummariesForLegend(countrySummaries);
   const prioritySummaries = sorted.filter((summary) => summary?.status === "critical" || summary?.status === "tension");
@@ -5094,11 +5196,13 @@ function buildGlobeCountryLegendItems(countrySummaries) {
     .filter(Boolean);
 }
 
-function createCountryLegendMarker(summary) {
+function createCountryLegendMarker(summary, options = {}) {
   const [lat, lng] = summary.center || [20, 0];
   const statusClass = countryStatusClass(summary.status);
   const countryName = summary?.country?.name || "Inconnu";
-  const compactName = compactCountryName(countryName, 28);
+  const zoom = Number(options?.zoom);
+  const nameMaxLen = getCountryLegendNameMaxLenForZoom(zoom);
+  const compactName = compactCountryName(countryName, nameMaxLen);
   const flag = countryCodeToFlagEmoji(summary?.country?.code);
   const noCitySignalItems = Array.isArray(summary?.noCitySignalItems)
     ? summary.noCitySignalItems
