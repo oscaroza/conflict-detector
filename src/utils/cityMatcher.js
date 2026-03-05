@@ -130,7 +130,12 @@ function extractCity(text, countryInfo = null) {
     return pattern.city.countryCode === countryCode;
   });
 
-  const matched = byCountry || CITY_PATTERNS.find((pattern) => pattern.regex.test(normalizedText));
+  // If a country is already known, only accept cities from that same country.
+  // This avoids cross-country marker drift (e.g. country Iran + city Riyadh).
+  const matched =
+    countryCode && countryCode !== "XX"
+      ? byCountry
+      : CITY_PATTERNS.find((pattern) => pattern.regex.test(normalizedText));
   if (!matched) {
     return null;
   }

@@ -3806,8 +3806,43 @@ function alertPlacementBasis(alert) {
   return rolesBasis ? rolesBasis.toLowerCase() : "";
 }
 
+const NON_PRECISE_STRATEGIC_AREAS = new Set(["moyen orient", "middle east", "near east"]);
+
+function normalizeGeoAreaLabel(value) {
+  return normalizeText(value)
+    .replace(/[^a-z0-9\s_-]/g, " ")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isBroadStrategicAreaNoPrecision(alert) {
+  if (!alert) {
+    return false;
+  }
+
+  const cityLabel = normalizeGeoAreaLabel(alert?.city?.name || "");
+  if (cityLabel && !NON_PRECISE_STRATEGIC_AREAS.has(cityLabel)) {
+    return false;
+  }
+
+  const roles = eventRolesValue(alert);
+  const labels = [
+    alert?.locationMeta?.strategicArea,
+    alert?.location_meta?.strategic_area,
+    roles.locationOfEvent,
+    alert?.city?.name,
+    alert?.country?.name
+  ];
+
+  return labels.some((label) => NON_PRECISE_STRATEGIC_AREAS.has(normalizeGeoAreaLabel(label)));
+}
+
 function isCountryLevelNoPrecisionAlert(alert) {
   if (!alert) return false;
+  if (isBroadStrategicAreaNoPrecision(alert)) {
+    return true;
+  }
   if (hasCityName(alert)) {
     return false;
   }
