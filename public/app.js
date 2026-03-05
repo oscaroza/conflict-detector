@@ -165,8 +165,23 @@ const REJECTION_REASON_LABELS = {
   rss_rejected_no_keywords: "RSS sans mots-cles geopolitique",
   rss_rejected_duplicate: "RSS doublon",
   excluded_by_keywords: "mots-cles d exclusion",
-  empty_message: "message vide"
+  empty_message: "message vide",
+  ai_queue_full: "surcharge IA (file pleine)",
+  ai_queue_overloaded: "surcharge IA (file surchargee)",
+  ai_overload: "surcharge IA",
+  rate_limit: "rate limit IA",
+  too_many_requests: "trop de requetes IA",
+  all_models_rate_limited: "tous modeles IA limites"
 };
+const AI_OVERLOAD_REASON_HINTS = [
+  "rate_limit",
+  "too_many_requests",
+  "queue_full",
+  "queue_overload",
+  "queue_overloaded",
+  "ai_overload",
+  "all_models_rate_limited"
+];
 const TRACKED_ASSET_DEFINITIONS = [
   {
     key: "fs-charles-de-gaulle",
@@ -6784,26 +6799,51 @@ function extractRejectionBreakdown(payload, rejectedRequests, totalRequests) {
     .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
 }
 
+function isAiOverloadReason(reason) {
+  const normalized = normalizeRejectionReason(reason);
+  return AI_OVERLOAD_REASON_HINTS.some((hint) => normalized.includes(hint));
+}
+
+function computeAiOverloadRejections(payload, rows = []) {
+  const explicit = Number(payload?.ai_overload_rejections);
+  if (Number.isFinite(explicit) && explicit >= 0) {
+    return Math.max(0, Math.trunc(explicit));
+  }
+
+  return (rows || []).reduce((sum, row) => {
+    if (!isAiOverloadReason(row?.reason)) {
+      return sum;
+    }
+    return sum + Math.max(0, Number(row?.count || 0));
+  }, 0);
+}
+
 function renderRejectionBreakdown(payload, rejectedRequests, totalRequests) {
   if (!refs.aiRejectReasonsList) {
     return;
   }
 
   const rows = extractRejectionBreakdown(payload, rejectedRequests, totalRequests);
-  if (rows.length === 0 || rejectedRequests <= 0) {
-    refs.aiRejectReasonsList.innerHTML = '<p class="ai-reject-empty">Aucun rejet detecte.</p>';
-    return;
-  }
+  const queueLength = Math.max(0, Number((payload?.alerts_in_queue ?? payload?.queue_length) || 0));
+  const overloadRejections = computeAiOverloadRejections(payload, rows);
+  const hasAnyRejectionDetail = rows.length > 0 && rejectedRequests > 0;
 
-  refs.aiRejectReasonsList.innerHTML = rows
-    .map((row) => {
-      const reasonLabel = escapeHtml(rejectionReasonLabel(row.reason));
-      const countLabel = Math.max(0, Number(row.count || 0));
-      const pctRejectedLabel = toFixedPercent(row.pctOfRejected);
-      const pctTotalLabel = toFixedPercent(row.pctOfTotal);
-      return `<div class="ai-reject-row"><span class="ai-reject-reason">${reasonLabel}</span><span class="ai-reject-metrics">${countLabel} | ${pctRejectedLabel} rejets | ${pctTotalLabel} total</span></div>`;
-    })
-    .join("");
+  const extraRows = [
+    `<div class="ai-reject-row"><span class="ai-reject-reason">Surcharge IA</span><span class="ai-reject-metrics">${overloadRejections} rejets</span></div>`,
+    `<div class="ai-reject-row"><span class="ai-reject-reason">Alertes en file d attente</span><span class="ai-reject-metrics">${queueLength}</span></div>`
+  ];
+
+  const reasonRows = hasAnyRejectionDetail
+    ? rows.map((row) => {
+        const reasonLabel = escapeHtml(rejectionReasonLabel(row.reason));
+        const countLabel = Math.max(0, Number(row.count || 0));
+        const pctRejectedLabel = toFixedPercent(row.pctOfRejected);
+        const pctTotalLabel = toFixedPercent(row.pctOfTotal);
+        return `<div class="ai-reject-row"><span class="ai-reject-reason">${reasonLabel}</span><span class="ai-reject-metrics">${countLabel} | ${pctRejectedLabel} rejets | ${pctTotalLabel} total</span></div>`;
+      })
+    : [];
+
+  refs.aiRejectReasonsList.innerHTML = extraRows.concat(reasonRows).join("");
 }
 
 function renderAiQueueStatus(payload = null) {
@@ -6846,11 +6886,13 @@ async function loadAiQueueStatus() {
     renderAiQueueStatus({
       saturation_pct: 0,
       queue_length: 0,
+      alerts_in_queue: 0,
       queue_capacity: 0,
       processed_last_minute: 0,
       accepted_requests: 0,
       rejected_requests: 0,
       total_requests: 0,
+      ai_overload_rejections: 0,
       rejected_by_reason: {},
       rejection_breakdown: [],
       provider: "n/a",

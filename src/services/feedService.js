@@ -2708,6 +2708,53 @@ let telegramSyncCache = [];
 let telegramSyncCacheAtMs = 0;
 let aiQueueStatusCache = null;
 let aiQueueStatusAtMs = 0;
+const AI_OVERLOAD_REJECTION_HINTS = [
+  "rate_limit",
+  "too_many_requests",
+  "queue_full",
+  "queue_overload",
+  "queue_overloaded",
+  "ai_overload",
+  "all_models_rate_limited"
+];
+
+function normalizeRejectionReasonKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function isAiOverloadRejectionReason(reason) {
+  const normalized = normalizeRejectionReasonKey(reason);
+  if (!normalized) return false;
+  return AI_OVERLOAD_REJECTION_HINTS.some((hint) => normalized.includes(hint));
+}
+
+function deriveAiOverloadRejections(rejectedByReason = {}, rejectionBreakdown = []) {
+  const explicitRows = Array.isArray(rejectionBreakdown) ? rejectionBreakdown : [];
+  if (explicitRows.length > 0) {
+    return explicitRows.reduce((sum, row) => {
+      if (!isAiOverloadRejectionReason(row?.reason)) {
+        return sum;
+      }
+      return sum + Math.max(0, Number(row?.count || 0));
+    }, 0);
+  }
+
+  if (!rejectedByReason || typeof rejectedByReason !== "object" || Array.isArray(rejectedByReason)) {
+    return 0;
+  }
+
+  return Object.entries(rejectedByReason).reduce((sum, [reason, countRaw]) => {
+    if (!isAiOverloadRejectionReason(reason)) {
+      return sum;
+    }
+    return sum + Math.max(0, Number(countRaw || 0));
+  }, 0);
+}
 
 async function runDetection(reason = "scheduled", options = {}) {
   if (running) {
@@ -2740,11 +2787,13 @@ async function getAiQueueStatus(force = false) {
       ready: false,
       queue_length: 0,
       queue_capacity: 0,
+      alerts_in_queue: 0,
       processed_last_minute: 0,
       rate_limit_per_minute: Number(process.env.AI_RATE_LIMIT_PER_MINUTE) || DEFAULT_AI_RATE_LIMIT_PER_MINUTE,
       accepted_requests: 0,
       rejected_requests: 0,
       total_requests: 0,
+      ai_overload_rejections: 0,
       rejected_by_reason: {},
       rejection_breakdown: [],
       saturation_pct: 0,
@@ -2767,6 +2816,8 @@ async function getAiQueueStatus(force = false) {
     const acceptedRequests = Math.max(0, Number(payload?.accepted_requests || 0));
     const rejectedRequests = Math.max(0, Number(payload?.rejected_requests || 0));
     const totalRequests = Math.max(0, Number(payload?.total_requests || acceptedRequests + rejectedRequests));
+    const queueLength = Math.max(0, Number(payload?.queue_length || 0));
+    const queueCapacity = Math.max(0, Number(payload?.queue_capacity || 0));
     const rejectedByReason =
       payload?.rejected_by_reason && typeof payload.rejected_by_reason === "object" && !Array.isArray(payload.rejected_by_reason)
         ? payload.rejected_by_reason
@@ -2781,17 +2832,23 @@ async function getAiQueueStatus(force = false) {
           }))
           .filter((item) => item.reason && item.count > 0)
       : [];
+    const aiOverloadRejectionsRaw = Number(payload?.ai_overload_rejections);
+    const aiOverloadRejections = Number.isFinite(aiOverloadRejectionsRaw)
+      ? Math.max(0, Math.trunc(aiOverloadRejectionsRaw))
+      : deriveAiOverloadRejections(rejectedByReason, rejectionBreakdown);
 
     const mapped = {
       provider: payload?.provider || "groq",
       ready: Boolean(payload?.ready),
-      queue_length: Number(payload?.queue_length || 0),
-      queue_capacity: Number(payload?.queue_capacity || 0),
+      queue_length: queueLength,
+      queue_capacity: queueCapacity,
+      alerts_in_queue: queueLength,
       processed_last_minute: Number(payload?.processed_last_minute || 0),
       rate_limit_per_minute: Number(payload?.rate_limit_per_minute || DEFAULT_AI_RATE_LIMIT_PER_MINUTE),
       accepted_requests: acceptedRequests,
       rejected_requests: rejectedRequests,
       total_requests: totalRequests,
+      ai_overload_rejections: aiOverloadRejections,
       rejected_by_reason: rejectedByReason,
       rejection_breakdown: rejectionBreakdown,
       saturation_pct: Number(payload?.saturation_pct || 0),
@@ -2807,11 +2864,13 @@ async function getAiQueueStatus(force = false) {
       ready: false,
       queue_length: 0,
       queue_capacity: 0,
+      alerts_in_queue: 0,
       processed_last_minute: 0,
       rate_limit_per_minute: Number(process.env.AI_RATE_LIMIT_PER_MINUTE) || DEFAULT_AI_RATE_LIMIT_PER_MINUTE,
       accepted_requests: 0,
       rejected_requests: 0,
       total_requests: 0,
+      ai_overload_rejections: 0,
       rejected_by_reason: {},
       rejection_breakdown: [],
       saturation_pct: 0,
